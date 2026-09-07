@@ -46,6 +46,23 @@
         "visible": false,
         "center": false,
         "acceptFirstMouse": true
+      },
+      {
+        "label": "fluid",
+        "url": "index.html?window=fluid",
+        "title": "OpenLess Fluid",
+        "width": 560,
+        "height": 420,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "visible": false,
+        "center": false,
+        "acceptFirstMouse": true
       }
     ],
     "security": {
