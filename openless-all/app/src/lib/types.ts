@@ -669,7 +669,7 @@ export type CapsuleState =
   'idle' | 'recording' | 'transcribing' | 'polishing' | 'done' | 'cancelled' | 'error';
 
 /** 录音胶囊样式：'siri' = 流光 Siri 光效版（默认）；'classic' = Openless 经典药丸版。 */
-export type CapsuleStyle = 'siri' | 'classic' | 'typeless';
+export type CapsuleStyle = 'siri' | 'classic' | 'typeless' | 'fluid';
 
 export interface CapsulePayload {
   state: CapsuleState;

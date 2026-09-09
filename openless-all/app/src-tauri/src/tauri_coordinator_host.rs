@@ -52,6 +52,13 @@ pub(crate) fn show_capsule_window_for_recording<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     reassert_spaces: bool,
 ) {
+    // Fluid 胶囊样式：不在 default 胶囊窗口弹录音浮显，改由独立 fluid 浮框窗口
+    // 接管（前端按 prefs.capsuleStyle 自管显隐）。这样 CapsuleStyle::Fluid 下原版
+    // 胶囊完全不出现，成为并列新增的第三种样式；Siri/Classic 路径不受影响。
+    let state = app.state::<Arc<openless_core::OpenLessBackend>>();
+    if state.get_preferences().capsule_style == CapsuleStyle::Fluid {
+        return;
+    }
     let mut needs_fallback = true;
     if capsule_show_strategy_for_platform() == CapsuleShowStrategy::NoActivate {
         needs_fallback = !show_capsule_window_no_activate(app, window, reassert_spaces);

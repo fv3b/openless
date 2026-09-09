@@ -440,6 +440,7 @@ export function RecordingInputSection() {
                   { value: 'siri', label: t('settings.recording.capsuleStyleSiri') },
                   { value: 'classic', label: t('settings.recording.capsuleStyleClassic') },
                   { value: 'typeless', label: t('settings.recording.capsuleStyleTypeless') },
+                  { value: 'fluid', label: t('settings.recording.capsuleStyleFluid') },
                 ]}
                 ariaLabel={t('settings.recording.capsuleStyleLabel')}
                 style={{ maxWidth: 220, minWidth: 200 }}

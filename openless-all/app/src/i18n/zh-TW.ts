@@ -1047,6 +1047,7 @@ export const zhTW: typeof zhCN = {
       capsuleStyleLabel: '膠囊樣式',
       capsuleStyleSiri: '流光 Siri 風格',
       capsuleStyleClassic: 'Openless 預設風格',
+      capsuleStyleFluid: 'Fluid 流式浮框',
       muteDuringRecordingLabel: '錄音時靜音',
       muteDuringRecordingDesc: '錄音期間臨時靜音系統輸出，避免揚聲器回音。',
       audioCueLabel: '錄音提示音',

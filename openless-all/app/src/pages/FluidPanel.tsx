@@ -5,6 +5,8 @@ import {
   type BackendEvent,
   type TranscriptViewState,
 } from '../lib/backendEvent';
+import { shouldUseFluidCapsule } from '../lib/fluidCapsule';
+import { getSettings } from '../lib/ipc';
 
 /**
  * fluid 浮框：听写期间的实时转写面板（M1）。
@@ -122,10 +124,19 @@ export function FluidPanel() {
           const payload = e.kind.payload as { phase?: string } | undefined;
           const phase = payload?.phase;
           if (phase === 'starting' || phase === 'recording') {
-            clearTimers();
-            setDoneMessage('');
-            setPanelState('live');
-            void showPanel();
+            // Fluid 样式门：仅在胶囊样式选为 fluid 时才接管浮框；否则保持隐藏，
+            // 完全走原版胶囊（Siri/Classic）。样式切换在设置页，这里会话开始时实时读。
+            void (async () => {
+              try {
+                if (!shouldUseFluidCapsule(await getSettings())) return;
+              } catch {
+                return; // 读 prefs 失败：保守不接管，模板保持隐藏
+              }
+              clearTimers();
+              setDoneMessage('');
+              setPanelState('live');
+              void showPanel();
+            })();
           } else if (phase === 'cancelled' || phase === 'failed') {
             clearTimers();
             void hideNow();
