@@ -142,7 +142,13 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2"
 # 无关），所以**所有平台**源码构建都必须先 `git submodule update --init --recursive`，
 # 否则 cargo check 会在解析阶段硬失败。CI 里非 macOS 任务依赖
 # scripts/ci-disable-macos-qwen3.mjs 删掉本行来规避。
-qwen3-asr-rs = { path = "vendor/qwen3-asr-rs", default-features = false, features = ["mlx"] }
+#
+# fluid 改动：qwen3-asr-rs 由「总是带 mlx feature」改为「可选依赖 + mlx feature
+# 转发」。MLX 编译需要 Xcode 的 metal 编译器（CLT 没有），默认不开 mlx 即可让
+# 没有 Xcode 的机器正常 dev（云端流式 ASR 不受影响）；装了 Xcode 需要本地识别的
+# 机器用 `--features mlx` 开启，行为与上游一致。对应 src/asr/local/mod.rs 里
+# mlx_qwen_engine / mlx_worker 的 cfg 门控同步加了 `feature = "mlx"`。
+qwen3-asr-rs = { path = "vendor/qwen3-asr-rs", optional = true, default-features = false }
 [target.'cfg(target_os = "windows")'.dependencies]
 foundry-local-sdk = { version = "=1.2.1", features = ["winml"] }
 raw-window-handle = "0.6"
@@ -178,6 +184,8 @@ window-vibrancy = "0.7"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# fluid 改动：本地 Qwen3-ASR（MLX/Metal）默认关闭，见上方 qwen3-asr-rs 注释。
+mlx = ["dep:qwen3-asr-rs", "qwen3-asr-rs/mlx"]
 
 [profile.release]
 # 之前没有 [profile.release] —— 发布版走 Cargo 默认（无 LTO、不 strip、

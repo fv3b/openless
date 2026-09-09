@@ -2293,6 +2293,39 @@ pub enum CapsuleStyle {
     Classic,
     /// 传统深色胶囊：蓝色波形，处理时收窄成状态提示。
     Typeless,
+    /// Fluid 浮框风格：OpenLess Fluid 层的流式转写浮框（语音输入法增强）。
+    Fluid,
+}
+
+#[cfg(test)]
+mod capsule_style_tests {
+    use super::CapsuleStyle;
+
+    #[test]
+    fn fluid_serializes_as_fluid_camel() {
+        assert_eq!(
+            serde_json::to_string(&CapsuleStyle::Fluid).unwrap(),
+            "\"fluid\""
+        );
+    }
+
+    #[test]
+    fn fluid_roundtrips_from_camel_case() {
+        let v: CapsuleStyle = serde_json::from_str("\"fluid\"").unwrap();
+        assert_eq!(v, CapsuleStyle::Fluid);
+    }
+
+    #[test]
+    fn existing_styles_keep_camel_case_serde() {
+        assert_eq!(
+            serde_json::from_str::<CapsuleStyle>("\"siri\"").unwrap(),
+            CapsuleStyle::Siri
+        );
+        assert_eq!(
+            serde_json::from_str::<CapsuleStyle>("\"classic\"").unwrap(),
+            CapsuleStyle::Classic
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

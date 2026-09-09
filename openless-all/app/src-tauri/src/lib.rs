@@ -163,7 +163,8 @@ pub(crate) fn set_backend_preferences_for_test(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    // fluid 改动：与 src/asr/local/mod.rs 的 mlx feature 门控保持一致。
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
     asr::local::run_mlx_worker_if_requested();
 
     #[cfg(mobile)]
