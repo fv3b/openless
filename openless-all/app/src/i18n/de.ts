@@ -1102,7 +1102,7 @@ export const de: typeof zhCN = {
       capsuleDesc:
         'Zeigt während der Aufnahme eine halbtransparente Kapsel am unteren Bildschirmrand.',
       capsuleStyleTypeless: 'Kompakter Typeless-Stil',
-      capsuleStyleFluid: 'Typeset Streaming-Overlay',
+      capsuleStyleFluid: 'Ghostwriter Streaming-Overlay',
       capsuleStyleLabel: 'Kapselstil',
       capsuleStyleSiri: 'Schimmernder Siri-Stil',
       capsuleStyleClassic: 'OpenLess-Standardstil',

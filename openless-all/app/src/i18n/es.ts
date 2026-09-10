@@ -1097,7 +1097,7 @@ export const es: typeof zhCN = {
       capsuleLabel: 'Cápsula de grabación',
       capsuleDesc: 'Muestra una cápsula en la parte inferior de la pantalla mientras grabas.',
       capsuleStyleTypeless: 'Estilo compacto Typeless',
-      capsuleStyleFluid: 'Panel Typeset en streaming',
+      capsuleStyleFluid: 'Panel Ghostwriter en streaming',
       capsuleStyleLabel: 'Estilo de cápsula',
       capsuleStyleSiri: 'Estilo luminoso Siri',
       capsuleStyleClassic: 'Estilo predeterminado de OpenLess',

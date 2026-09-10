@@ -1069,7 +1069,7 @@ export const ja: typeof zhCN = {
       capsuleStyleLabel: 'カプセルスタイル',
       capsuleStyleSiri: '光条 Siri スタイル',
       capsuleStyleClassic: 'Openless デフォルトスタイル',
-      capsuleStyleFluid: 'Typeset フローティングパネル',
+      capsuleStyleFluid: 'Ghostwriter フローティングパネル',
       muteDuringRecordingLabel: '録音中はミュート',
       muteDuringRecordingDesc:
         '録音中にシステム出力を一時的にミュートし、スピーカーのエコーを防ぎます。',

@@ -19,7 +19,7 @@
 9. 纯净模式一键关：FluidSession 不创建，完全退化为上游纯听写。
 10. 历史轻量扩展（记命中注入/选中动作）。
 11. fork 跟上游：改动做成新增模块＋旧文件仅 8 处加法式小改；**同步上游一律 rebase（2026-09-10 用户拍板，弃 merge）**——把我们的提交重放到上游新基之上，`git diff 上游..我们的分支` 永远只含我们自己的差异（当前 35 文件），上游更新再大也不进我们的提交序列；推送用 SSH（HTTPS 的 gh token 无 workflow scope，会因 ci.yml 被拒）。每个里程碑后 rebase 一次上游 beta 验证冲突面。
-12. Fluid 作为第三种胶囊样式（capsuleStyle='fluid'，样式驱动接管浮框；上游后来加的 typeless 与之并列，四样式共存）。**显示名定为「Typeset 流式浮框」（2026-09-11 用户拍板，历经 Fluid→翰林/秘书/Waitless 多轮讨论后两段式定名）**：显示名分两段——前段专名管身份（Typeset＝现场排字成版，暗合 assembled_text 拼装），后段管形态（流式浮框）；英文 Typeset 与上游 Typeless 在设置列表对仗。仅改 8 门语言 i18n 的 capsuleStyleFluid 值，内部代号 fluid（serde 值/窗口路由/文件名）全部不动。
+12. Fluid 作为第三种胶囊样式（capsuleStyle='fluid'，样式驱动接管浮框；上游后来加的 typeless 与之并列，四样式共存）。**显示名定为「Ghostwriter 流式浮框」（2026-09-11 用户拍板）**，两段式分工是定名约定：前段专名管身份承诺（Ghostwriter＝你只管说、它代写成文并自备素材，对位注入背景/动作/提示词的"提前张罗"职能），后段管形态（流式浮框，设计终态边说边流字）。仅改 8 门语言 i18n 的 capsuleStyleFluid 值，内部代号 fluid（serde 值/窗口路由/文件名）全部不动。
 13. MLX 改为可选 feature（`--features mlx` 才启用）：本地 MLX 识别是可选增强，默认构建不编 MLX 依赖；下轮 rebase 遇到相关冲突时不得把这套 feature 门控消掉。
 
 ## 对上游的真实认知（读码实证）

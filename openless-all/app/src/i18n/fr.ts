@@ -1109,7 +1109,7 @@ export const fr: typeof zhCN = {
       capsuleLabel: 'Capsule d’enregistrement',
       capsuleDesc: 'Affiche une capsule en bas de l’écran pendant l’enregistrement.',
       capsuleStyleTypeless: 'Style compact Typeless',
-      capsuleStyleFluid: 'Panneau Typeset en streaming',
+      capsuleStyleFluid: 'Panneau Ghostwriter en streaming',
       capsuleStyleLabel: 'Style de capsule',
       capsuleStyleSiri: 'Style lumineux Siri',
       capsuleStyleClassic: 'Style par défaut d’OpenLess',
