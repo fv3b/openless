@@ -1522,12 +1522,13 @@ impl ActiveTextInsertion {
     async fn wait_for_stream_drain(&self) {
         loop {
             let notified = self.drained.notified();
-            if !self
+            let scheduled = self
                 .state
                 .lock()
                 .expect("text insertion lock poisoned")
-                .scheduled
-            {
+                .scheduled;
+            log::info!("[insert] wait_for_stream_drain: scheduled={scheduled}");
+            if !scheduled {
                 break;
             }
             notified.await;
@@ -1551,7 +1552,9 @@ impl ActiveTextInsertion {
         let insertion = Arc::clone(self);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.task_spawner.spawn(Box::pin(async move {
+            log::info!("[insert] finish_committed task: started");
             let result = insertion.finish_committed(final_text).await;
+            log::info!("[insert] finish_committed task: done");
             insertion.terminal.store(3, Ordering::Release);
             insertion.drained.notify_waiters();
             let _ = result_tx.send(result);
@@ -5124,6 +5127,7 @@ impl OpenLessBackend {
             return Err(error);
         }
 
+        log::info!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
         engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
             &engine_result.polished_text,
             context.polish.chinese_script_preference,
@@ -5510,7 +5514,9 @@ impl OpenLessBackend {
                 )
             })?;
         let insertion = insertion.await?;
+        log::info!("[insert] preparation resolved, calling insertion.finish ({} chars)", final_text.chars().count());
         let result = insertion.finish(final_text).await;
+        log::info!("[insert] insertion.finish returned: {:?}", result.as_ref().map(|o| match o { crate::ports::InsertOutcome::Inserted => "inserted", crate::ports::InsertOutcome::PasteSent => "paste_sent", crate::ports::InsertOutcome::CopiedFallback => "copied_fallback" }));
         let mut insertions = self
             .text_insertions
             .lock()
