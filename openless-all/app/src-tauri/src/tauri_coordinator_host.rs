@@ -298,6 +298,7 @@ impl CapsuleWindowState {
                 CapsuleStyle::Siri => 0,
                 CapsuleStyle::Classic => 1,
                 CapsuleStyle::Typeless => 2,
+                CapsuleStyle::Fluid => 3,
             },
             Ordering::Relaxed,
         );
@@ -307,6 +308,7 @@ impl CapsuleWindowState {
         match self.style.load(Ordering::Relaxed) {
             1 => CapsuleStyle::Classic,
             2 => CapsuleStyle::Typeless,
+            3 => CapsuleStyle::Fluid,
             _ => CapsuleStyle::Siri,
         }
     }

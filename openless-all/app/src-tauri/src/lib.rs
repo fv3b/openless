@@ -3340,12 +3340,14 @@ fn capsule_window_bounds_for_style(style: types::CapsuleStyle) -> CapsuleWindowB
         // 见 CapsuleStyles.css 与 src/lib/capsuleLayout.ts。
         width: match style {
             types::CapsuleStyle::Typeless => 206.0,
+            types::CapsuleStyle::Fluid => 560.0,
             types::CapsuleStyle::Siri | types::CapsuleStyle::Classic => 460.0,
         },
         height: match style {
             types::CapsuleStyle::Siri => 180.0,
             types::CapsuleStyle::Classic => 100.0,
             types::CapsuleStyle::Typeless => 57.0,
+            types::CapsuleStyle::Fluid => 420.0,
         },
         bottom_inset: 0.0,
     }
