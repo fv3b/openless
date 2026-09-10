@@ -872,6 +872,55 @@ fn keyring_entry_for(account: &str) -> Result<keyring::Entry> {
         .context("open system credential vault")
 }
 
+/// macOS 用现代 SecItem API 访问凭据条目。
+///
+/// keyring crate 的 macOS 后端走已废弃的 SecKeychainFindGenericPassword 老 API，
+/// 其 ACL 判定与 SecItemCopyMatching 不同：即使条目 ACL 已含本签名身份也会弹
+/// 「OpenLess 想要访问你的钥匙串」授权框（重编后每次必弹）。SecItem API 按
+/// designated requirement（证书指纹）判定，一次「始终允许」后长期有效。
+const SEC_ERR_ITEM_NOT_FOUND: i32 = -25300;
+
+#[cfg(target_os = "macos")]
+fn secitem_get_password(account: &str) -> Result<Option<String>> {
+    match security_framework::passwords::get_generic_password(
+        CredentialsVault::SERVICE_NAME,
+        account,
+    ) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .context("decode system credential vault payload"),
+        Err(e) if e.code() == SEC_ERR_ITEM_NOT_FOUND => Ok(None),
+        Err(e) => {
+            Err(anyhow!(e)).with_context(|| format!("read system credential vault {account}"))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn secitem_set_password(account: &str, value: &str) -> Result<()> {
+    security_framework::passwords::set_generic_password(
+        CredentialsVault::SERVICE_NAME,
+        account,
+        value.as_bytes(),
+    )
+    .map_err(|e| anyhow!(e))
+    .with_context(|| format!("write system credential vault {account}"))
+}
+
+#[cfg(target_os = "macos")]
+fn secitem_delete_password(account: &str) -> Result<()> {
+    match security_framework::passwords::delete_generic_password(
+        CredentialsVault::SERVICE_NAME,
+        account,
+    ) {
+        Ok(()) => Ok(()),
+        Err(e) if e.code() == SEC_ERR_ITEM_NOT_FOUND => Ok(()),
+        Err(e) => {
+            Err(anyhow!(e)).with_context(|| format!("delete system credential vault {account}"))
+        }
+    }
+}
+
 #[cfg(target_os = "android")]
 fn android_credentials_path() -> Result<PathBuf> {
     let files_dir = crate::android::jni::android::app_files_dir()
@@ -1263,7 +1312,11 @@ fn get_keyring_password(account: &str) -> Result<Option<String>> {
             }
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        return secitem_get_password(account);
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         match keyring_entry_for(account)?.get_password() {
             Ok(value) => Ok(Some(value)),
@@ -1277,12 +1330,34 @@ fn get_keyring_password(account: &str) -> Result<Option<String>> {
 
 #[cfg(not(target_os = "android"))]
 fn delete_keyring_password(account: &str) {
-    match keyring_entry_for(account).and_then(|entry| {
-        entry
-            .delete_credential()
-            .with_context(|| format!("delete system credential vault {account}"))
-    }) {
-        Ok(()) | Err(_) => {}
+    #[cfg(target_os = "macos")]
+    {
+        let _ = secitem_delete_password(account);
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match keyring_entry_for(account).and_then(|entry| {
+            entry
+                .delete_credential()
+                .with_context(|| format!("delete system credential vault {account}"))
+        }) {
+            Ok(()) | Err(_) => {}
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn vault_set_password(account: &str, value: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        return secitem_set_password(account, value);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        keyring_entry_for(account)?
+            .set_password(value)
+            .with_context(|| format!("write system credential vault {account}"))
     }
 }
 
@@ -1492,7 +1567,61 @@ fn load_credentials_for_update() -> Result<CredsRoot> {
     Ok(root)
 }
 
+/// 开发明模式：标记文件存在时，凭据读写只走本地 JSON 文件，完全不碰系统凭据库。
+/// 背景：本地重编的二进制哈希每次都变，钥匙串「始终允许」授权按二进制哈希记录，
+/// 每次重编都会弹 ACL 弹窗，对「改代码→重编→运行」的开发循环无解。生产构建
+/// （无标记文件）不受影响，仍走系统凭据库。
+#[cfg(not(target_os = "android"))]
+fn plaintext_creds_mode() -> bool {
+    credentials_path()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(".dev-plaintext-creds")))
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "android"))]
+fn load_credentials_plaintext() -> CredsRoot {
+    let root = credentials_path()
+        .ok()
+        .and_then(|p| read_legacy_credentials_file(&p))
+        .unwrap_or_default();
+    store_credentials_cache(&root);
+    root
+}
+
+/// 重建钥匙串凭据条目：读旧值（当前二进制的身份已在条目 ACL，静默）→ 删除被
+/// 污染 ACL 的旧条目 → 以当前 App 为创建者重新写入（创建者隐式授权）。用于把
+/// 历史上被 SecurityAgent 记录为二进制哈希级授权的条目换成创建者隐式授权。
+#[cfg(not(target_os = "android"))]
+fn vault_rebuild_if_requested() {
+    let Ok(flag) = std::env::var("OPENLESS_VAULT_REBUILD") else {
+        return;
+    };
+    if flag != "1" {
+        return;
+    }
+    log::info!("[vault] OPENLESS_VAULT_REBUILD=1 → 读旧值→删旧条目→写回重建");
+    match load_keyring_credentials() {
+        Ok(Some(root)) => {
+            delete_keyring_password(KEYRING_CREDENTIALS_ACCOUNT);
+            delete_keyring_password(&chunk_account(None, 0));
+            delete_keyring_password(&chunk_account(None, 1));
+            match save_credentials(&root) {
+                Ok(()) => log::info!("[vault] 条目重建完成，数据已保留"),
+                Err(e) => log::warn!("[vault] 条目重建写回失败: {e:#}"),
+            }
+        }
+        Ok(None) => log::info!("[vault] 无旧条目可重建，跳过"),
+        Err(e) => log::warn!("[vault] 旧条目不可读，跳过重建以防误删: {e:#}"),
+    }
+}
+
 fn load_credentials_raw() -> CredsRoot {
+    if plaintext_creds_mode() {
+        return load_credentials_plaintext();
+    }
+    vault_rebuild_if_requested();
     if let Some(cached) = credentials_cache().lock().as_ref().cloned() {
         return cached;
     }
@@ -1517,6 +1646,9 @@ fn load_credentials_raw() -> CredsRoot {
 }
 
 fn load_credentials_for_update_raw() -> Result<CredsRoot> {
+    if plaintext_creds_mode() {
+        return Ok(load_credentials_plaintext());
+    }
     if let Some(cached) = credentials_cache().lock().as_ref().cloned() {
         return Ok(cached);
     }
@@ -1565,6 +1697,16 @@ fn save_credentials(root: &CredsRoot) -> Result<()> {
     }
     let cleaned = cleaned;
 
+    #[cfg(not(target_os = "android"))]
+    if plaintext_creds_mode() {
+        let json = serde_json::to_string(&cleaned).context("encode credentials failed")?;
+        let path = credentials_path().context("resolve plaintext credentials path")?;
+        super::atomic_write(&path, json.as_bytes())
+            .with_context(|| format!("write plaintext credentials {}", path.display()))?;
+        store_credentials_cache(&cleaned);
+        return Ok(());
+    }
+
     #[cfg(target_os = "android")]
     {
         save_android_credentials(&cleaned)?;
@@ -1577,7 +1719,9 @@ fn save_credentials(root: &CredsRoot) -> Result<()> {
         let json = serde_json::to_string(&cleaned).context("encode credentials failed")?;
         // Updating this stable item keeps the user's authorization attached to it.
         // Do not recreate entries or rewrite/delete legacy chunks on each save.
-        set_keyring_password(KEYRING_SINGLE_CREDENTIALS_ACCOUNT, &json)?;
+        // vault_set_password 在 macOS 走 SecItem API（keyring crate 的老 API 会在
+        // 重编后每次弹 ACL 授权框，见本文件 SecItem 说明）。
+        vault_set_password(KEYRING_SINGLE_CREDENTIALS_ACCOUNT, &json)?;
         store_credentials_cache(&cleaned);
         remove_legacy_credentials_file_best_effort();
         return Ok(());
@@ -1596,8 +1740,7 @@ fn save_credentials(root: &CredsRoot) -> Result<()> {
         // names remain stable; this format is retained for bounded platform stores.
         for (index, chunk) in chunks.iter().enumerate() {
             let account = chunk_account(None, index);
-            keyring_entry_for(&account)?
-                .set_password(chunk)
+            vault_set_password(&account, chunk)
                 .with_context(|| format!("write system credential vault chunk {index}"))?;
         }
 
@@ -1609,8 +1752,7 @@ fn save_credentials(root: &CredsRoot) -> Result<()> {
         };
         let manifest_json =
             serde_json::to_string(&manifest).context("encode credential manifest failed")?;
-        keyring_entry()?
-            .set_password(&manifest_json)
+        vault_set_password(KEYRING_CREDENTIALS_ACCOUNT, &manifest_json)
             .context("write system credential vault manifest")?;
 
         // 清理旧 chunks：
