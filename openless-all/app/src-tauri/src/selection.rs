@@ -537,7 +537,10 @@ fn activate_app_by_pid(pid: i32) {
         if app.is_null() {
             return;
         }
-        let _: () = msg_send![app, activateWithOptions: 1u64]; // IgnoringOtherApps
+        // activateWithOptions: 返回 BOOL（type code 'B'）；objc2 的 exception 校验
+        // 会按返回值编码验证，声明成 ()（'v'）会在运行时 panic
+        //（"expected return to have type code 'B', but found 'v'"）。
+        let _: bool = msg_send![app, activateWithOptions: 1u64]; // IgnoringOtherApps
     }
 }
 
