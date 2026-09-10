@@ -19,7 +19,7 @@
 9. 纯净模式一键关：FluidSession 不创建，完全退化为上游纯听写。
 10. 历史轻量扩展（记命中注入/选中动作）。
 11. fork 跟上游：改动做成新增模块＋旧文件仅 8 处加法式小改；**同步上游一律 rebase（2026-09-10 用户拍板，弃 merge）**——把我们的提交重放到上游新基之上，`git diff 上游..我们的分支` 永远只含我们自己的差异（当前 35 文件），上游更新再大也不进我们的提交序列；推送用 SSH（HTTPS 的 gh token 无 workflow scope，会因 ci.yml 被拒）。每个里程碑后 rebase 一次上游 beta 验证冲突面。
-12. Fluid 作为第三种胶囊样式（capsuleStyle='fluid'，样式驱动接管浮框；上游后来加的 typeless 与之并列，四样式共存）。
+12. Fluid 作为第三种胶囊样式（capsuleStyle='fluid'，样式驱动接管浮框；上游后来加的 typeless 与之并列，四样式共存）。**显示名定为「Typeset 流式浮框」（2026-09-11 用户拍板，历经 Fluid→翰林/秘书/Waitless 多轮讨论后两段式定名）**：显示名分两段——前段专名管身份（Typeset＝现场排字成版，暗合 assembled_text 拼装），后段管形态（流式浮框）；英文 Typeset 与上游 Typeless 在设置列表对仗。仅改 8 门语言 i18n 的 capsuleStyleFluid 值，内部代号 fluid（serde 值/窗口路由/文件名）全部不动。
 13. MLX 改为可选 feature（`--features mlx` 才启用）：本地 MLX 识别是可选增强，默认构建不编 MLX 依赖；下轮 rebase 遇到相关冲突时不得把这套 feature 门控消掉。
 
 ## 对上游的真实认知（读码实证）
@@ -101,7 +101,9 @@
 
 ## 里程碑与验证
 
-- **M1 浮框＋流式展示＋自动贴**（转写流）：fluid 窗口＋FluidPanel 主文本流＋FluidSession 骨架（Accumulator＋segmenter）＋stop 替换 final_text＋渐隐。验证：说话→浮框实时出字；松开→文本进光标；贴后 ~3 秒渐隐；segmenter 单测（中英标点/长度阈值/无标点长句）。
+## 里程碑与验证
+
+- **M1 浮框＋流式展示＋自动贴**（转写流）：fluid 窗口＋FluidPanel 主文本流＋FluidSession 骨架（Accumulator＋segmenter）＋stop 替换 final_text。✅ 已完成（2026-09-10，ff9a50c0）。两点与原计划不同：①「贴后渐隐」按用户拍板改为「停止即收起，仅兜底 toast 短暂显示」；②stop 替换放在简繁转换**之前**（原计划在转换之后）——这样转换与纠错规则仍作用于最终插入文本，比原位更正确。验证实况：Raw 门控生效（会话窗口零 LLM 调用）、`[fluid] stop` 拼装替换 16 字、远程全链路 RC=0；「说话实时出字」受当前智谱批量 ASR 限制为降级形态（停止后一次性出全文，见 ASR 现实节）。观测通道：文件日志默认 info，设 `OPENLESS_LOG_LEVEL=debug` 放行 debug 探针（src-tauri lib.rs 加法改动）。
 - **M2 增量润色＋口头命令＋动作系统**（含管理页；置 Raw 切换在此步上）。验证：浮框文本从转写切为润色段；「删掉上一句」生效且最终文本无该句无命令词；说已列动作名→高亮→松开动作块在文末；管理页 CRUD＋重启持久化；切 style pack 后段润风格跟随。
 - **M3 注入系统＋自动沉淀**。验证：配置触发词后说到即命中、文末出附注块；未配置重复项目出沉淀提示、保存后下次生效；管理页 CRUD。
 - **M4 主题建议＋纯净模式＋历史扩展**。验证：建议区节流更新且不可触发动作；纯净模式一键退化纯听写；历史展示命中注入/选中动作；旧 history.json 兼容不报错。

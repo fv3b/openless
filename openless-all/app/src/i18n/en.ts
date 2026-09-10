@@ -1081,7 +1081,7 @@ export const en: typeof zhCN = {
       capsuleStyleLabel: 'Capsule style',
       capsuleStyleSiri: 'Shimmer Siri style',
       capsuleStyleClassic: 'OpenLess default style',
-      capsuleStyleFluid: 'Fluid floating panel',
+      capsuleStyleFluid: 'Typeset floating panel',
       muteDuringRecordingLabel: 'Mute while recording',
       muteDuringRecordingDesc:
         'Temporarily mute system output during voice input to avoid speaker echo.',
