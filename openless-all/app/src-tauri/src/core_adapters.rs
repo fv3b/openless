@@ -2855,7 +2855,7 @@ impl TauriTextInsertionSession {
     }
 
     async fn insert_final(&self, text: String) -> Result<InsertOutcome, BackendError> {
-        log::info!("[insert] insert_final: entered ({} chars)", text.chars().count());
+        log::debug!("[insert] insert_final: entered ({} chars)", text.chars().count());
         if let Err(error) = self.restore_insertion_target() {
             log::warn!("[insert] restore_insertion_target failed: {error}");
             // 原目标不可用时只复制，不能向当前焦点粘贴或发送按键。
@@ -2930,13 +2930,13 @@ impl TauriTextInsertionSession {
         {
             let restore = self.context.insertion.restore_clipboard_after_paste;
             let shortcut = self.context.insertion.paste_shortcut;
-            log::info!("[insert] restore ok, submitting spawn_blocking v3 ({} chars)", text.chars().count());
+            log::debug!("[insert] restore ok, submitting spawn_blocking v3 ({} chars)", text.chars().count());
             tauri::async_runtime::spawn_blocking(move || {
-                log::info!("[insert] spawn_blocking closure: running TextInserter.insert");
+                log::debug!("[insert] spawn_blocking closure: running TextInserter.insert");
                 let status = map_insert_status(
                     crate::insertion::TextInserter::new().insert(&text, restore, shortcut),
                 );
-                log::info!("[insert] spawn_blocking closure: done");
+                log::debug!("[insert] spawn_blocking closure: done");
                 status
             })
             .await

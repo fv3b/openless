@@ -5,7 +5,7 @@ import {
   type BackendEvent,
   type TranscriptViewState,
 } from '../lib/backendEvent';
-import { fluidPanelActionFor, shouldUseFluidCapsule } from '../lib/fluidCapsule';
+import { completionMessage, fluidPanelActionFor, shouldUseFluidCapsule } from '../lib/fluidCapsule';
 import { getSettings } from '../lib/ipc';
 
 /**
@@ -139,8 +139,20 @@ export function FluidPanel() {
           if (action === 'show-fallback-toast') {
             setRecording(false);
             clearTimers();
-            setNotice({ text: completionText(payload?.inserted, payload?.polishedText) });
+            setNotice({
+              text: completionMessage(payload?.inserted, (payload?.polishedText ?? '').length),
+            });
             later(() => setNotice(null), FALLBACK_TOAST_MS);
+            // 停止阶段窗口可能已被 hideNow 真隐藏；兜底提示是修订版决策 1 里唯一
+            // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。
+            void (async () => {
+              try {
+                if (!shouldUseFluidCapsule(await getSettings())) return;
+              } catch {
+                return;
+              }
+              void showPanel();
+            })();
           } else if (visibleRef.current) {
             setRecording(false);
             clearTimers();
@@ -325,15 +337,4 @@ export function FluidPanel() {
       `}</style>
     </div>
   );
-}
-
-function completionText(inserted: string | undefined, polishedText: string | undefined): string {
-  switch (inserted) {
-    case 'pasteSent':
-      return '已发送粘贴，请确认落点';
-    case 'copiedFallback':
-      return '已复制到剪贴板，请手动粘贴';
-    default:
-      return `已输入 ${(polishedText ?? '').length} 字`;
-  }
 }

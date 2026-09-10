@@ -1389,9 +1389,7 @@ fn log_vault_source_once(source: &str) {
 
 #[cfg(not(target_os = "android"))]
 fn set_keyring_password(account: &str, value: &str) -> Result<()> {
-    keyring_entry_for(account)?
-        .set_password(value)
-        .with_context(|| format!("write system credential vault {account}"))
+    vault_set_password(account, value)
 }
 
 #[cfg(any(not(target_os = "android"), test))]
@@ -1703,6 +1701,15 @@ fn save_credentials(root: &CredsRoot) -> Result<()> {
         let path = credentials_path().context("resolve plaintext credentials path")?;
         super::atomic_write(&path, json.as_bytes())
             .with_context(|| format!("write plaintext credentials {}", path.display()))?;
+        // 明文文件含全部 API key：权限收紧到 0600（目录 0700），防止备份/同步盘带走。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
         store_credentials_cache(&cleaned);
         return Ok(());
     }

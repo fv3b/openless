@@ -575,7 +575,7 @@ impl DictationEngine for PipelineDictationEngine {
             }
 
             remove_session(&sessions, session_id, &session);
-            log::info!("[engine] finish: polished done (raw={} chars, polish_failed={}), returning EngineResult", transcript.text.chars().count(), polish_failed);
+            log::debug!("[engine] finish: polished done (raw={} chars, polish_failed={}), returning EngineResult", transcript.text.chars().count(), polish_failed);
             Ok(EngineResult {
                 raw_text: transcript.text,
                 asr_transcript,
