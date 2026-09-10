@@ -5,63 +5,45 @@ import {
   type BackendEvent,
   type TranscriptViewState,
 } from '../lib/backendEvent';
-import { shouldUseFluidCapsule } from '../lib/fluidCapsule';
+import { fluidPanelActionFor, shouldUseFluidCapsule } from '../lib/fluidCapsule';
 import { getSettings } from '../lib/ipc';
 
 /**
- * fluid 浮框：听写期间的实时转写面板（M1）。
+ * fluid 浮框（M1）：说话时底部浮条实时转写，停止即收起、静默落字。
  *
- * 数据源是广播的 `backend:event`（与 Capsule 同一条通道，见 tauri_events.rs 的
- * `app.emit("backend:event")`），窗口显隐由本组件自管：
- * starting/recording → 显示；dictation_completed → 残留 3 秒后渐隐收起；
- * cancelled/failed → 立即收起。M1 只展示转写原文，最终润色文本仍走上游插入
- * 管线（不改 core 的 stop 路径）；M2 起替换为分段润色流。
+ * 收放规则见 fluidCapsule.ts 的 fluidPanelActionFor：starting/recording 显示，
+ * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
+ * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
- * 定位：当前显示器底部居中、压在胶囊光条上方。多显示器「跟随正在输入的那块屏」
- * 需要胶囊同款的 Rust 侧鼠标定位（capsule_target_monitor），留到 M2 接 Rust 编排。
+ * 布局为 M2-M4 预留：卡片是内容自适应的纵向 flex，后续动作 chips（M2）、
+ * 注入徽标（M3）、主题建议（M4）作为新 slot 插在转写区下方即可，无需改窗口。
+ * 定位沿用当前显示器底部居中；跟随光标所在屏的 Rust 编排在 M2 接入。
  */
 
-type PanelState = 'hidden' | 'live' | 'done' | 'fading';
-
 const WINDOW_WIDTH = 560;
-const WINDOW_HEIGHT = 420;
-/** 逻辑像素：浮框底边距屏幕底部的距离（胶囊光条占 ~80-140，再留间隙）。 */
-const BOTTOM_OFFSET = 220;
-const DONE_LINGER_MS = 3000;
-const FADE_MS = 300;
+const CARD_WIDTH = 520;
+const CARD_GAP = 18;
+const FALLBACK_TOAST_MS = 2500;
+const LEVEL_BARS = [0.45, 0.7, 1, 0.7, 0.45];
 
-interface DictationCompletedPayload {
-  polishedText?: string;
-  inserted?: string;
-}
-
-function completionMessage(payload: DictationCompletedPayload | undefined): string {
-  const chars = payload?.polishedText?.length ?? 0;
-  switch (payload?.inserted) {
-    case 'pasteSent':
-      return '已发送粘贴，请确认';
-    case 'copiedFallback':
-      return '已复制，请手动粘贴';
-    case 'notRequested':
-      return '处理完成';
-    case 'inserted':
-    default:
-      return `已输入 ${chars} 字`;
-  }
+interface FallbackNotice {
+  text: string;
 }
 
 export function FluidPanel() {
-  const [state, setState] = useState<PanelState>('hidden');
+  const [visible, setVisible] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [level, setLevel] = useState(0);
   const [text, setText] = useState('');
-  const [doneMessage, setDoneMessage] = useState('');
-  const stateRef = useRef<PanelState>('hidden');
+  const [notice, setNotice] = useState<FallbackNotice | null>(null);
+  const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
   const timersRef = useRef<number[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  const setPanelState = (next: PanelState) => {
-    stateRef.current = next;
-    setState(next);
+  const setPanelVisible = (next: boolean) => {
+    visibleRef.current = next;
+    setVisible(next);
   };
 
   const clearTimers = () => {
@@ -80,7 +62,7 @@ export function FluidPanel() {
     } catch (error) {
       console.warn('[fluid] hide failed', error);
     }
-    setPanelState('hidden');
+    setPanelVisible(false);
   };
 
   const showPanel = async () => {
@@ -94,12 +76,12 @@ export function FluidPanel() {
       if (monitor) {
         const scale = monitor.scaleFactor;
         const x = monitor.position.x + (monitor.size.width - WINDOW_WIDTH * scale) / 2;
-        const y =
-          monitor.position.y +
-          monitor.size.height -
-          WINDOW_HEIGHT * scale -
-          BOTTOM_OFFSET * scale;
-        await win.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)));
+        await win.setPosition(
+          new PhysicalPosition(
+            Math.round(x),
+            Math.round(monitor.position.y + monitor.size.height - 440 * scale),
+          ),
+        );
       }
       await win.show();
     } catch (error) {
@@ -115,44 +97,56 @@ export function FluidPanel() {
       const { listen } = await import('@tauri-apps/api/event');
       const handle = await listen<BackendEvent>('backend:event', event => {
         const e = event.payload;
-        // 转写缓冲：内部按会话过滤，starting 自动重置（见 backendEvent.ts）。
         const next = applyTranscriptEvent(transcriptRef.current, e);
         transcriptRef.current = next;
         setText(next.text);
 
         if (e.kind.type === 'dictation_state_changed') {
-          const payload = e.kind.payload as { phase?: string } | undefined;
+          const payload = e.kind.payload as
+            | { phase?: string; level?: number }
+            | undefined;
           const phase = payload?.phase;
-          if (phase === 'starting' || phase === 'recording') {
-            // Fluid 样式门：仅在胶囊样式选为 fluid 时才接管浮框；否则保持隐藏，
-            // 完全走原版胶囊（Siri/Classic）。样式切换在设置页，这里会话开始时实时读。
+          if (phase === 'starting') {
+            setRecording(false);
+          } else if (phase === 'recording') {
+            setRecording(true);
+            const raw = payload?.level;
+            setLevel(typeof raw === 'number' && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0);
+          }
+          if (!visibleRef.current && (phase === 'starting' || phase === 'recording')) {
             void (async () => {
               try {
                 if (!shouldUseFluidCapsule(await getSettings())) return;
               } catch {
-                return; // 读 prefs 失败：保守不接管，模板保持隐藏
+                return;
               }
               clearTimers();
-              setDoneMessage('');
-              setPanelState('live');
+              setNotice(null);
+              setPanelVisible(true);
               void showPanel();
             })();
-          } else if (phase === 'cancelled' || phase === 'failed') {
+          }
+          const action = fluidPanelActionFor(phase);
+          if (visibleRef.current && action === 'hide') {
+            setRecording(false);
             clearTimers();
+            setNotice(null);
             void hideNow();
-          } else if (phase === 'idle') {
-            // 守卫：没走到 done 就回 idle 的异常路径，短暂延迟后收起。
-            if (stateRef.current === 'live') {
-              later(() => void hideNow(), 600);
-            }
           }
         } else if (e.kind.type === 'dictation_completed') {
-          const payload = e.kind.payload as DictationCompletedPayload | undefined;
-          clearTimers();
-          setDoneMessage(completionMessage(payload));
-          setPanelState('done');
-          later(() => setPanelState('fading'), DONE_LINGER_MS);
-          later(() => void hideNow(), DONE_LINGER_MS + FADE_MS);
+          const payload = e.kind.payload as { inserted?: string; polishedText?: string } | undefined;
+          const action = fluidPanelActionFor('completed', payload?.inserted);
+          if (action === 'show-fallback-toast') {
+            setRecording(false);
+            clearTimers();
+            setNotice({ text: completionText(payload?.inserted, payload?.polishedText) });
+            later(() => setNotice(null), FALLBACK_TOAST_MS);
+          } else if (visibleRef.current) {
+            setRecording(false);
+            clearTimers();
+            setNotice(null);
+            void hideNow();
+          }
         }
       });
       if (cancelled) handle();
@@ -165,38 +159,181 @@ export function FluidPanel() {
     };
   }, []);
 
-  // 新文本到达时贴底滚动（M1 全量跟随；用户上翻查看时再考虑停在用户位置）。
+  // 新文本到达时贴底滚动；用户上翻查看时停在原位。
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [text]);
-
-  if (state === 'hidden') return null;
 
   return (
     <div
-      className="h-screen w-screen p-3"
-      style={{ opacity: state === 'fading' ? 0 : 1, transition: `opacity ${FADE_MS}ms ease` }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        padding: CARD_GAP,
+        pointerEvents: 'none',
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif',
+      }}
     >
-      <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/75 shadow-2xl backdrop-blur-xl">
-        <div className="flex items-center gap-2 px-4 py-2.5">
-          <span
-            className={`h-2 w-2 rounded-full ${state === 'live' ? 'animate-pulse bg-red-500' : 'bg-emerald-400'}`}
-          />
-          <span className="text-xs font-medium text-white/70">
-            {state === 'live' ? '语音输入中' : doneMessage}
-          </span>
+      {notice ? (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: '8px 16px',
+            borderRadius: 999,
+            background: 'rgba(24, 26, 32, 0.92)',
+            border: '1px solid rgba(255, 255, 255, 0.12)',
+            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
+            color: '#f4f4f5',
+            fontSize: 13,
+            fontWeight: 500,
+            letterSpacing: '0.01em',
+          }}
+        >
+          {notice.text}
         </div>
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-4">
-          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-white/90">
-            {text}
-            {state === 'live' && text ? <span className="animate-pulse">▌</span> : null}
-          </p>
-          {state === 'live' && !text ? (
-            <p className="text-sm text-white/40">正在聆听…</p>
-          ) : null}
+      ) : null}
+      {visible ? (
+        <div
+          style={{
+            width: CARD_WIDTH,
+            maxHeight: 340,
+            display: 'flex',
+            flexDirection: 'column',
+            borderRadius: 20,
+            background: 'rgba(19, 21, 26, 0.88)',
+            border: '1px solid rgba(255, 255, 255, 0.09)',
+            boxShadow: '0 18px 50px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255,255,255,0.06) inset',
+            backdropFilter: 'blur(28px) saturate(1.4)',
+            WebkitBackdropFilter: 'blur(28px) saturate(1.4)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 16px 8px',
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: recording ? '#60a5fa' : '#34d399',
+                boxShadow: recording ? '0 0 10px rgba(96, 165, 250, 0.7)' : 'none',
+                animation: recording ? 'fluidPulse 1.4s ease-in-out infinite' : undefined,
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: '#a1a1aa',
+                letterSpacing: '0.04em',
+              }}
+            >
+              {recording ? '语音输入中' : '正在准备'}
+            </span>
+            <div style={{ flex: 1 }} />
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-end',
+                gap: 3,
+                height: 16,
+              }}
+            >
+              {LEVEL_BARS.map((factor, i) => {
+                const h = recording ? 3 + Math.round(level * 13 * factor) : 2;
+                return (
+                  <span
+                    key={i}
+                    style={{
+                      width: 3,
+                      height: h,
+                      borderRadius: 2,
+                      background: recording && level > 0.02 ? '#60a5fa' : 'rgba(255,255,255,0.18)',
+                      transition: 'height 120ms ease, background 240ms ease',
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+          <div
+            ref={scrollRef}
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              padding: '2px 16px 14px',
+            }}
+          >
+            <p
+              style={{
+                margin: 0,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: 15,
+                lineHeight: 1.7,
+                color: '#fafafa',
+              }}
+            >
+              {text}
+              {recording ? (
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 2,
+                    height: 16,
+                    marginLeft: 2,
+                    verticalAlign: '-2px',
+                    background: '#60a5fa',
+                    animation: 'fluidCaret 1s step-end infinite',
+                  }}
+                />
+              ) : null}
+            </p>
+            {recording && !text ? (
+              <p style={{ margin: 0, fontSize: 13, color: 'rgba(250,250,250,0.35)' }}>
+                正在聆听…
+              </p>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
+      <style>{`
+        @keyframes fluidPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
+        }
+        @keyframes fluidCaret {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
+        }
+      `}</style>
     </div>
   );
+}
+
+function completionText(inserted: string | undefined, polishedText: string | undefined): string {
+  switch (inserted) {
+    case 'pasteSent':
+      return '已发送粘贴，请确认落点';
+    case 'copiedFallback':
+      return '已复制到剪贴板，请手动粘贴';
+    default:
+      return `已输入 ${(polishedText ?? '').length} 字`;
+  }
 }

@@ -22,3 +22,30 @@ export function shouldUseFluidCapsule(
 ): boolean {
   return prefs?.capsuleStyle === 'fluid';
 }
+
+export type FluidPanelAction = 'show' | 'hide' | 'show-fallback-toast';
+
+/**
+ * 浮框收放规则（事件驱动，纯函数）：
+ * starting/recording → show，实时转写流；
+ * transcribing/polishing/inserting → hide，停止键已按下，落字期间不打扰；
+ * completed → hide，字已落进光标就是最好的回执；仅剪贴板兜底（copiedFallback）
+ *   与粘贴确认（pasteSent）需要用户动手，用最小 toast 提示；
+ * cancelled/failed/idle/未知 → hide，异常路径一律静默收起。
+ */
+export function fluidPanelActionFor(
+  phase: string | null | undefined,
+  inserted?: string | null,
+): FluidPanelAction {
+  switch (phase) {
+    case 'starting':
+    case 'recording':
+      return 'show';
+    case 'completed':
+      return inserted === 'copiedFallback' || inserted === 'pasteSent'
+        ? 'show-fallback-toast'
+        : 'hide';
+    default:
+      return 'hide';
+  }
+}
