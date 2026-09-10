@@ -1368,6 +1368,8 @@ struct MutableState {
     dictation_translation_requested: Option<bool>,
     credentials: CredentialsStatus,
     transcripts: HashMap<SessionId, crate::types::TranscriptAccumulator>,
+    /// 活跃会话的 Fluid 层缓冲（仅 fluid 激活时创建；生命周期同 transcripts）。
+    fluid_sessions: HashMap<SessionId, crate::fluid::session::FluidSession>,
     silence_monitor: Option<SilenceMonitor>,
 }
 
@@ -1780,6 +1782,11 @@ impl EngineProgressSink for BackendEngineProgress {
                     .entry(session_id)
                     .or_default()
                     .apply(&delta)?;
+                if let Some(fluid) = state.fluid_sessions.get_mut(&session_id) {
+                    if let Err(error) = fluid.feed(&delta) {
+                        log::debug!("[fluid] feed failed: {error}");
+                    }
+                }
                 drop(state);
                 self.events
                     .publish(Some(session_id), BackendEventKind::TranscriptDelta(delta));
@@ -2238,6 +2245,7 @@ impl OpenLessBackend {
                 dictation_translation_requested: None,
                 credentials: CredentialsStatus::default(),
                 transcripts: HashMap::new(),
+                fluid_sessions: HashMap::new(),
                 silence_monitor: None,
             })),
             phase_changed: Arc::new(tokio::sync::Notify::new()),
@@ -3097,6 +3105,7 @@ impl OpenLessBackend {
             state.dictation_context = None;
             state.silence_monitor = None;
             state.transcripts.clear();
+            state.fluid_sessions.clear();
             self.phase_changed.notify_waiters();
             active_session
         };
@@ -4732,6 +4741,24 @@ impl OpenLessBackend {
                 Some(requested) => Arc::new(context.with_translation_requested(requested)),
                 None => context,
             };
+            // Fluid 层激活（M1 由胶囊样式驱动）：非翻译会话置 Raw——
+            // 松开后不重润整段、不逐字流式插入，最终文本来自 FluidSession 拼装。
+            let fluid_active = !context.polish.translation_active
+                && self.preferences.get().capsule_style == crate::shared_types::CapsuleStyle::Fluid;
+            let context = if fluid_active {
+                let mut raw_context = (*context).clone();
+                raw_context.polish.mode = crate::types::PolishMode::Raw;
+                raw_context.polish.style_system_prompt =
+                    crate::style_packs::default_style_system_prompt_for_mode(
+                        crate::types::PolishMode::Raw,
+                    );
+                state
+                    .fluid_sessions
+                    .insert(session_id, crate::fluid::session::FluidSession::new());
+                Arc::new(raw_context)
+            } else {
+                context
+            };
             state.silence_monitor = context.recording.silence_after_ms.map(|silence_ms| {
                 let started_at = std::time::Instant::now();
                 SilenceMonitor {
@@ -5128,6 +5155,22 @@ impl OpenLessBackend {
         }
 
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
+        // Fluid 激活时最终文本取自 FluidSession 拼装缓冲（M2 起含命令剥离等）；
+        // 仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
+        let fluid_assembled = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            state
+                .fluid_sessions
+                .get(&session_id)
+                .map(|session| session.assembled_text())
+        };
+        if let Some(assembled) = fluid_assembled.filter(|text| !text.is_empty()) {
+            log::debug!(
+                "[fluid] stop: assembled text replaces polish output ({} chars)",
+                assembled.chars().count()
+            );
+            engine_result.polished_text = assembled;
+        }
         engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
             &engine_result.polished_text,
             context.polish.chinese_script_preference,
@@ -5467,6 +5510,7 @@ impl OpenLessBackend {
         state.dictation_context = None;
         state.silence_monitor = None;
         state.transcripts.remove(&session_id);
+        state.fluid_sessions.remove(&session_id);
         hotkey.terminal(std::time::Instant::now());
         self.phase_changed.notify_waiters();
         drop(state);
@@ -5631,6 +5675,7 @@ impl OpenLessBackend {
             state.dictation_context = None;
             state.silence_monitor = None;
             state.transcripts.remove(&active);
+            state.fluid_sessions.remove(&active);
             self.phase_changed.notify_waiters();
             active
         };
@@ -9447,6 +9492,49 @@ mod tests {
                 .code,
             BackendErrorCode::InvalidState
         );
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn fluid_active_session_skips_polish_and_inserts_assembled_text() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-fluid-assembled-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let transcription = crate::testing::FixtureTranscriptionEngine::successful("raw", 125);
+        let recorder = crate::AudioRecorderRouter::new(
+            Arc::new(crate::testing::FixtureAudioRecorder::new(
+                Vec::new(),
+                Vec::new(),
+            )),
+            crate::ExternalAudioRecorder::default(),
+        );
+        let engine = crate::PipelineDictationEngine::new(
+            Arc::new(recorder),
+            Arc::new(transcription.clone()),
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        );
+        let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        backend
+            .feed_external_pcm(session_id, &[1, 0, 2, 0])
+            .unwrap();
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        // fluid 激活置 Raw：润色器不参与，最终文本是拼装缓冲（去首尾空白）。
+        assert_eq!(result.raw_text, "raw");
+        assert_eq!(result.polished_text, "raw");
+
+        // 会话结束后 fluid 会话已随 reset 清理。
+        let state = backend.state.read().expect("backend state lock poisoned");
+        assert!(state.fluid_sessions.is_empty());
+        drop(state);
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

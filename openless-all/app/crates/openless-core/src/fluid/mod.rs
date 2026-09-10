@@ -5,3 +5,4 @@
 //! [`crate::fluid::session::FluidSession`]，见实施计划。
 
 pub mod segmenter;
+pub mod session;

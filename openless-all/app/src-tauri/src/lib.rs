@@ -1677,8 +1677,14 @@ pub(crate) fn init_file_logger() {
         .open(&log_file)
     {
         Ok(file) => {
-            loggers.push(WriteLogger::new(LevelFilter::Info, config, file));
-            eprintln!("[logger] file logger ready path={}", log_file.display());
+            // 文件日志级别默认 Info；设 OPENLESS_LOG_LEVEL=debug 可在文件里
+            // 放出 debug 探针（fluid 命令剥离、offset 锁定等靠它观测）。
+            let file_level = std::env::var("OPENLESS_LOG_LEVEL")
+                .ok()
+                .and_then(|value| value.parse::<log::LevelFilter>().ok())
+                .unwrap_or(LevelFilter::Info);
+            loggers.push(WriteLogger::new(file_level, config, file));
+            eprintln!("[logger] file logger ready path={} level={file_level}", log_file.display());
         }
         Err(e) => {
             eprintln!(
