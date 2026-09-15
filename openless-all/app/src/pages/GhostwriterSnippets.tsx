@@ -1,4 +1,4 @@
-// FluidSnippets.tsx — 「常用语」管理页。
+// GhostwriterSnippets.tsx — 「常用语」管理页。
 // 触发词/别名 → 表述文本的库：说话中说到触发词即按贴位生效（inline 进正文 / footnote 附在文末）。
 // 骨架照 Style.tsx 简化：PageHeader + Card 列表 + 右侧编辑抽屉 + dirty 确认保护。
 
@@ -6,11 +6,11 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  createFluidSnippet,
-  deleteFluidSnippet,
-  listFluidSnippets,
-  saveFluidSnippet,
-  setFluidSnippetEnabled,
+  createGhostwriterSnippet,
+  deleteGhostwriterSnippet,
+  listGhostwriterSnippets,
+  saveGhostwriterSnippet,
+  setGhostwriterSnippetEnabled,
 } from '../lib/ipc';
 import type { Snippet, SnippetMode } from '../lib/types';
 import { Btn, Card, PageHeader, Pill } from './_atoms';
@@ -31,8 +31,8 @@ const BLANK_SNIPPET: Snippet = {
 };
 
 const MODE_LABEL_KEYS: Record<SnippetMode, string> = {
-  inline: 'fluid.snippets.modeInline',
-  footnote: 'fluid.snippets.modeFootnote',
+  inline: 'ghostwriter.snippets.modeInline',
+  footnote: 'ghostwriter.snippets.modeFootnote',
 };
 
 function cloneSnippet(snippet: Snippet): Snippet {
@@ -58,7 +58,7 @@ function parseAliases(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function FluidSnippets() {
+export function GhostwriterSnippets() {
   const { t } = useTranslation();
   const mobile = useMobileLayout();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
@@ -98,10 +98,10 @@ export function FluidSnippets() {
   const loadSnippets = async () => {
     setBusy('loading');
     try {
-      const list = await listFluidSnippets();
+      const list = await listGhostwriterSnippets();
       setSnippets(list);
     } catch (loadError) {
-      showSaveStatus('failed', t('fluid.snippets.loadFailed', { error: String(loadError) }));
+      showSaveStatus('failed', t('ghostwriter.snippets.loadFailed', { error: String(loadError) }));
     } finally {
       setBusy(null);
     }
@@ -131,7 +131,7 @@ export function FluidSnippets() {
 
   // dirty 保护照 Style.tsx：关闭抽屉前若未保存，弹确认丢弃。
   const closeEditor = () => {
-    if (dirty && !window.confirm(t('fluid.snippets.discardConfirm'))) return;
+    if (dirty && !window.confirm(t('ghostwriter.snippets.discardConfirm'))) return;
     setDraft(null);
     setBaseline(null);
   };
@@ -159,12 +159,12 @@ export function FluidSnippets() {
     const trigger = draft.trigger.trim();
     if (!trigger) return;
     setBusy('saving');
-    showSaveStatus('saving', t('fluid.snippets.saving'));
+    showSaveStatus('saving', t('ghostwriter.snippets.saving'));
     try {
       const saved = draftIsNew
-        ? await createFluidSnippet({ ...draft, id: '', trigger })
-        : await saveFluidSnippet({ ...draft, trigger });
-      const list = await listFluidSnippets();
+        ? await createGhostwriterSnippet({ ...draft, id: '', trigger })
+        : await saveGhostwriterSnippet({ ...draft, trigger });
+      const list = await listGhostwriterSnippets();
       setSnippets(list);
       // 保存期间用户可能已关掉抽屉（或切到别的条目）：只对齐仍指向同一条的草稿。
       setDraft((current) => (current && current.id === draft.id ? cloneSnippet(saved) : current));
@@ -172,9 +172,9 @@ export function FluidSnippets() {
         current && current.id === draft.id ? cloneSnippet(saved) : current,
       );
       setDraftIsNew(false);
-      showSaveStatus('saved', t('fluid.snippets.saved'), true);
+      showSaveStatus('saved', t('ghostwriter.snippets.saved'), true);
     } catch (saveError) {
-      showSaveStatus('failed', t('fluid.snippets.saveFailed', { error: String(saveError) }));
+      showSaveStatus('failed', t('ghostwriter.snippets.saveFailed', { error: String(saveError) }));
     } finally {
       setBusy(null);
     }
@@ -187,28 +187,28 @@ export function FluidSnippets() {
       prev.map((item) => (item.id === snippet.id ? { ...item, enabled: next } : item)),
     );
     try {
-      await setFluidSnippetEnabled(snippet.id, next);
+      await setGhostwriterSnippetEnabled(snippet.id, next);
     } catch (toggleError) {
       setSnippets((prev) =>
         prev.map((item) => (item.id === snippet.id ? { ...item, enabled: snippet.enabled } : item)),
       );
-      showSaveStatus('failed', t('fluid.snippets.updateFailed', { error: String(toggleError) }));
+      showSaveStatus('failed', t('ghostwriter.snippets.updateFailed', { error: String(toggleError) }));
     }
   };
 
   const handleDelete = async (snippet: Snippet) => {
-    if (!window.confirm(t('fluid.snippets.deleteConfirm', { name: snippet.trigger }))) return;
+    if (!window.confirm(t('ghostwriter.snippets.deleteConfirm', { name: snippet.trigger }))) return;
     setBusy('deleting');
     try {
-      await deleteFluidSnippet(snippet.id);
+      await deleteGhostwriterSnippet(snippet.id);
       setSnippets((prev) => prev.filter((item) => item.id !== snippet.id));
       if (draft && draft.id === snippet.id) {
         setDraft(null);
         setBaseline(null);
       }
-      showSaveStatus('saved', t('fluid.snippets.deleted'), true);
+      showSaveStatus('saved', t('ghostwriter.snippets.deleted'), true);
     } catch (deleteError) {
-      showSaveStatus('failed', t('fluid.snippets.deleteFailed', { error: String(deleteError) }));
+      showSaveStatus('failed', t('ghostwriter.snippets.deleteFailed', { error: String(deleteError) }));
     } finally {
       setBusy(null);
     }
@@ -219,9 +219,9 @@ export function FluidSnippets() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <PageHeader
-        kicker={t('fluid.snippets.kicker')}
-        title={t('fluid.snippets.title')}
-        desc={t('fluid.snippets.desc')}
+        kicker={t('ghostwriter.snippets.kicker')}
+        title={t('ghostwriter.snippets.title')}
+        desc={t('ghostwriter.snippets.desc')}
         right={
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Btn
@@ -230,10 +230,10 @@ export function FluidSnippets() {
               onClick={() => void loadSnippets()}
               disabled={busy === 'loading'}
             >
-              {t('fluid.snippets.refresh')}
+              {t('ghostwriter.snippets.refresh')}
             </Btn>
             <Btn variant="primary" icon="plus" onClick={startCreate} disabled={busy === 'loading'}>
-              {t('fluid.snippets.create')}
+              {t('ghostwriter.snippets.create')}
             </Btn>
           </div>
         }
@@ -263,15 +263,15 @@ export function FluidSnippets() {
           }}
         >
           <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
-            {t('fluid.snippets.listTitle')}
+            {t('ghostwriter.snippets.listTitle')}
           </div>
-          <Pill tone="outline">{t('fluid.snippets.listCount', { count: snippets.length })}</Pill>
+          <Pill tone="outline">{t('ghostwriter.snippets.listCount', { count: snippets.length })}</Pill>
         </div>
 
         <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>
           {busy === 'loading' && snippets.length === 0 ? (
             <div style={{ padding: 24, fontSize: 12, color: 'var(--ol-ink-4)' }}>
-              {t('fluid.snippets.loading')}
+              {t('ghostwriter.snippets.loading')}
             </div>
           ) : snippets.length === 0 ? (
             <div
@@ -299,10 +299,10 @@ export function FluidSnippets() {
                 <Icon name="tag" size={24} />
               </div>
               <div style={{ fontSize: 13, color: 'var(--ol-ink-3)', lineHeight: 1.6 }}>
-                {t('fluid.snippets.emptyTitle')}
+                {t('ghostwriter.snippets.emptyTitle')}
               </div>
               <Btn variant="primary" icon="plus" onClick={startCreate}>
-                {t('fluid.snippets.create')}
+                {t('ghostwriter.snippets.create')}
               </Btn>
             </div>
           ) : (
@@ -344,7 +344,7 @@ export function FluidSnippets() {
                     </Pill>
                     {!snippet.enabled && (
                       <Pill tone="outline" size="sm">
-                        {t('fluid.snippets.disabledBadge')}
+                        {t('ghostwriter.snippets.disabledBadge')}
                       </Pill>
                     )}
                   </div>
@@ -368,8 +368,8 @@ export function FluidSnippets() {
                     event.stopPropagation();
                     openEditor(snippet);
                   }}
-                  aria-label={t('fluid.snippets.edit')}
-                  title={t('fluid.snippets.edit')}
+                  aria-label={t('ghostwriter.snippets.edit')}
+                  title={t('ghostwriter.snippets.edit')}
                   style={{
                     width: 30,
                     height: 30,
@@ -393,8 +393,8 @@ export function FluidSnippets() {
                     void handleDelete(snippet);
                   }}
                   disabled={busy === 'deleting'}
-                  aria-label={t('fluid.snippets.delete')}
-                  title={t('fluid.snippets.delete')}
+                  aria-label={t('ghostwriter.snippets.delete')}
+                  title={t('ghostwriter.snippets.delete')}
                   style={{
                     width: 30,
                     height: 30,
@@ -445,7 +445,7 @@ export function FluidSnippets() {
             <motion.div
               role="dialog"
               aria-modal="true"
-              aria-label={draftIsNew ? t('fluid.snippets.createTitle') : t('fluid.snippets.editTitle')}
+              aria-label={draftIsNew ? t('ghostwriter.snippets.createTitle') : t('ghostwriter.snippets.editTitle')}
               initial={{ x: '100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: '100%', opacity: 0 }}
@@ -492,14 +492,14 @@ export function FluidSnippets() {
                       style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
                     >
                       <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                        {draftIsNew ? t('fluid.snippets.createTitle') : t('fluid.snippets.editTitle')}
+                        {draftIsNew ? t('ghostwriter.snippets.createTitle') : t('ghostwriter.snippets.editTitle')}
                       </div>
-                      {dirty && <Pill tone="outline">{t('fluid.snippets.unsavedBadge')}</Pill>}
+                      {dirty && <Pill tone="outline">{t('ghostwriter.snippets.unsavedBadge')}</Pill>}
                     </div>
                     <button
                       type="button"
                       onClick={closeEditor}
-                      aria-label={t('fluid.snippets.close')}
+                      aria-label={t('ghostwriter.snippets.close')}
                       style={{
                         width: 28,
                         height: 28,
@@ -530,22 +530,22 @@ export function FluidSnippets() {
                 >
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('fluid.snippets.trigger')}
+                      {t('ghostwriter.snippets.trigger')}
                     </span>
                     <input
                       value={draft.trigger}
                       onChange={(event) => patchDraft({ trigger: event.target.value })}
                       style={inputStyle}
-                      placeholder={t('fluid.snippets.triggerPlaceholder')}
+                      placeholder={t('ghostwriter.snippets.triggerPlaceholder')}
                     />
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      {t('fluid.snippets.triggerHint')}
+                      {t('ghostwriter.snippets.triggerHint')}
                     </span>
                   </label>
 
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('fluid.snippets.aliases')}
+                      {t('ghostwriter.snippets.aliases')}
                     </span>
                     <input
                       value={draft.aliases.join(', ')}
@@ -553,28 +553,28 @@ export function FluidSnippets() {
                         patchDraft({ aliases: parseAliases(event.target.value) })
                       }
                       style={inputStyle}
-                      placeholder={t('fluid.snippets.aliasesPlaceholder')}
+                      placeholder={t('ghostwriter.snippets.aliasesPlaceholder')}
                     />
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      {t('fluid.snippets.aliasesHint')}
+                      {t('ghostwriter.snippets.aliasesHint')}
                     </span>
                   </label>
 
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('fluid.snippets.text')}
+                      {t('ghostwriter.snippets.text')}
                     </span>
                     <textarea
                       value={draft.text}
                       onChange={(event) => patchDraft({ text: event.target.value })}
                       style={{ ...textareaStyle, minHeight: 110 }}
-                      placeholder={t('fluid.snippets.textPlaceholder')}
+                      placeholder={t('ghostwriter.snippets.textPlaceholder')}
                     />
                   </label>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('fluid.snippets.modeLabel')}
+                      {t('ghostwriter.snippets.modeLabel')}
                     </span>
                     <div
                       style={{
@@ -588,8 +588,8 @@ export function FluidSnippets() {
                     >
                       {(
                         [
-                          ['inline', t('fluid.snippets.modeInline')],
-                          ['footnote', t('fluid.snippets.modeFootnote')],
+                          ['inline', t('ghostwriter.snippets.modeInline')],
+                          ['footnote', t('ghostwriter.snippets.modeFootnote')],
                         ] as const
                       ).map(([value, label]) => {
                         const active = draft.mode === value;
@@ -617,7 +617,7 @@ export function FluidSnippets() {
                       })}
                     </div>
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      {t('fluid.snippets.modeHint')}
+                      {t('ghostwriter.snippets.modeHint')}
                     </span>
                   </div>
 
@@ -630,7 +630,7 @@ export function FluidSnippets() {
                     }}
                   >
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('fluid.snippets.enabled')}
+                      {t('ghostwriter.snippets.enabled')}
                     </span>
                     <Toggle on={draft.enabled} onToggle={(next) => patchDraft({ enabled: next })} />
                   </div>
@@ -650,7 +650,7 @@ export function FluidSnippets() {
                       onClick={discardDraftChanges}
                       disabled={!dirty}
                     >
-                      {t('fluid.snippets.cancelChanges')}
+                      {t('ghostwriter.snippets.cancelChanges')}
                     </Btn>
                     <Btn
                       variant="blue"
@@ -658,7 +658,7 @@ export function FluidSnippets() {
                       onClick={() => void handleSave()}
                       disabled={!dirty || triggerMissing || busy === 'saving'}
                     >
-                      {busy === 'saving' ? t('fluid.snippets.saving') : t('fluid.snippets.save')}
+                      {busy === 'saving' ? t('ghostwriter.snippets.saving') : t('ghostwriter.snippets.save')}
                     </Btn>
                   </div>
                 </div>

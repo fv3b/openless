@@ -157,8 +157,8 @@ pub struct DictationContext {
     pub omni: ProviderInvocation,
     pub polish: DictationPolishContext,
     pub insertion: DictationInsertionContext,
-    /// capture 时从 preferences 冻结的 Fluid 开关快照。
-    pub fluid: crate::fluid::types::FluidSnapshot,
+    /// capture 时从 preferences 冻结的 Ghostwriter 开关快照。
+    pub ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot,
 }
 
 impl Default for DictationContext {
@@ -299,8 +299,8 @@ impl DictationContext {
                 allow_non_tsf_fallback: preferences.allow_non_tsf_insertion_fallback,
                 android_insert_strategy: preferences.android_insert_strategy,
             },
-            fluid: crate::fluid::types::FluidSnapshot {
-                polish_enabled: preferences.fluid.polish_enabled,
+            ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot {
+                polish_enabled: preferences.ghostwriter.polish_enabled,
                 active: preferences.capsule_style == CapsuleStyle::Fluid,
             },
         }

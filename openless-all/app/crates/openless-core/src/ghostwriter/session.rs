@@ -1,4 +1,4 @@
-//! FluidSession：一次听写会话的流式缓冲、段润色对齐与最终拼装。
+//! GhostwriterSession：一次听写会话的流式缓冲、段润色对齐与最终拼装。
 //!
 //! 自适应缓冲：不依赖 [`TranscriptAccumulator`]（绝对替换位语义，
 //! 会把火山/讯飞的后缀增量 partial 拼碎），自持完整缓冲文本，
@@ -10,7 +10,7 @@
 //! 说话中缓冲始终是完整累计文本，segmenter 断句可用。
 //! M2：新完成段产出 [`PolishableSegment`]（已润前文尾部＋待融材料随段转移），
 //! 命中扫描 trigger/aliases（会话内去重，撤销后可再生效），
-//! [`FluidSession::assembled_text`] 是指令预览与最终贴出的唯一同源拼装。
+//! [`GhostwriterSession::assembled_text`] 是指令预览与最终贴出的唯一同源拼装。
 
 use std::collections::HashSet;
 
@@ -19,9 +19,9 @@ use crate::types::TranscriptDelta;
 
 use super::segmenter::{Segment, Segmenter};
 use super::snippet_store::{Snippet, SnippetMode};
-use super::types::FluidSnippetHit;
+use super::types::GhostwriterSnippetHit;
 
-pub use super::types::{FeedOutcome, FluidConfig, PolishableSegment};
+pub use super::types::{FeedOutcome, GhostwriterConfig, PolishableSegment};
 
 /// 无标点尾巴的硬切阈值（字符数）：ASR 长时间不出标点时按长度断段。
 const DEFAULT_MAX_FORCE_CHARS: usize = 120;
@@ -32,7 +32,7 @@ const PRIOR_MAX_CHARS: usize = 200;
 /// 一条已生效且未撤销的命中：附注块、待融材料与会话内去重的共同依据。
 #[derive(Debug, Clone)]
 struct ActiveHit {
-    hit: FluidSnippetHit,
+    hit: GhostwriterSnippetHit,
     /// 命中时刻的常用语全量文本（附注行与 inline 材料共用）。
     text: String,
     /// inline 命中（材料进待融队列）；false＝footnote（全量文本进附注块）。
@@ -41,7 +41,7 @@ struct ActiveHit {
     material_pending: bool,
 }
 
-pub struct FluidSession {
+pub struct GhostwriterSession {
     /// 说话中的完整累计文本（自适应缓冲）。
     buffer: String,
     /// 最近一次 partial 应用后缓冲的字符长度。
@@ -53,7 +53,7 @@ pub struct FluidSession {
     polished: Vec<Option<String>>,
     /// 尾巴补润结果；None＝拼装回落尾巴原文。
     tail_polished: Option<String>,
-    config: FluidConfig,
+    config: GhostwriterConfig,
     revision: u64,
     /// 已生效未撤销的命中（按生效顺序），同时是 snippet_id 去重依据。
     active_hits: Vec<ActiveHit>,
@@ -69,14 +69,14 @@ pub struct FluidSession {
     tail_polished_covered: usize,
 }
 
-impl Default for FluidSession {
+impl Default for GhostwriterSession {
     fn default() -> Self {
-        Self::new(FluidConfig::default())
+        Self::new(GhostwriterConfig::default())
     }
 }
 
-impl FluidSession {
-    pub fn new(config: FluidConfig) -> Self {
+impl GhostwriterSession {
+    pub fn new(config: GhostwriterConfig) -> Self {
         Self {
             buffer: String::new(),
             last_partial_len: 0,
@@ -160,7 +160,7 @@ impl FluidSession {
         new_hits.extend(self.scan_hits(&tail_increment, snippets, !rewritten));
         if !new_segments.is_empty() {
             log::debug!(
-                "[fluid] segmenter: {} segment(s) completed (buffer={} chars)",
+                "[ghostwriter] segmenter: {} segment(s) completed (buffer={} chars)",
                 new_segments.len(),
                 text.chars().count()
             );
@@ -219,7 +219,7 @@ impl FluidSession {
         text: &str,
         snippets: &[Snippet],
         allow_cancelled: bool,
-    ) -> Vec<FluidSnippetHit> {
+    ) -> Vec<GhostwriterSnippetHit> {
         let mut hits = Vec::new();
         if text.is_empty() {
             return hits;
@@ -241,7 +241,7 @@ impl FluidSession {
                 SnippetMode::Inline => "inline",
                 SnippetMode::Footnote => "footnote",
             };
-            let hit = FluidSnippetHit {
+            let hit = GhostwriterSnippetHit {
                 snippet_id: snippet.id.clone(),
                 title: snippet.trigger.clone(),
                 mode: mode.to_string(),
@@ -332,7 +332,7 @@ impl FluidSession {
     /// 同会话再次说到可重新生效。成功撤销推进修订号（后端权威：机械模式
     /// 没有 apply_* 可增，撤销是预览前进的唯一推手），调用方据此发布
     /// 撤销后的预览并让前端丢弃在途旧预览。返回被撤销者供事件确认。
-    pub fn cancel_last_hit(&mut self) -> Option<FluidSnippetHit> {
+    pub fn cancel_last_hit(&mut self) -> Option<GhostwriterSnippetHit> {
         let active = self.active_hits.pop()?;
         self.cancelled_once.insert(active.hit.snippet_id.clone());
         if active.inline && active.material_pending {
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn suffix_partial_deltas_accumulate_and_final_replaces() {
         // 后缀增量型 provider（火山/讯飞实测形态）：partial 全部 offset:0
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         s.feed(&delta("你好", 0, false), &[]).unwrap();
         s.feed(&delta("，", 0, false), &[]).unwrap();
         assert_eq!(s.debug_buffer(), "你好，");
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn full_snapshot_partial_deltas_replace_not_append() {
         // 全量快照型 partial：text 是累计全文
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         s.feed(&delta("你好", 0, false), &[]).unwrap();
         s.feed(&delta("你好，", 0, false), &[]).unwrap();
         assert_eq!(s.debug_text(), "你好，");
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn offset_revision_still_replaces() {
         // 替换式修订（offset>0）语义保留
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         s.feed(&delta("ABC", 0, false), &[]).unwrap();
         s.feed(&delta("X", 1, false), &[]).unwrap();
         assert_eq!(s.debug_text(), "AX");
@@ -494,14 +494,14 @@ mod tests {
 
     #[test]
     fn rejects_offset_beyond_the_buffer() {
-        let mut session = FluidSession::new(FluidConfig::default());
+        let mut session = GhostwriterSession::new(GhostwriterConfig::default());
         let error = session.feed(&delta("越界", 5, false), &[]).unwrap_err();
         assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
     }
 
     #[test]
     fn collects_completed_segments_from_the_buffer() {
-        let mut session = FluidSession::new(FluidConfig::default());
+        let mut session = GhostwriterSession::new(GhostwriterConfig::default());
         session.feed(&delta("第一句。第二句还没说完", 0, false), &[]).unwrap();
         assert_eq!(session.segments().len(), 1);
         assert_eq!(session.segments()[0].text, "第一句。");
@@ -514,14 +514,14 @@ mod tests {
 
     #[test]
     fn empty_session_assembles_to_empty() {
-        let session = FluidSession::new(FluidConfig::default());
+        let session = GhostwriterSession::new(GhostwriterConfig::default());
         assert!(session.is_empty());
         assert_eq!(session.assembled_text(), "");
     }
 
     #[test]
     fn assembled_text_trims_surrounding_whitespace() {
-        let mut session = FluidSession::new(FluidConfig::default());
+        let mut session = GhostwriterSession::new(GhostwriterConfig::default());
         session.feed(&delta("  两边空白  ", 0, true), &[]).unwrap();
         assert_eq!(session.assembled_text(), "两边空白");
     }
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn feed_emits_segments_with_prior_and_materials() {
         // inline 常用语「翻译」随段命中：材料随 PolishableSegment 转移，待融队列清空
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let snippets = vec![snip("s1", "翻译", SnippetMode::Inline)];
         let outcome = s
             .feed(&delta("你好，帮我翻译一下。请", 0, false), &snippets)
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn foot_note_hit_records_once_and_dedupes() {
         // 同 snippet 说到两次 → new_hits 只第一次；附注块只拼一条
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let snippet = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         let outcome = s
@@ -590,7 +590,7 @@ mod tests {
     fn alias_match_fires_hit_case_folded() {
         // 别名分支：trigger 未出现，别名 "fy" 以大写形式出现在文本里 → 大小写折叠命中；
         // 机械模式下 inline 材料照常追加在生转写后
-        let mut s = FluidSession::new(FluidConfig { polish_enabled: false });
+        let mut s = GhostwriterSession::new(GhostwriterConfig { polish_enabled: false });
         let mut snippet = snip("s-fy", "翻译", SnippetMode::Inline);
         snippet.aliases = vec!["fy".to_string()];
         let material = snippet.text.clone();
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn alias_match_skips_blank_and_tolerates_surrounding_space() {
         // 别名容错：空串不得通配命中；两侧空白经 trim 折叠后命中
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let mut snippet = snip("s-alias", "翻译", SnippetMode::Inline);
         snippet.aliases = vec![" a ".to_string(), String::new(), "  b  ".to_string()];
         let snippets = vec![snippet];
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn assembled_joins_polished_with_fallback_and_footnote_block() {
         // 两段：第 1 段已润、第 2 段未润回落原文；附注块格式「- 标题：文本」
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let snippet = snip("f1", "标记", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句原文。标记一下然后", 0, false), &snippets)
@@ -639,8 +639,8 @@ mod tests {
     #[test]
     fn mechanical_mode_skips_segments_but_keeps_hits_and_inline_append() {
         // 机械模式：不产 PolishableSegment；inline 材料追加在生转写后；footnote 照拼
-        let config = FluidConfig { polish_enabled: false };
-        let mut s = FluidSession::new(config);
+        let config = GhostwriterConfig { polish_enabled: false };
+        let mut s = GhostwriterSession::new(config);
         let inline = snip("s1", "翻译", SnippetMode::Inline);
         let footnote = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![inline.clone(), footnote.clone()];
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn cancel_last_hit_removes_latest_and_allows_re_hit() {
         // footnote：撤销后附注块消失，同 snippet 再说到 → 再次生效
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let snippet = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
@@ -685,7 +685,7 @@ mod tests {
 
         // inline：撤销把材料从待融队列出队，预览不再追加；可再次生效。
         // 「请翻译一下」后无句末标点不产段：材料留在待融队列等尾巴补润。
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let inline = snip("s1", "翻译", SnippetMode::Inline);
         let snippets = vec![inline.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn revision_increments_on_apply_polished() {
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         s.feed(&delta("第一句。续", 0, false), &[]).unwrap();
         assert_eq!(s.revision(), 0);
         assert!(s.apply_polished(0, "第一句润好。".to_string()));
@@ -720,7 +720,7 @@ mod tests {
     fn tail_polish_input_returns_tail_with_pending_materials() {
         // 尾巴非空 → Some(尾巴, prior, 待融材料)；材料 apply 成功才出队，
         // 失败时兜底追加仍在预览生效
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         assert!(s.tail_polish_input().is_none());
         let inline = snip("s1", "翻译", SnippetMode::Inline);
         let snippets = vec![inline.clone()];
@@ -746,7 +746,7 @@ mod tests {
     fn final_rescan_does_not_resurrect_cancelled_hits() {
         // footnote：命中→撤销→final 前缀延伸含触发词 → 不复活
         // （重扫旧文不算「再说到」，规则 6 只认新话）
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let snippet = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
@@ -767,7 +767,7 @@ mod tests {
         assert!(s.assembled_text().contains(&format!("- 附注：{}", snippet.text)));
 
         // inline：撤销后 final 不把材料送回待融队列
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         let inline = snip("s1", "翻译", SnippetMode::Inline);
         let snippets = vec![inline.clone()];
         s.feed(&delta("帮我", 0, false), &snippets).unwrap();
@@ -783,7 +783,7 @@ mod tests {
         // 机械模式（apply_* 永远 false）：修订号原本永久为 0，撤销后前端会把
         // 后续 feed 预览按旧修订全部丢弃（预览冻结到会话结束）。撤销成功须由
         // 后端推进修订号；feed 路径不增号，新内容照常进预览（等号规则接受）。
-        let mut s = FluidSession::new(FluidConfig { polish_enabled: false });
+        let mut s = GhostwriterSession::new(GhostwriterConfig { polish_enabled: false });
         let snippet = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         let outcome = s
@@ -805,7 +805,7 @@ mod tests {
     fn tail_growth_after_apply_invalidates_stale_tail_polish() {
         // 尾巴长出来 → 补润 → 尾巴又长 → 预览回落新尾巴原文（不显示旧润），
         // tail_polish_input 再次可用；再次 apply 后预览显示新润色尾巴
-        let mut s = FluidSession::new(FluidConfig::default());
+        let mut s = GhostwriterSession::new(GhostwriterConfig::default());
         s.feed(&delta("第一句。", 0, false), &[]).unwrap();
         s.feed(&delta("尾巴第一截", 0, false), &[]).unwrap();
         assert!(s.apply_tail_polished("尾巴一润".to_string()));

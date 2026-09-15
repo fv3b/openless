@@ -154,7 +154,7 @@ export const ja: typeof zhCN = {
     approved: '許可済み',
     denied: '拒否済み',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: '聞き取り中…',
       recording: '音声入力中',
@@ -225,7 +225,7 @@ export const ja: typeof zhCN = {
     },
     localAsr: 'モデル設定',
     more: 'その他',
-    fluidSnippets: '定型句',
+    ghostwriterSnippets: '定型句',
   },
   marketplace: {
     kicker: 'マーケット',
@@ -346,7 +346,7 @@ export const ja: typeof zhCN = {
       translation: '翻訳：Shift を押しながら話すと目標言語で挿入',
       selectionAsk: '選択質問：テキストを選択して音声で質問',
       settings: '環境設定：ショートカット・プロバイダー・プライバシー・更新',
-      fluidSnippets: '定型句：発話中のトリガーワードで調整済みの言い回しを呼び出す',
+      ghostwriterSnippets: '定型句：発話中のトリガーワードで調整済みの言い回しを呼び出す',
     },
     footer: {
       account: 'アカウント',
@@ -939,17 +939,17 @@ export const ja: typeof zhCN = {
       editKeywordsDesc:
         '自動判定オフ時のみ。1行1語で質問扱い。なければ？/疑問語ヒューリスティック。',
     },
-    fluid: {
-      fluidPolishEnabled: '指示の整え',
-      fluidPolishEnabledDesc:
+    ghostwriter: {
+      ghostwriterPolishEnabled: '指示の整え',
+      ghostwriterPolishEnabledDesc:
         '話しながら口語の指示を正確な言い回しに整えます。オフにするとパネルは生の書き起こしとヒット資料をそのまま貼り付けます。',
-      fluidCandidate: '候補の提案',
-      fluidCandidateDesc:
+      ghostwriterCandidate: '候補の提案',
+      ghostwriterCandidateDesc:
         '発話中にモデルがその場で示す言い回し候補。選ぶと指示プレビューに織り込まれます。',
-      fluidRecommendation: '定型句のおすすめ',
-      fluidRecommendationDesc:
+      ghostwriterRecommendation: '定型句のおすすめ',
+      ghostwriterRecommendationDesc:
         '今話している内容から、有効な定型句の中から関連するものをいくつか提案します。',
-      fluidMechanicalHint:
+      ghostwriterMechanicalHint:
         '指示の整えをオフにすると、パネルは生の書き起こしとヒット資料をそのまま貼り付けます。',
     },
     selectionPolish: {

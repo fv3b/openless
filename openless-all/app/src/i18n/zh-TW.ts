@@ -156,7 +156,7 @@ export const zhTW: typeof zhCN = {
     approved: '已允許',
     denied: '已拒絕',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: '正在聆聽…',
       recording: '語音輸入中',
@@ -227,7 +227,7 @@ export const zhTW: typeof zhCN = {
     },
     localAsr: '模型設置',
     more: '更多',
-    fluidSnippets: '常用語',
+    ghostwriterSnippets: '常用語',
   },
   marketplace: {
     kicker: '風格市場',
@@ -346,7 +346,7 @@ export const zhTW: typeof zhCN = {
       translation: '翻譯：按住 Shift 說話，譯成目標語言插入',
       selectionAsk: '劃詞追問：選取文字後語音提問',
       settings: '偏好設定：快捷鍵、提供商、隱私與更新',
-      fluidSnippets: '指令台常用語：說話中說到觸發詞，調優過的表述隨叫隨到',
+      ghostwriterSnippets: '指令台常用語：說話中說到觸發詞，調優過的表述隨叫隨到',
     },
     footer: {
       account: '賬戶',
@@ -932,14 +932,14 @@ export const zhTW: typeof zhCN = {
       previewConfirm: '預覽確認',
       previewConfirmHint: '在可編輯彈窗中核對結果，再確認覆蓋原選區。',
     },
-    fluid: {
-      fluidPolishEnabled: '指令潤色',
-      fluidPolishEnabledDesc: '說話中把口語指令整理成準確表述；關閉後浮框貼出原話並附上命中材料。',
-      fluidCandidate: '候選建議',
-      fluidCandidateDesc: '模型說話中現場給出的表述選項，點選或口頭確認後融入指令預覽。',
-      fluidRecommendation: '常用語推薦',
-      fluidRecommendationDesc: '按當前內容從已啟用的常用語中挑出相關的幾條，供你快速選用。',
-      fluidMechanicalHint: '關閉指令潤色後，浮框將貼出原話並附上命中材料。',
+    ghostwriter: {
+      ghostwriterPolishEnabled: '指令潤色',
+      ghostwriterPolishEnabledDesc: '說話中把口語指令整理成準確表述；關閉後浮框貼出原話並附上命中材料。',
+      ghostwriterCandidate: '候選建議',
+      ghostwriterCandidateDesc: '模型說話中現場給出的表述選項，點選或口頭確認後融入指令預覽。',
+      ghostwriterRecommendation: '常用語推薦',
+      ghostwriterRecommendationDesc: '按當前內容從已啟用的常用語中挑出相關的幾條，供你快速選用。',
+      ghostwriterMechanicalHint: '關閉指令潤色後，浮框將貼出原話並附上命中材料。',
     },
     kicker: '設定',
     title: '設置',

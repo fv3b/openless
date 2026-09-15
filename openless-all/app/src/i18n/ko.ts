@@ -152,7 +152,7 @@ export const ko: typeof zhCN = {
     approved: '허용됨',
     denied: '거부됨',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: '듣고 있어요…',
       recording: '음성 입력 중',
@@ -223,7 +223,7 @@ export const ko: typeof zhCN = {
     },
     localAsr: '모델 설정',
     more: '더보기',
-    fluidSnippets: '짧은 구문',
+    ghostwriterSnippets: '짧은 구문',
   },
   marketplace: {
     kicker: '마켓',
@@ -344,7 +344,7 @@ export const ko: typeof zhCN = {
       translation: '번역: Shift를 누른 채 말하면 대상 언어로 삽입',
       selectionAsk: '선택 질문: 텍스트를 선택한 뒤 음성으로 질문',
       settings: '환경설정: 단축키, 제공자, 개인정보 및 업데이트',
-      fluidSnippets: '짧은 구문: 말하는 중 트리거 단어로 다듬어 둔 표현을 불러옵니다',
+      ghostwriterSnippets: '짧은 구문: 말하는 중 트리거 단어로 다듬어 둔 표현을 불러옵니다',
     },
     footer: {
       account: '계정',
@@ -936,17 +936,17 @@ export const ko: typeof zhCN = {
       editKeywords: '추가 의문 단서',
       editKeywordsDesc: '자동 판별 끔일 때만. 한 줄에 하나면 질문. 없으면 ?/의문사 휴리스틱.',
     },
-    fluid: {
-      fluidPolishEnabled: '지시 다듬기',
-      fluidPolishEnabledDesc:
+    ghostwriter: {
+      ghostwriterPolishEnabled: '지시 다듬기',
+      ghostwriterPolishEnabledDesc:
         '말하는 동안 구어체 지시를 정확한 표현으로 다듬습니다. 끄면 패널이 원문 전사와 히트 자료를 그대로 붙여넣습니다.',
-      fluidCandidate: '후보 제안',
-      fluidCandidateDesc:
+      ghostwriterCandidate: '후보 제안',
+      ghostwriterCandidateDesc:
         '말하는 중에 모델이 제시하는 표현 후보입니다. 선택하면 지시 미리보기에 반영됩니다.',
-      fluidRecommendation: '짧은 구문 추천',
-      fluidRecommendationDesc:
+      ghostwriterRecommendation: '짧은 구문 추천',
+      ghostwriterRecommendationDesc:
         '현재 내용을 바탕으로 활성화된 짧은 구문 중 관련 있는 것을 추천합니다.',
-      fluidMechanicalHint:
+      ghostwriterMechanicalHint:
         '지시 다듬기를 끄면 패널이 원문 전사와 히트 자료를 그대로 붙여넣습니다.',
     },
     selectionPolish: {

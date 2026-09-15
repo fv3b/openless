@@ -226,7 +226,7 @@
 .ol-siri-capsule-preview > div {
   transform: scale(0.5);
 }
-/* Fluid 预览 = 真实浮框卡的迷你示意（深色卡恒定不变主题，与 pages/FluidPanel 卡面同色调）：
+/* Ghostwriter（capsuleStyle "fluid"）预览 = 真实浮框卡的迷你示意（深色卡恒定不变主题，与 pages/GhostwriterPanel 卡面同色调）：
   状态点＋预览/转写双行占位＋右侧电平条。 */
 .ol-fluid-capsule-preview {
   display: flex;

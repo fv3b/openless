@@ -163,7 +163,7 @@ export const es: typeof zhCN = {
     approved: 'Aprobado',
     denied: 'Rechazado',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: 'Escuchando…',
       recording: 'Entrada de voz',
@@ -234,7 +234,7 @@ export const es: typeof zhCN = {
     },
     localAsr: 'Modelos',
     more: 'Más',
-    fluidSnippets: 'Frases',
+    ghostwriterSnippets: 'Frases',
   },
   marketplace: {
     kicker: 'CATÁLOGO',
@@ -358,7 +358,7 @@ export const es: typeof zhCN = {
         'Traducción: mantén pulsada Mayús mientras hablas para insertar el texto en otro idioma',
       selectionAsk: 'Preguntar sobre una selección: selecciona texto y pregunta por voz',
       settings: 'Preferencias: atajos, proveedores, privacidad y actualizaciones',
-      fluidSnippets: 'Frases de instrucciones: frases afinadas que se activan con su palabra clave al hablar',
+      ghostwriterSnippets: 'Frases de instrucciones: frases afinadas que se activan con su palabra clave al hablar',
     },
     footer: {
       account: 'Cuenta',
@@ -966,17 +966,17 @@ export const es: typeof zhCN = {
       editKeywordsDesc:
         'Solo si la detección automática está desactivada. Escribe un indicador por línea para forzar Preguntar; en otros casos se usan «?» y palabras interrogativas.',
     },
-    fluid: {
-      fluidPolishEnabled: 'Pulido de instrucciones',
-      fluidPolishEnabledDesc:
+    ghostwriter: {
+      ghostwriterPolishEnabled: 'Pulido de instrucciones',
+      ghostwriterPolishEnabledDesc:
         'Convierte las instrucciones habladas en formulaciones precisas mientras hablas; desactivado, el panel inserta la transcripción literal con el material acertado adjunto.',
-      fluidCandidate: 'Sugerencias de candidatas',
-      fluidCandidateDesc:
+      ghostwriterCandidate: 'Sugerencias de candidatas',
+      ghostwriterCandidateDesc:
         'Opciones que el modelo propone en directo mientras hablas; al elegir una se incorpora a la vista previa de la instrucción.',
-      fluidRecommendation: 'Frases recomendadas',
-      fluidRecommendationDesc:
+      ghostwriterRecommendation: 'Frases recomendadas',
+      ghostwriterRecommendationDesc:
         'Frases activadas relevantes, sugeridas a partir de lo que estás diciendo ahora.',
-      fluidMechanicalHint:
+      ghostwriterMechanicalHint:
         'Con el pulido de instrucciones desactivado, el panel inserta la transcripción literal con el material acertado adjunto.',
     },
     selectionPolish: {

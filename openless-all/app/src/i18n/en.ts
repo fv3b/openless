@@ -6,7 +6,7 @@ import type { zhCN } from './zh-CN';
 
 // Type-level guarantee that en mirrors the zh-CN shape.
 export const en: typeof zhCN & {
-  fluid: { panel: { noticeInserted_one: string; noticeInserted_other: string } };
+  ghostwriter: { panel: { noticeInserted_one: string; noticeInserted_other: string } };
 } = {
   cloudSync: {
     title: 'Cloud sync',
@@ -167,7 +167,7 @@ export const en: typeof zhCN & {
     approved: 'Approved',
     denied: 'Denied',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: 'Listening…',
       recording: 'Voice input',
@@ -242,7 +242,7 @@ export const en: typeof zhCN & {
     },
     localAsr: 'Models',
     more: 'More',
-    fluidSnippets: 'Snippets',
+    ghostwriterSnippets: 'Snippets',
   },
   marketplace: {
     kicker: 'MARKETPLACE',
@@ -363,7 +363,7 @@ export const en: typeof zhCN & {
       translation: 'Translation: hold Shift while speaking to insert in a target language',
       selectionAsk: 'Selection ask: select text, then ask about it by voice',
       settings: 'Preferences: shortcuts, providers, privacy and updates',
-      fluidSnippets: 'Instruction snippets: saved phrasings fire on their trigger words while you speak',
+      ghostwriterSnippets: 'Instruction snippets: saved phrasings fire on their trigger words while you speak',
     },
     footer: {
       account: 'Account',
@@ -973,14 +973,14 @@ export const en: typeof zhCN & {
       previewConfirmHint:
         'Review the result in an editable window, then confirm to replace the original selection.',
     },
-    fluid: {
-      fluidPolishEnabled: 'Instruction polish',
-      fluidPolishEnabledDesc: 'Turns spoken instructions into precise phrasing while you speak; off, the panel inserts the raw transcript with hit material attached.',
-      fluidCandidate: 'Candidate suggestions',
-      fluidCandidateDesc: 'Options the model offers live while you speak; pick one to weave it into the instruction preview.',
-      fluidRecommendation: 'Snippet recommendations',
-      fluidRecommendationDesc: 'Relevant enabled snippets suggested from what you are saying right now.',
-      fluidMechanicalHint: 'With instruction polish off, the panel inserts the raw transcript with hit material attached.',
+    ghostwriter: {
+      ghostwriterPolishEnabled: 'Instruction polish',
+      ghostwriterPolishEnabledDesc: 'Turns spoken instructions into precise phrasing while you speak; off, the panel inserts the raw transcript with hit material attached.',
+      ghostwriterCandidate: 'Candidate suggestions',
+      ghostwriterCandidateDesc: 'Options the model offers live while you speak; pick one to weave it into the instruction preview.',
+      ghostwriterRecommendation: 'Snippet recommendations',
+      ghostwriterRecommendationDesc: 'Relevant enabled snippets suggested from what you are saying right now.',
+      ghostwriterMechanicalHint: 'With instruction polish off, the panel inserts the raw transcript with hit material attached.',
     },
     kicker: 'SETTINGS',
     title: 'Settings',

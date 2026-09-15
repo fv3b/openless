@@ -1,4 +1,4 @@
-# 语音 AI 指令台「Fluid」— 设计定稿（2026-09-11 全盘重推）
+# 语音 AI 指令台「Ghostwriter」— 设计定稿（2026-09-11 全盘重推）
 
 ## 场景与痛点
 
@@ -15,8 +15,8 @@
 ## 管线与三流机制
 
 ```
-热键按下 → 建 FluidSession（fluid 激活置 Raw 照旧）
-说话中（流式 ASR partial 实时到浮框）→ FluidSession::feed(delta)
+热键按下 → 建 GhostwriterSession（ghostwriter 激活置 Raw 照旧）
+说话中（流式 ASR partial 实时到浮框）→ GhostwriterSession::feed(delta)
   ├→ segmenter 断句
   ├→ 流1 润色流：段→指令化润色→ 润色预览流
   ├→ 流2 候选流：卡词检测→LLM 给候选（词/表述/命名）→ 浮框候选区
@@ -62,13 +62,13 @@
 ## 硬前提与客观地基（上游代码实证，非设计决策）
 
 - 候选流要求「说话中实时出字」：当前默认 ASR 源（智谱）为批量、停止才出全文，需切换流式源；上游已支持火山/讯飞等流式（`asr/volcengine.rs:704` 流式 partial → `EngineProgress::TranscriptDelta` → 前端）。
-- Raw 透传门控已存在（`dictation_engine.rs:484`）：fluid 激活置 Raw 后松开一次性贴拼装文本、不逐字漏插入、不重润整段。
+- Raw 透传门控已存在（`dictation_engine.rs:484`）：ghostwriter 激活置 Raw 后松开一次性贴拼装文本、不逐字漏插入、不重润整段。
 - 浮窗先例：capsule 静态窗口（无边框、`alwaysOnTop:true`、`focus:false` 不抢键盘）。
 - 现成模板：`style_pack_store.rs`（存储＋管理页）、`selection_voice_intent.rs`（三层意图解析）、`prompt_compose.rs`（marker 分段）、`QaPanel.tsx`（浮窗页面）。
 
 ## 已拍板偏好（历史有效拍板，继续有效）
 
-- 显示名「Ghostwriter 流式浮框」，内部代号 `fluid` 一律不动；fluid 是第四种胶囊样式（capsuleStyle，四样式共存）。
+- 显示名「Ghostwriter 流式浮框」不变；内部代号 `ghostwriter`（原代号 `fluid` 已于 2026-09-11 全局改名，勿再使用）。capsuleStyle 样式值 `"fluid"` 是样式系统的用户数据标识，不在改名范围（四样式共存）。
 - 同步上游一律 rebase（弃 merge）；推送用 SSH（HTTPS 的 gh token 无 workflow scope）。
-- 纯净模式一键关：开关关掉后 FluidSession 不创建，完全退化为上游纯听写。
+- 纯净模式一键关：开关关掉后 GhostwriterSession 不创建，完全退化为上游纯听写。
 - 历史轻量扩展：记录命中的常用语、选中的候选。

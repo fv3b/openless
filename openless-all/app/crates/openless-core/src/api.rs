@@ -1368,12 +1368,12 @@ pub(crate) struct MutableState {
     dictation_translation_requested: Option<bool>,
     credentials: CredentialsStatus,
     transcripts: HashMap<SessionId, crate::types::TranscriptAccumulator>,
-    /// 活跃会话的 Fluid 层缓冲（仅 fluid 激活时创建；生命周期同 transcripts）。
-    pub(crate) fluid_sessions: HashMap<SessionId, crate::fluid::session::FluidSession>,
-    /// 常用语存储（fluid-snippets.json；feed 时按启用项做命中扫描）。
-    fluid_snippets: crate::fluid::snippet_store::SnippetStore,
+    /// 活跃会话的 Ghostwriter 层缓冲（仅 ghostwriter 激活时创建；生命周期同 transcripts）。
+    pub(crate) ghostwriter_sessions: HashMap<SessionId, crate::ghostwriter::session::GhostwriterSession>,
+    /// 常用语存储（ghostwriter-snippets.json；feed 时按启用项做命中扫描）。
+    ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore,
     /// 段润色调度器（selection_polisher 配置了才有；段/尾润色的合回与预览发布）。
-    fluid_dispatcher: Option<Arc<crate::fluid::dispatcher::FluidPolishDispatcher>>,
+    ghostwriter_dispatcher: Option<Arc<crate::ghostwriter::dispatcher::GhostwriterPolishDispatcher>>,
     silence_monitor: Option<SilenceMonitor>,
 }
 
@@ -1781,19 +1781,19 @@ impl EngineProgressSink for BackendEngineProgress {
                     .entry(session_id)
                     .or_default()
                     .apply(&delta)?;
-                let mut fluid_dispatch = None;
-                let mut fluid_preview = None;
-                if state.fluid_sessions.contains_key(&session_id) {
-                    let snippets = state.fluid_snippets.enabled();
-                    match state.fluid_sessions.get_mut(&session_id).map(|fluid| {
-                        let outcome = fluid.feed(&delta, &snippets);
+                let mut ghostwriter_dispatch = None;
+                let mut ghostwriter_preview = None;
+                if state.ghostwriter_sessions.contains_key(&session_id) {
+                    let snippets = state.ghostwriter_snippets.enabled();
+                    match state.ghostwriter_sessions.get_mut(&session_id).map(|ghostwriter| {
+                        let outcome = ghostwriter.feed(&delta, &snippets);
                         // feed 改动了会话缓冲，指令预览（此刻贴出的完整文本）
                         // 随之变化：机械模式下这是预览事件的唯一来源，润色流
                         // 下让尾巴增长也即时反映；修订号供前端去重乱序事件。
                         outcome.map(|outcome| {
-                            let preview = crate::fluid::types::FluidPreviewChanged {
-                                text: fluid.assembled_text(),
-                                revision: fluid.revision(),
+                            let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
+                                text: ghostwriter.assembled_text(),
+                                revision: ghostwriter.revision(),
                             };
                             (outcome, preview)
                         })
@@ -1802,29 +1802,29 @@ impl EngineProgressSink for BackendEngineProgress {
                             for hit in outcome.new_hits {
                                 self.events.publish(
                                     Some(session_id),
-                                    BackendEventKind::FluidSnippetsHit(hit),
+                                    BackendEventKind::GhostwriterSnippetsHit(hit),
                                 );
                             }
                             if !outcome.new_segments.is_empty() {
-                                fluid_dispatch = state
-                                    .fluid_dispatcher
+                                ghostwriter_dispatch = state
+                                    .ghostwriter_dispatcher
                                     .clone()
                                     .map(|dispatcher| (dispatcher, outcome.new_segments));
                             }
-                            fluid_preview = Some(preview);
+                            ghostwriter_preview = Some(preview);
                         }
-                        Some(Err(error)) => log::debug!("[fluid] feed failed: {error}"),
+                        Some(Err(error)) => log::debug!("[ghostwriter] feed failed: {error}"),
                         None => {}
                     }
                 }
                 drop(state);
-                if let Some(preview) = fluid_preview {
+                if let Some(preview) = ghostwriter_preview {
                     self.events.publish(
                         Some(session_id),
-                        BackendEventKind::FluidPreviewChanged(preview),
+                        BackendEventKind::GhostwriterPreviewChanged(preview),
                     );
                 }
-                if let Some((dispatcher, segments)) = fluid_dispatch {
+                if let Some((dispatcher, segments)) = ghostwriter_dispatch {
                     dispatcher.dispatch_segments(session_id, segments);
                 }
                 self.events
@@ -2078,8 +2078,8 @@ impl OpenLessBackend {
         }
         let events = Arc::new(EventBus::new(256));
         // 段润色用 LLM 通道与 selection 共用同一 polisher：在 selection 服务
-        // 把 deps 里的 polisher take 走之前留一份给 Fluid 调度器。
-        let fluid_polisher = deps.selection_polisher.clone();
+        // 把 deps 里的 polisher take 走之前留一份给 Ghostwriter 调度器。
+        let ghostwriter_polisher = deps.selection_polisher.clone();
         let preferences_revision = Arc::new(AtomicU64::new(0));
         let style_pack_revision = Arc::new(AtomicU64::new(0));
         let history_revision = Arc::new(AtomicU64::new(0));
@@ -2282,13 +2282,13 @@ impl OpenLessBackend {
             dictation_translation_requested: None,
             credentials: CredentialsStatus::default(),
             transcripts: HashMap::new(),
-            fluid_sessions: HashMap::new(),
-            fluid_snippets: crate::fluid::snippet_store::SnippetStore::at_data_dir(&config.data_dir),
-            fluid_dispatcher: None,
+            ghostwriter_sessions: HashMap::new(),
+            ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore::at_data_dir(&config.data_dir),
+            ghostwriter_dispatcher: None,
             silence_monitor: None,
         }));
-        let fluid_dispatcher = fluid_polisher.map(|polisher| {
-            Arc::new(crate::fluid::dispatcher::FluidPolishDispatcher::new(
+        let ghostwriter_dispatcher = ghostwriter_polisher.map(|polisher| {
+            Arc::new(crate::ghostwriter::dispatcher::GhostwriterPolishDispatcher::new(
                 Arc::clone(&state),
                 Arc::clone(&events),
                 polisher,
@@ -2296,11 +2296,11 @@ impl OpenLessBackend {
                 Arc::clone(&repositories.preferences),
             ))
         });
-        if let Some(dispatcher) = fluid_dispatcher.as_ref() {
+        if let Some(dispatcher) = ghostwriter_dispatcher.as_ref() {
             state
                 .write()
                 .expect("backend state lock poisoned")
-                .fluid_dispatcher = Some(Arc::clone(dispatcher));
+                .ghostwriter_dispatcher = Some(Arc::clone(dispatcher));
         }
         Ok(Self {
             config,
@@ -3177,7 +3177,7 @@ impl OpenLessBackend {
             state.dictation_context = None;
             state.silence_monitor = None;
             state.transcripts.clear();
-            state.fluid_sessions.clear();
+            state.ghostwriter_sessions.clear();
             self.phase_changed.notify_waiters();
             active_session
         };
@@ -4813,21 +4813,21 @@ impl OpenLessBackend {
                 Some(requested) => Arc::new(context.with_translation_requested(requested)),
                 None => context,
             };
-            // Fluid 层激活（M1 由胶囊样式驱动）：非翻译会话置 Raw——
-            // 松开后不重润整段、不逐字流式插入，最终文本来自 FluidSession 拼装。
-            let fluid_active = !context.polish.translation_active
+            // Ghostwriter 层激活（M1 由胶囊样式驱动）：非翻译会话置 Raw——
+            // 松开后不重润整段、不逐字流式插入，最终文本来自 GhostwriterSession 拼装。
+            let ghostwriter_active = !context.polish.translation_active
                 && self.preferences.get().capsule_style == crate::shared_types::CapsuleStyle::Fluid;
-            let context = if fluid_active {
+            let context = if ghostwriter_active {
                 let mut raw_context = (*context).clone();
                 raw_context.polish.mode = crate::types::PolishMode::Raw;
                 raw_context.polish.style_system_prompt =
                     crate::style_packs::default_style_system_prompt_for_mode(
                         crate::types::PolishMode::Raw,
                     );
-                state.fluid_sessions.insert(
+                state.ghostwriter_sessions.insert(
                     session_id,
-                    crate::fluid::session::FluidSession::new(crate::fluid::session::FluidConfig {
-                        polish_enabled: context.fluid.polish_enabled,
+                    crate::ghostwriter::session::GhostwriterSession::new(crate::ghostwriter::session::GhostwriterConfig {
+                        polish_enabled: context.ghostwriter.polish_enabled,
                     }),
                 );
                 Arc::new(raw_context)
@@ -5230,7 +5230,7 @@ impl OpenLessBackend {
         }
 
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
-        // Fluid 激活时最终文本取自 FluidSession 拼装缓冲（含生转写、
+        // Ghostwriter 激活时最终文本取自 GhostwriterSession 拼装缓冲（含生转写、
         // 材料、附注块）；仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
         // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
         {
@@ -5238,10 +5238,10 @@ impl OpenLessBackend {
                 let state = self.state.read().expect("backend state lock poisoned");
                 (
                     state
-                        .fluid_sessions
+                        .ghostwriter_sessions
                         .get(&session_id)
                         .and_then(|session| session.tail_polish_input()),
-                    state.fluid_dispatcher.clone(),
+                    state.ghostwriter_dispatcher.clone(),
                 )
             };
             if let (Some(dispatcher), Some(segment)) = (dispatcher, tail_input) {
@@ -5249,16 +5249,16 @@ impl OpenLessBackend {
                 dispatcher.dispatch_tail(session_id, request).await;
             }
         }
-        let fluid_assembled = {
+        let ghostwriter_assembled = {
             let state = self.state.read().expect("backend state lock poisoned");
             state
-                .fluid_sessions
+                .ghostwriter_sessions
                 .get(&session_id)
                 .map(|session| session.assembled_text())
         };
-        if let Some(assembled) = fluid_assembled.filter(|text| !text.is_empty()) {
+        if let Some(assembled) = ghostwriter_assembled.filter(|text| !text.is_empty()) {
             log::debug!(
-                "[fluid] stop: assembled text replaces polish output ({} chars)",
+                "[ghostwriter] stop: assembled text replaces polish output ({} chars)",
                 assembled.chars().count()
             );
             engine_result.polished_text = assembled;
@@ -5601,7 +5601,7 @@ impl OpenLessBackend {
         state.dictation_context = None;
         state.silence_monitor = None;
         state.transcripts.remove(&session_id);
-        state.fluid_sessions.remove(&session_id);
+        state.ghostwriter_sessions.remove(&session_id);
         hotkey.terminal(std::time::Instant::now());
         self.phase_changed.notify_waiters();
         drop(state);
@@ -5763,7 +5763,7 @@ impl OpenLessBackend {
             state.dictation_context = None;
             state.silence_monitor = None;
             state.transcripts.remove(&active);
-            state.fluid_sessions.remove(&active);
+            state.ghostwriter_sessions.remove(&active);
             self.phase_changed.notify_waiters();
             active
         };
@@ -5784,19 +5784,19 @@ impl OpenLessBackend {
     /// 撤销后的指令预览事件——拼装文本与修订号在撤销的同一锁窗内读取、
     /// 锁外发布（同 feed 臂模式）。返回被撤销者与撤销后的修订号；无可撤销
     /// 的命中返回 Ok(None)。
-    pub fn cancel_fluid_last_hit(
+    pub fn cancel_ghostwriter_last_hit(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<(crate::fluid::types::FluidSnippetHit, u64)>, BackendError> {
+    ) -> Result<Option<(crate::ghostwriter::types::GhostwriterSnippetHit, u64)>, BackendError> {
         let cancelled = {
             let mut state = self.state.write().expect("backend state lock poisoned");
             ensure_active_session(&state, session_id)?;
             state
-                .fluid_sessions
+                .ghostwriter_sessions
                 .get_mut(&session_id)
                 .and_then(|session| {
                     session.cancel_last_hit().map(|hit| {
-                        let preview = crate::fluid::types::FluidPreviewChanged {
+                        let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
                             text: session.assembled_text(),
                             revision: session.revision(),
                         };
@@ -5808,7 +5808,7 @@ impl OpenLessBackend {
             let revision = preview.revision;
             self.events.publish(
                 Some(session_id),
-                BackendEventKind::FluidPreviewChanged(preview),
+                BackendEventKind::GhostwriterPreviewChanged(preview),
             );
             Ok(Some((hit, revision)))
         } else {
@@ -5817,45 +5817,45 @@ impl OpenLessBackend {
     }
 
     /// 会话当前指令预览拼装文本（撤销后前端刷新预览用；会话不存在返回 None）。
-    pub fn fluid_assembled_text(&self, session_id: SessionId) -> Option<String> {
+    pub fn ghostwriter_assembled_text(&self, session_id: SessionId) -> Option<String> {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_sessions
+            .ghostwriter_sessions
             .get(&session_id)
             .map(|session| session.assembled_text())
     }
 
     /// 常用语全量列表（存储内存态的克隆；Tauri 命令层入口）。
-    pub fn list_snippets(&self) -> Vec<crate::fluid::snippet_store::Snippet> {
+    pub fn list_snippets(&self) -> Vec<crate::ghostwriter::snippet_store::Snippet> {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_snippets
+            .ghostwriter_snippets
             .list()
     }
 
     /// 新增常用语（id 空由存储层生成；trigger 空/重复返回错误）。
     pub fn create_snippet(
         &self,
-        snippet: crate::fluid::snippet_store::Snippet,
-    ) -> Result<crate::fluid::snippet_store::Snippet, BackendError> {
+        snippet: crate::ghostwriter::snippet_store::Snippet,
+    ) -> Result<crate::ghostwriter::snippet_store::Snippet, BackendError> {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_snippets
+            .ghostwriter_snippets
             .create(snippet)
     }
 
     /// 保存常用语（按 id 覆写；id 不存在或 trigger 规则不满足返回错误）。
     pub fn save_snippet(
         &self,
-        snippet: crate::fluid::snippet_store::Snippet,
-    ) -> Result<crate::fluid::snippet_store::Snippet, BackendError> {
+        snippet: crate::ghostwriter::snippet_store::Snippet,
+    ) -> Result<crate::ghostwriter::snippet_store::Snippet, BackendError> {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_snippets
+            .ghostwriter_snippets
             .update(snippet)
     }
 
@@ -5864,7 +5864,7 @@ impl OpenLessBackend {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_snippets
+            .ghostwriter_snippets
             .remove(id)
     }
 
@@ -5873,7 +5873,7 @@ impl OpenLessBackend {
         self.state
             .read()
             .expect("backend state lock poisoned")
-            .fluid_snippets
+            .ghostwriter_snippets
             .set_enabled(id, enabled)
     }
 
@@ -9754,9 +9754,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fluid_active_session_skips_polish_and_inserts_assembled_text() {
+    async fn ghostwriter_active_session_skips_polish_and_inserts_assembled_text() {
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-fluid-assembled-{}",
+            "openless-ghostwriter-assembled-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let transcription = crate::testing::FixtureTranscriptionEngine::successful("raw", 125);
@@ -9783,20 +9783,20 @@ mod tests {
             .feed_external_pcm(session_id, &[1, 0, 2, 0])
             .unwrap();
         let result = backend.stop_dictation_session(session_id).await.unwrap();
-        // fluid 激活置 Raw：润色器不参与，最终文本是拼装缓冲（去首尾空白）。
+        // ghostwriter 激活置 Raw：润色器不参与，最终文本是拼装缓冲（去首尾空白）。
         assert_eq!(result.raw_text, "raw");
         assert_eq!(result.polished_text, "raw");
 
-        // 会话结束后 fluid 会话已随 reset 清理。
+        // 会话结束后 ghostwriter 会话已随 reset 清理。
         let state = backend.state.read().expect("backend state lock poisoned");
-        assert!(state.fluid_sessions.is_empty());
+        assert!(state.ghostwriter_sessions.is_empty());
         drop(state);
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    // ===== Fluid M2 接线（dispatcher＋feed 升级＋stop 尾段补润）=====
+    // ===== Ghostwriter M2 接线（dispatcher＋feed 升级＋stop 尾段补润）=====
 
     /// 多段转写 fixture：engine 启动时把 partials 按全量快照（offset 0）依次
     /// 注入转写流，finish 返回与累计一致的 final_text（模拟正常 ASR 终态）。
@@ -9923,7 +9923,7 @@ mod tests {
         }
     }
 
-    fn backend_with_fluid_polisher(
+    fn backend_with_ghostwriter_polisher(
         data_dir: std::path::PathBuf,
         dictation_engine: Arc<dyn DictationEngine>,
         polisher: Arc<dyn crate::ports::TextPolisher>,
@@ -9960,7 +9960,7 @@ mod tests {
         .unwrap()
     }
 
-    fn fluid_engine_with(
+    fn ghostwriter_engine_with(
         transcription: Arc<dyn crate::ports::TranscriptionEngine>,
         polisher: Arc<dyn crate::ports::TextPolisher>,
     ) -> crate::PipelineDictationEngine {
@@ -9974,13 +9974,13 @@ mod tests {
         crate::PipelineDictationEngine::new(Arc::new(recorder), transcription, polisher)
     }
 
-    fn fluid_snippet(
+    fn ghostwriter_snippet(
         id: &str,
         trigger: &str,
         text: &str,
-        mode: crate::fluid::snippet_store::SnippetMode,
-    ) -> crate::fluid::snippet_store::Snippet {
-        crate::fluid::snippet_store::Snippet {
+        mode: crate::ghostwriter::snippet_store::SnippetMode,
+    ) -> crate::ghostwriter::snippet_store::Snippet {
+        crate::ghostwriter::snippet_store::Snippet {
             id: id.to_string(),
             trigger: trigger.to_string(),
             aliases: Vec::new(),
@@ -9990,36 +9990,36 @@ mod tests {
         }
     }
 
-    fn insert_fluid_snippet(
+    fn insert_ghostwriter_snippet(
         backend: &OpenLessBackend,
-        snippet: crate::fluid::snippet_store::Snippet,
+        snippet: crate::ghostwriter::snippet_store::Snippet,
     ) {
         let state = backend.state.write().expect("backend state lock poisoned");
-        state.fluid_snippets.create(snippet).unwrap();
+        state.ghostwriter_snippets.create(snippet).unwrap();
     }
 
-    fn collect_fluid_snippet_hits(
+    fn collect_ghostwriter_snippet_hits(
         events: &mut EventSubscription,
-    ) -> Vec<crate::fluid::types::FluidSnippetHit> {
+    ) -> Vec<crate::ghostwriter::types::GhostwriterSnippetHit> {
         std::iter::from_fn(|| events.try_recv().ok())
             .filter_map(|event| match event.kind {
-                BackendEventKind::FluidSnippetsHit(hit) => Some(hit),
+                BackendEventKind::GhostwriterSnippetsHit(hit) => Some(hit),
                 _ => None,
             })
             .collect()
     }
 
-    async fn wait_for_fluid_preview(
+    async fn wait_for_ghostwriter_preview(
         events: &mut EventSubscription,
         needle: &str,
-    ) -> crate::fluid::types::FluidPreviewChanged {
+    ) -> crate::ghostwriter::types::GhostwriterPreviewChanged {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let event = tokio::time::timeout_at(deadline, events.recv())
                 .await
-                .expect("FluidPreviewChanged did not arrive in time")
+                .expect("GhostwriterPreviewChanged did not arrive in time")
                 .expect("event stream closed");
-            if let BackendEventKind::FluidPreviewChanged(payload) = event.kind {
+            if let BackendEventKind::GhostwriterPreviewChanged(payload) = event.kind {
                 if payload.text.contains(needle) {
                     return payload;
                 }
@@ -10027,15 +10027,15 @@ mod tests {
         }
     }
 
-    fn fluid_assembled(backend: &OpenLessBackend, session_id: SessionId) -> String {
+    fn ghostwriter_assembled(backend: &OpenLessBackend, session_id: SessionId) -> String {
         let state = backend.state.read().expect("backend state lock poisoned");
-        state.fluid_sessions[&session_id].assembled_text()
+        state.ghostwriter_sessions[&session_id].assembled_text()
     }
 
     #[tokio::test]
-    async fn fluid_segments_get_polished_and_preview_event_fires() {
+    async fn ghostwriter_segments_get_polished_and_preview_event_fires() {
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-fluid-polish-{}",
+            "openless-ghostwriter-polish-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
@@ -10043,11 +10043,11 @@ mod tests {
             &["第一句。", "第一句。第二句来了"],
             "第一句。第二句来了",
         ));
-        let engine = fluid_engine_with(
+        let engine = ghostwriter_engine_with(
             transcription,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
         );
-        let backend = backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
@@ -10056,7 +10056,7 @@ mod tests {
 
         let session_id = backend.start_external_dictation().await.unwrap();
         // 说话中完成的段被派润并合回：预览事件与递增修订号。
-        let preview = wait_for_fluid_preview(&mut events, "润后文本").await;
+        let preview = wait_for_ghostwriter_preview(&mut events, "润后文本").await;
         assert!(preview.revision >= 1);
         assert_eq!(preview.text, "润后文本第二句来了");
 
@@ -10066,7 +10066,7 @@ mod tests {
         assert_eq!(result.polished_text, "润后文本润后文本");
 
         let state = backend.state.read().expect("backend state lock poisoned");
-        assert!(state.fluid_sessions.is_empty());
+        assert!(state.ghostwriter_sessions.is_empty());
         drop(state);
 
         backend.shutdown().await.unwrap();
@@ -10074,9 +10074,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fluid_mechanical_mode_keeps_raw_text_and_inline_append() {
+    async fn ghostwriter_mechanical_mode_keeps_raw_text_and_inline_append() {
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-fluid-mechanical-{}",
+            "openless-ghostwriter-mechanical-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
@@ -10084,33 +10084,33 @@ mod tests {
             &["帮我翻译一下。加个附注。完毕"],
             "帮我翻译一下。加个附注。完毕",
         ));
-        let engine = fluid_engine_with(
+        let engine = ghostwriter_engine_with(
             transcription,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
         );
         let backend =
-            backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+            backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
-        preferences.fluid.polish_enabled = false;
+        preferences.ghostwriter.polish_enabled = false;
         backend.set_preferences(preferences).unwrap();
-        insert_fluid_snippet(
+        insert_ghostwriter_snippet(
             &backend,
-            fluid_snippet(
+            ghostwriter_snippet(
                 "s-inline",
                 "翻译",
                 "请把上文翻译成英文",
-                crate::fluid::snippet_store::SnippetMode::Inline,
+                crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
-        insert_fluid_snippet(
+        insert_ghostwriter_snippet(
             &backend,
-            fluid_snippet(
+            ghostwriter_snippet(
                 "f-note",
                 "附注",
                 "这里是附注的完整说明文本",
-                crate::fluid::snippet_store::SnippetMode::Footnote,
+                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
             ),
         );
         let mut events = backend.subscribe();
@@ -10134,7 +10134,7 @@ mod tests {
         // 机械模式同样发布指令预览（所见＝贴出的生转写＋材料＋附注），
         // 否则浮框预览区整个会话空转、违背所见即所贴；修订号不增（无润色
         // 应用），前端 reducer 接受等号修订、按到达顺序取最新文本。
-        let preview = wait_for_fluid_preview(&mut events, "帮我翻译一下").await;
+        let preview = wait_for_ghostwriter_preview(&mut events, "帮我翻译一下").await;
         assert!(preview.text.contains("请把上文翻译成英文"));
 
         backend.shutdown().await.unwrap();
@@ -10142,9 +10142,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fluid_hit_dedup_and_cancel_command() {
+    async fn ghostwriter_hit_dedup_and_cancel_command() {
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-fluid-cancel-{}",
+            "openless-ghostwriter-cancel-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
@@ -10152,76 +10152,76 @@ mod tests {
             &["帮我加个附注说明", "帮我加个附注说明，再提一次附注"],
             "帮我加个附注说明，再提一次附注",
         ));
-        let engine = fluid_engine_with(
+        let engine = ghostwriter_engine_with(
             transcription,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
         );
-        let backend = backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
         backend.set_preferences(preferences).unwrap();
-        insert_fluid_snippet(
+        insert_ghostwriter_snippet(
             &backend,
-            fluid_snippet(
+            ghostwriter_snippet(
                 "f-note",
                 "附注",
                 "这里是附注的完整说明文本",
-                crate::fluid::snippet_store::SnippetMode::Footnote,
+                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
             ),
         );
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
         // 同 snippet 说到两次：事件只发一次（会话内去重）。
-        let hits = collect_fluid_snippet_hits(&mut events);
+        let hits = collect_ghostwriter_snippet_hits(&mut events);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].snippet_id, "f-note");
         assert_eq!(hits[0].mode, "footnote");
 
-        let cancelled = backend.cancel_fluid_last_hit(session_id).unwrap();
+        let cancelled = backend.cancel_ghostwriter_last_hit(session_id).unwrap();
         // 撤销成功返回被撤销者与撤销后的修订号（后端权威，≥ 1）。
         let (hit, revision) = cancelled.expect("cancel should succeed");
         assert_eq!(hit.snippet_id, "f-note");
         assert_eq!(hit.mode, "footnote");
         assert!(revision >= 1);
-        assert!(!fluid_assembled(&backend, session_id).contains("[附注]"));
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("[附注]"));
         // 撤销本身不再生成命中事件。
-        assert!(collect_fluid_snippet_hits(&mut events).is_empty());
+        assert!(collect_ghostwriter_snippet_hits(&mut events).is_empty());
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[tokio::test]
-    async fn fluid_mechanical_cancel_bumps_revision_and_previews_flow_afterwards() {
+    async fn ghostwriter_mechanical_cancel_bumps_revision_and_previews_flow_afterwards() {
         // 机械模式回归：修订号曾永久为 0，撤销后 feed 预览全部被前端按旧修订
         // 丢弃（指令预览冻结在撤销快照直到会话结束）。撤销须由后端推进修订号
         // 并发布撤销后的预览，之后的 feed 预览继续流动。
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-fluid-cancel-mechanical-{}",
+            "openless-ghostwriter-cancel-mechanical-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
         let transcription = Arc::new(PumpedTranscripts::new("帮我加个附注说明，新话来了"));
-        let engine = fluid_engine_with(
+        let engine = ghostwriter_engine_with(
             Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
         );
         let backend =
-            backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+            backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
-        preferences.fluid.polish_enabled = false;
+        preferences.ghostwriter.polish_enabled = false;
         backend.set_preferences(preferences).unwrap();
-        insert_fluid_snippet(
+        insert_ghostwriter_snippet(
             &backend,
-            fluid_snippet(
+            ghostwriter_snippet(
                 "f-note",
                 "附注",
                 "这里是附注的完整说明文本",
-                crate::fluid::snippet_store::SnippetMode::Footnote,
+                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
             ),
         );
         let mut events = backend.subscribe();
@@ -10234,8 +10234,8 @@ mod tests {
         let mut first = None;
         while let Some(event) = events.try_recv().ok() {
             match event.kind {
-                BackendEventKind::FluidSnippetsHit(hit) => hits.push(hit),
-                BackendEventKind::FluidPreviewChanged(preview) => first = Some(preview),
+                BackendEventKind::GhostwriterSnippetsHit(hit) => hits.push(hit),
+                BackendEventKind::GhostwriterPreviewChanged(preview) => first = Some(preview),
                 _ => {}
             }
         }
@@ -10247,19 +10247,19 @@ mod tests {
 
         // 撤销：后端权威修订号 +1，并发布撤销后的预览事件（无附注）。
         let (hit, revision) = backend
-            .cancel_fluid_last_hit(session_id)
+            .cancel_ghostwriter_last_hit(session_id)
             .unwrap()
             .expect("cancel should succeed");
         assert_eq!(hit.snippet_id, "f-note");
         assert!(revision >= 1);
-        let cancel_preview = wait_for_fluid_preview(&mut events, "帮我加个附注说明").await;
+        let cancel_preview = wait_for_ghostwriter_preview(&mut events, "帮我加个附注说明").await;
         assert_eq!(cancel_preview.revision, revision);
         assert!(!cancel_preview.text.contains("[附注]"));
 
         // 撤销后再喂新内容：预览事件继续流动（feed 路径不增号，修订号保持，
         // 前端按等号规则接受）——旧实现里这里是冻住的撤销快照。
         transcription.pump("，新话来了");
-        let later = wait_for_fluid_preview(&mut events, "新话来了").await;
+        let later = wait_for_ghostwriter_preview(&mut events, "新话来了").await;
         assert_eq!(later.revision, revision);
         assert!(later.text.contains("新话来了"));
         assert!(!later.text.contains("[附注]"));

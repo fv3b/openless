@@ -163,7 +163,7 @@ export const fr: typeof zhCN = {
     approved: 'Approuvé',
     denied: 'Refusé',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: 'Écoute en cours…',
       recording: 'Saisie vocale',
@@ -234,7 +234,7 @@ export const fr: typeof zhCN = {
     },
     localAsr: 'Modèles',
     more: 'Plus',
-    fluidSnippets: 'Formules',
+    ghostwriterSnippets: 'Formules',
   },
   marketplace: {
     kicker: 'CATALOGUE',
@@ -361,7 +361,7 @@ export const fr: typeof zhCN = {
       selectionAsk:
         'Questions sur la sélection : sélectionnez du texte, puis posez une question à voix haute',
       settings: 'Préférences : raccourcis, fournisseurs, confidentialité et mises à jour',
-      fluidSnippets:
+      ghostwriterSnippets:
         'Formules : des formulations peaufinées se déclenchent sur leur mot-clé pendant que vous parlez',
     },
     footer: {
@@ -979,17 +979,17 @@ export const fr: typeof zhCN = {
       editKeywordsDesc:
         'Uniquement lorsque la détection automatique est désactivée. Un indice par ligne force le mode Question ; sinon, « ? » et les mots interrogatifs servent d’indices.',
     },
-    fluid: {
-      fluidPolishEnabled: 'Polissage des instructions',
-      fluidPolishEnabledDesc:
+    ghostwriter: {
+      ghostwriterPolishEnabled: 'Polissage des instructions',
+      ghostwriterPolishEnabledDesc:
         'Transforme les instructions dictées en formulations précises pendant que vous parlez ; désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
-      fluidCandidate: 'Suggestions de candidates',
-      fluidCandidateDesc:
+      ghostwriterCandidate: 'Suggestions de candidates',
+      ghostwriterCandidateDesc:
         'Options proposées en direct par le modèle pendant que vous parlez ; choisissez-en une pour l’intégrer à l’aperçu de l’instruction.',
-      fluidRecommendation: 'Formules recommandées',
-      fluidRecommendationDesc:
+      ghostwriterRecommendation: 'Formules recommandées',
+      ghostwriterRecommendationDesc:
         'Formules activées pertinentes, suggérées à partir de ce que vous êtes en train de dire.',
-      fluidMechanicalHint:
+      ghostwriterMechanicalHint:
         'Avec le polissage des instructions désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
     },
     selectionPolish: {

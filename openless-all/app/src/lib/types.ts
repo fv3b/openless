@@ -327,8 +327,8 @@ export interface StylePackRuntimeDiagnostics {
   previewOmitsFrontApp: boolean;
 }
 
-/** Fluid 层（Ghostwriter 流式浮框）三流开关＋节流参数；与 Core FluidPreferences 对齐。 */
-export interface FluidPreferences {
+/** Ghostwriter 层（Ghostwriter 流式浮框）三流开关＋节流参数；与 Core GhostwriterPreferences 对齐。 */
+export interface GhostwriterPreferences {
   /** 润色流开关（指令化）；关闭 = 机械模式（贴原话＋附命中材料）。 */
   polishEnabled: boolean;
   /** 候选流开关（M3 消费，仅 UI 存储）。 */
@@ -353,8 +353,9 @@ export interface UserPreferences {
   showCapsule: boolean;
   /** 录音胶囊外观；保存后同步到胶囊窗口。 */
   capsuleStyle: CapsuleStyle;
-  /** Fluid 层三流开关＋节流参数；旧配置缺字段时后端整体回落默认（全开＋2000ms）。 */
-  fluid: FluidPreferences;
+  /** Ghostwriter 层三流开关＋节流参数；旧配置缺字段时后端整体回落默认（全开＋2000ms），
+   * 历史配置的旧键 `fluid` 由后端 serde alias 继续可读。 */
+  ghostwriter: GhostwriterPreferences;
   /** 录音期间临时静音系统输出，停止/取消/出错后恢复原静音状态。 */
   muteDuringRecording: boolean;
   /** 按下录音热键进入 recording 状态时，播放一段合成提示音提醒「已开始录音」。

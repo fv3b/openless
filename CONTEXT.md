@@ -1,6 +1,6 @@
-# OpenLess Fluid
+# OpenLess Ghostwriter
 
-OpenLess fork 上的「Ghostwriter 流式浮框」层：语音给 AI 下指令的指令台——把口语流水账整理成 AI 能一次听懂的指令，卡词时帮你说清，调优过的好说法随叫随到。本档只收 Fluid 层词汇；上游 openless 自有词汇不在内。
+OpenLess fork 上的「Ghostwriter 流式浮框」层：语音给 AI 下指令的指令台——把口语流水账整理成 AI 能一次听懂的指令，卡词时帮你说清，调优过的好说法随叫随到。本档只收 Ghostwriter 层词汇；上游 openless 自有词汇不在内。（内部代号原为 `fluid`，2026-09-11 起全局改名 `ghostwriter`；capsuleStyle 样式值 `"fluid"` 属样式系统用户数据标识，不在此列。）
 
 ## Language
 
@@ -31,10 +31,10 @@ LLM 按当前内容从已启用的常用语库里挑出相关的几条，缩小�
 
 **机械模式（mechanical mode）**:
 润色流关闭后的行为态：贴生转写原话，footnote 附注块照拼，inline 常用语退化为文末拼接，候选流不触发。
-_Avoid_: 纯净模式（那是 FluidSession 整个不创建）
+_Avoid_: 纯净模式（那是 GhostwriterSession 整个不创建）
 
 **纯净模式**:
-总开关关掉后 FluidSession 不创建，完全退化为上游纯听写：无浮框、无三流。
+总开关关掉后 GhostwriterSession 不创建，完全退化为上游纯听写：无浮框、无三流。
 
 ### 浮框区域
 

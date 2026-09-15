@@ -6,7 +6,7 @@ export type AppTab =
   | 'overview'
   | 'history'
   | 'vocab'
-  | 'fluidSnippets'
+  | 'ghostwriterSnippets'
   | 'style'
   | 'marketplace'
   | 'translation'

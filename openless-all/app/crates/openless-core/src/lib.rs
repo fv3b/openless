@@ -30,7 +30,7 @@ pub mod endpoint_security;
 pub mod errors;
 pub mod events;
 pub mod external_audio;
-pub mod fluid;
+pub mod ghostwriter;
 pub mod history;
 pub mod host_document;
 mod hotkey_interpreter;

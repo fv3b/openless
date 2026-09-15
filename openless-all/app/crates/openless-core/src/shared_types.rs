@@ -318,11 +318,12 @@ fn resolve_windows_sendinput_insertion_only_legacy(
     resolve_windows_insertion_mode(mode, legacy_sendinput_only) == WindowsInsertionMode::SendInput
 }
 
-/// Fluid 层（Ghostwriter 流式浮框）的用户偏好：三流开关＋节流参数。
-/// 全部默认开启；旧配置缺整个 `fluid` 对象或对象内缺键时按默认值兜底。
+/// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：三流开关＋节流参数。
+/// 全部默认开启；旧配置缺整个 `ghostwriter` 对象或对象内缺键时按默认值兜底，
+/// 历史配置里的旧键 `fluid` 经 serde alias 继续可读。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub struct FluidPreferences {
+pub struct GhostwriterPreferences {
     /// 润色流开关（指令化）。
     pub polish_enabled: bool,
     /// 候选流开关（M3 消费）。
@@ -335,7 +336,7 @@ pub struct FluidPreferences {
     pub recommendation_throttle_ms: u64,
 }
 
-impl Default for FluidPreferences {
+impl Default for GhostwriterPreferences {
     fn default() -> Self {
         Self {
             polish_enabled: true,
@@ -365,9 +366,10 @@ pub struct UserPreferences {
     /// 录音胶囊外观。偏好事件同步到各窗口，录音状态同时携带当前样式。
     #[serde(default)]
     pub capsule_style: CapsuleStyle,
-    /// Fluid 层三流开关＋节流参数；旧配置缺字段时整体回落默认（全开＋2000ms）。
-    #[serde(default)]
-    pub fluid: FluidPreferences,
+    /// Ghostwriter 层三流开关＋节流参数；旧配置缺字段时整体回落默认（全开＋2000ms），
+    /// 旧键名 `fluid` 经 alias 继续可读。
+    #[serde(default, alias = "fluid")]
+    pub ghostwriter: GhostwriterPreferences,
     /// 录音期间临时静音系统输出，停止/取消/出错后恢复原静音状态。
     #[serde(default)]
     pub mute_during_recording: bool,
@@ -805,8 +807,8 @@ struct UserPreferencesWire {
     show_capsule: bool,
     #[serde(default)]
     capsule_style: CapsuleStyle,
-    #[serde(default)]
-    fluid: FluidPreferences,
+    #[serde(default, alias = "fluid")]
+    ghostwriter: GhostwriterPreferences,
     #[serde(default)]
     mute_during_recording: bool,
     #[serde(default = "default_true")]
@@ -1038,7 +1040,7 @@ impl Default for UserPreferencesWire {
             launch_at_login: prefs.launch_at_login,
             show_capsule: prefs.show_capsule,
             capsule_style: prefs.capsule_style,
-            fluid: prefs.fluid,
+            ghostwriter: prefs.ghostwriter,
             mute_during_recording: prefs.mute_during_recording,
             audio_cue_on_record: prefs.audio_cue_on_record,
             silence_auto_stop_enabled: prefs.silence_auto_stop_enabled,
@@ -1195,7 +1197,7 @@ impl<'de> Deserialize<'de> for UserPreferences {
             launch_at_login: wire.launch_at_login,
             show_capsule: wire.show_capsule,
             capsule_style: wire.capsule_style,
-            fluid: wire.fluid,
+            ghostwriter: wire.ghostwriter,
             mute_during_recording: wire.mute_during_recording,
             audio_cue_on_record: wire.audio_cue_on_record,
             silence_auto_stop_enabled: wire.silence_auto_stop_enabled,
@@ -1552,7 +1554,7 @@ impl Default for UserPreferences {
             launch_at_login: false,
             show_capsule: true,
             capsule_style: CapsuleStyle::Siri,
-            fluid: FluidPreferences::default(),
+            ghostwriter: GhostwriterPreferences::default(),
             mute_during_recording: false,
             audio_cue_on_record: true,
             silence_auto_stop_enabled: false,
@@ -2333,7 +2335,39 @@ pub enum CapsuleStyle {
     Classic,
     /// 传统深色胶囊：蓝色波形，处理时收窄成状态提示。
     Typeless,
+    /// Ghostwriter 浮框风格：OpenLess Ghostwriter 层的流式转写浮框（语音输入法增强）。
+    Fluid,
 }
+
+#[cfg(test)]
+mod capsule_style_tests {
+    use super::CapsuleStyle;
+
+    #[test]
+    fn capsule_style_serializes_as_fluid_value_camel() {
+        assert_eq!(
+            serde_json::to_string(&CapsuleStyle::Fluid).unwrap(),
+            "\"fluid\""
+        );
+    }
+
+    #[test]
+    fn capsule_style_roundtrips_from_fluid_value() {
+        let v: CapsuleStyle = serde_json::from_str("\"fluid\"").unwrap();
+        assert_eq!(v, CapsuleStyle::Fluid);
+    }
+
+    #[test]
+    fn existing_styles_keep_camel_case_serde() {
+        assert_eq!(
+            serde_json::from_str::<CapsuleStyle>("\"siri\"").unwrap(),
+            CapsuleStyle::Siri
+        );
+        assert_eq!(
+            serde_json::from_str::<CapsuleStyle>("\"classic\"").unwrap(),
+            CapsuleStyle::Classic
+        );
+    }}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3397,24 +3431,33 @@ mod tests {
     }
 
     #[test]
-    fn fluid_preferences_default_all_enabled() {
-        let p = FluidPreferences::default();
+    fn ghostwriter_preferences_default_all_enabled() {
+        let p = GhostwriterPreferences::default();
         assert!(p.polish_enabled && p.candidates_enabled && p.recommendations_enabled);
         assert_eq!(p.candidate_throttle_ms, 2000);
     }
 
     #[test]
-    fn fluid_preferences_missing_in_old_config_falls_back_to_default() {
+    fn ghostwriter_preferences_missing_in_old_config_falls_back_to_default() {
         let json = r#"{}"#;
-        let p: FluidPreferences = serde_json::from_str(json).unwrap();
+        let p: GhostwriterPreferences = serde_json::from_str(json).unwrap();
         assert!(p.polish_enabled);
     }
 
     #[test]
-    fn user_preferences_fluid_roundtrips_camel_case() {
+    fn user_preferences_ghostwriter_roundtrips_camel_case() {
+        let json = r#"{"capsuleStyle":"fluid","ghostwriter":{"polishEnabled":false}}"#;
+        let prefs: UserPreferences = serde_json::from_str(json).unwrap();
+        assert!(!prefs.ghostwriter.polish_enabled);
+        assert!(prefs.ghostwriter.candidates_enabled); // 未写回落默认
+    }
+
+    #[test]
+    fn user_preferences_legacy_fluid_key_maps_to_ghostwriter() {
+        // 历史配置的旧键 `fluid`：serde alias 兜底，升级不丢 Ghostwriter 开关。
         let json = r#"{"capsuleStyle":"fluid","fluid":{"polishEnabled":false}}"#;
         let prefs: UserPreferences = serde_json::from_str(json).unwrap();
-        assert!(!prefs.fluid.polish_enabled);
-        assert!(prefs.fluid.candidates_enabled); // 未写回落默认
+        assert!(!prefs.ghostwriter.polish_enabled);
+        assert!(prefs.ghostwriter.candidates_enabled); // 未写回落默认
     }
 }

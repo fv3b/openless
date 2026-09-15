@@ -47,7 +47,7 @@ export let mockSettings: UserPreferences = {
   launchAtLogin: false,
   showCapsule: true,
   capsuleStyle: 'siri',
-  fluid: {
+  ghostwriter: {
     polishEnabled: true,
     candidatesEnabled: true,
     recommendationsEnabled: true,

@@ -385,11 +385,11 @@ async fn forward_legacy_event(
         | BackendEventKind::DownloadProgress(_)
         | BackendEventKind::PermissionChanged(_)
         | BackendEventKind::HotkeyStatusChanged(_) => {}
-        // Fluid events reach the floating panel through the full backend:event
+        // Ghostwriter events reach the floating panel through the full backend:event
         // emit above; no legacy per-domain forwarding exists for them.
-        BackendEventKind::FluidPreviewChanged(_)
-        | BackendEventKind::FluidSnippetsHit(_)
-        | BackendEventKind::FluidNotice(_) => {}
+        BackendEventKind::GhostwriterPreviewChanged(_)
+        | BackendEventKind::GhostwriterSnippetsHit(_)
+        | BackendEventKind::GhostwriterNotice(_) => {}
     }
 }
 

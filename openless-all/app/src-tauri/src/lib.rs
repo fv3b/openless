@@ -163,8 +163,7 @@ pub(crate) fn set_backend_preferences_for_test(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    asr::local::run_mlx_worker_if_requested();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]    asr::local::run_mlx_worker_if_requested();
 
     #[cfg(mobile)]
     {
@@ -285,12 +284,12 @@ macro_rules! app_invoke_handler_desktop {
             commands::export_style_pack_to_zip,
             commands::set_default_polish_mode,
             commands::set_style_enabled,
-            commands::list_fluid_snippets,
-            commands::create_fluid_snippet,
-            commands::save_fluid_snippet,
-            commands::delete_fluid_snippet,
-            commands::set_fluid_snippet_enabled,
-            commands::fluid_cancel_last,
+            commands::list_ghostwriter_snippets,
+            commands::create_ghostwriter_snippet,
+            commands::save_ghostwriter_snippet,
+            commands::delete_ghostwriter_snippet,
+            commands::set_ghostwriter_snippet_enabled,
+            commands::ghostwriter_cancel_last,
             commands::check_accessibility_permission,
             commands::request_accessibility_permission,
             commands::check_microphone_permission,
@@ -525,12 +524,12 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::export_style_pack_to_zip,
             $crate::commands::set_default_polish_mode,
             $crate::commands::set_style_enabled,
-            $crate::commands::list_fluid_snippets,
-            $crate::commands::create_fluid_snippet,
-            $crate::commands::save_fluid_snippet,
-            $crate::commands::delete_fluid_snippet,
-            $crate::commands::set_fluid_snippet_enabled,
-            $crate::commands::fluid_cancel_last,
+            $crate::commands::list_ghostwriter_snippets,
+            $crate::commands::create_ghostwriter_snippet,
+            $crate::commands::save_ghostwriter_snippet,
+            $crate::commands::delete_ghostwriter_snippet,
+            $crate::commands::set_ghostwriter_snippet_enabled,
+            $crate::commands::ghostwriter_cancel_last,
             $crate::commands::check_accessibility_permission,
             $crate::commands::request_accessibility_permission,
             $crate::commands::check_microphone_permission,
@@ -1691,7 +1690,7 @@ pub(crate) fn init_file_logger() {
     {
         Ok(file) => {
             // 文件日志级别默认 Info；设 OPENLESS_LOG_LEVEL=debug 可在文件里
-            // 放出 debug 探针（fluid 命令剥离、offset 锁定等靠它观测）。
+            // 放出 debug 探针（ghostwriter 命令剥离、offset 锁定等靠它观测）。
             let file_level = std::env::var("OPENLESS_LOG_LEVEL")
                 .ok()
                 .and_then(|value| value.parse::<log::LevelFilter>().ok())

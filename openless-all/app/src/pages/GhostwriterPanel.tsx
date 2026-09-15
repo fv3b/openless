@@ -8,24 +8,24 @@ import {
 } from '../lib/backendEvent';
 import {
   completionNotice,
-  emptyFluidPreviewState,
-  fluidPanelActionFor,
-  fluidPreviewReducer,
-  shouldUseFluidCapsule,
-  type FluidPreviewState,
-} from '../lib/fluidCapsule';
-import { fluidCancelLast, getSettings } from '../lib/ipc';
+  emptyGhostwriterPreviewState,
+  ghostwriterPanelActionFor,
+  ghostwriterPreviewReducer,
+  shouldUseGhostwriterCapsule,
+  type GhostwriterPreviewState,
+} from '../lib/ghostwriterCapsule';
+import { ghostwriterCancelLast, getSettings } from '../lib/ipc';
 
 /**
- * fluid 浮框：说话时底部浮框实时转写，停止即收起、静默落字。
+ * ghostwriter 浮框：说话时底部浮框实时转写，停止即收起、静默落字。
  *
- * 收放规则见 fluidCapsule.ts 的 fluidPanelActionFor：starting/recording 显示，
+ * 收放规则见 ghostwriterCapsule.ts 的 ghostwriterPanelActionFor：starting/recording 显示，
  * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
  * 卡片内部三区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近命中）、中区指令预览
- * （fluid_preview_changed，若此刻停下将贴给 AI 的完整结果）、底区转写流（小字
- * 上下文参照）。命中/预览状态走 fluidCapsule.fluidPreviewReducer 纯状态机，
+ * （ghostwriter_preview_changed，若此刻停下将贴给 AI 的完整结果）、底区转写流（小字
+ * 上下文参照）。命中/预览状态走 ghostwriterCapsule.ghostwriterPreviewReducer 纯状态机，
  * 撤销结果经同一 reducer 回流，revision 单调。
  * 定位固定当前显示器底部居中（Rust 侧未感知光标所在屏；跟随光标屏未实现）。
  */
@@ -40,7 +40,7 @@ interface FallbackNotice {
   text: string;
 }
 
-export function FluidPanel() {
+export function GhostwriterPanel() {
   const { t } = useTranslation();
   // 事件监听只挂一次，经 ref 取最新 t：语言切换后兜底提示不再回退旧语言。
   const tRef = useRef(t);
@@ -51,7 +51,7 @@ export function FluidPanel() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [text, setText] = useState('');
-  const [preview, setPreview] = useState<FluidPreviewState>(emptyFluidPreviewState());
+  const [preview, setPreview] = useState<GhostwriterPreviewState>(emptyGhostwriterPreviewState());
   const [notice, setNotice] = useState<FallbackNotice | null>(null);
   const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
@@ -77,7 +77,7 @@ export function FluidPanel() {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       await getCurrentWindow().hide();
     } catch (error) {
-      console.warn('[fluid] hide failed', error);
+      console.warn('[ghostwriter] hide failed', error);
     }
     setPanelVisible(false);
   };
@@ -102,7 +102,7 @@ export function FluidPanel() {
       }
       await win.show();
     } catch (error) {
-      console.warn('[fluid] show failed', error);
+      console.warn('[ghostwriter] show failed', error);
     }
   };
 
@@ -111,12 +111,12 @@ export function FluidPanel() {
     if (!sessionId) return;
     void (async () => {
       try {
-        const result = await fluidCancelLast(sessionId);
+        const result = await ghostwriterCancelLast(sessionId);
         // 后端撤销即推进修订号并发布撤销后的预览事件：响应里的修订号是
         // 后端权威值，凭它挡掉撤销前在途的旧预览，同时移除最近一枚徽标。
         setPreview(state =>
-          fluidPreviewReducer(state, {
-            type: 'fluid_cancel_done',
+          ghostwriterPreviewReducer(state, {
+            type: 'ghostwriter_cancel_done',
             payload: {
               cancelled: result.cancelled,
               assembled: result.assembled,
@@ -125,7 +125,7 @@ export function FluidPanel() {
           }),
         );
       } catch (error) {
-        console.warn('[fluid] cancel last hit failed', error);
+        console.warn('[ghostwriter] cancel last hit failed', error);
       }
     })();
   };
@@ -142,9 +142,9 @@ export function FluidPanel() {
         transcriptRef.current = next;
         setText(next.text);
 
-        if (e.kind.type === 'fluid_preview_changed' || e.kind.type === 'fluid_snippets_hit') {
-          setPreview(state => fluidPreviewReducer(state, e.kind));
-        } else if (e.kind.type === 'fluid_notice') {
+        if (e.kind.type === 'ghostwriter_preview_changed' || e.kind.type === 'ghostwriter_snippets_hit') {
+          setPreview(state => ghostwriterPreviewReducer(state, e.kind));
+        } else if (e.kind.type === 'ghostwriter_notice') {
           const payload = e.kind.payload as { message?: string; level?: string } | undefined;
           if (payload?.level === 'error' && typeof payload.message === 'string' && payload.message) {
             clearTimers();
@@ -158,7 +158,7 @@ export function FluidPanel() {
           const phase = payload?.phase;
           if (phase === 'starting') {
             setRecording(false);
-            setPreview(emptyFluidPreviewState());
+            setPreview(emptyGhostwriterPreviewState());
           } else if (phase === 'recording') {
             setRecording(true);
             const raw = payload?.level;
@@ -167,7 +167,7 @@ export function FluidPanel() {
           if (!visibleRef.current && (phase === 'starting' || phase === 'recording')) {
             void (async () => {
               try {
-                if (!shouldUseFluidCapsule(await getSettings())) return;
+                if (!shouldUseGhostwriterCapsule(await getSettings())) return;
               } catch {
                 return;
               }
@@ -177,7 +177,7 @@ export function FluidPanel() {
               void showPanel();
             })();
           }
-          const action = fluidPanelActionFor(phase);
+          const action = ghostwriterPanelActionFor(phase);
           if (visibleRef.current && action === 'hide') {
             setRecording(false);
             clearTimers();
@@ -186,7 +186,7 @@ export function FluidPanel() {
           }
         } else if (e.kind.type === 'dictation_completed') {
           const payload = e.kind.payload as { inserted?: string; polishedText?: string } | undefined;
-          const action = fluidPanelActionFor('completed', payload?.inserted);
+          const action = ghostwriterPanelActionFor('completed', payload?.inserted);
           if (action === 'show-fallback-toast') {
             setRecording(false);
             clearTimers();
@@ -197,7 +197,7 @@ export function FluidPanel() {
             // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。
             void (async () => {
               try {
-                if (!shouldUseFluidCapsule(await getSettings())) return;
+                if (!shouldUseGhostwriterCapsule(await getSettings())) return;
               } catch {
                 return;
               }
@@ -293,7 +293,7 @@ export function FluidPanel() {
                 borderRadius: 999,
                 background: recording ? '#60a5fa' : '#34d399',
                 boxShadow: recording ? '0 0 10px rgba(96, 165, 250, 0.7)' : 'none',
-                animation: recording ? 'fluidPulse 1.4s ease-in-out infinite' : undefined,
+                animation: recording ? 'ghostwriterPulse 1.4s ease-in-out infinite' : undefined,
                 flexShrink: 0,
               }}
             />
@@ -305,7 +305,7 @@ export function FluidPanel() {
                 letterSpacing: '0.04em',
               }}
             >
-              {recording ? t('fluid.panel.recording') : t('fluid.panel.preparing')}
+              {recording ? t('ghostwriter.panel.recording') : t('ghostwriter.panel.preparing')}
             </span>
             <div style={{ flex: 1 }} />
             <div
@@ -363,10 +363,10 @@ export function FluidPanel() {
               <div style={{ flex: 1 }} />
               <button
                 type="button"
-                aria-label={t('fluid.panel.cancelLast')}
-                title={t('fluid.panel.cancelLast')}
+                aria-label={t('ghostwriter.panel.cancelLast')}
+                title={t('ghostwriter.panel.cancelLast')}
                 onClick={cancelLastHit}
-                className="fluid-cancel-btn"
+                className="ghostwriter-cancel-btn"
                 style={{
                   width: 22,
                   height: 22,
@@ -407,7 +407,7 @@ export function FluidPanel() {
                 color: preview.text ? '#fafafa' : 'rgba(250,250,250,0.35)',
               }}
             >
-              {preview.text || t('fluid.panel.previewPlaceholder')}
+              {preview.text || t('ghostwriter.panel.previewPlaceholder')}
             </p>
           </div>
           <div
@@ -439,25 +439,25 @@ export function FluidPanel() {
                     marginLeft: 2,
                     verticalAlign: '-2px',
                     background: '#60a5fa',
-                    animation: 'fluidCaret 1s step-end infinite',
+                    animation: 'ghostwriterCaret 1s step-end infinite',
                   }}
                 />
               ) : null}
-              {recording && !text ? t('fluid.panel.listening') : null}
+              {recording && !text ? t('ghostwriter.panel.listening') : null}
             </p>
           </div>
         </div>
       ) : null}
       <style>{`
-        @keyframes fluidPulse {
+        @keyframes ghostwriterPulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.35; }
         }
-        @keyframes fluidCaret {
+        @keyframes ghostwriterCaret {
           0%, 100% { opacity: 1; }
           50% { opacity: 0; }
         }
-        .fluid-cancel-btn:hover {
+        .ghostwriter-cancel-btn:hover {
           background: rgba(255, 255, 255, 0.16) !important;
           color: #e4e4e7 !important;
         }

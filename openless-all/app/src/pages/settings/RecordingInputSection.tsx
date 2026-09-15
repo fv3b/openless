@@ -187,14 +187,14 @@ export function RecordingInputSection() {
     savePrefs({ ...prefs, startMinimized });
   const onAutoUpdateCheckChange = (autoUpdateCheck: boolean) =>
     savePrefs({ ...prefs, autoUpdateCheck });
-  // Fluid 分项开关只动 fluid 对象里的一个键；节流参数（M3 消费）不暴露 UI，
-  // 展开 spread 原样保留，整包 set_settings 落盘时不会丢默认值。
-  const onFluidPolishEnabledChange = (polishEnabled: boolean) =>
-    savePrefs({ ...prefs, fluid: { ...prefs.fluid, polishEnabled } });
-  const onFluidCandidatesEnabledChange = (candidatesEnabled: boolean) =>
-    savePrefs({ ...prefs, fluid: { ...prefs.fluid, candidatesEnabled } });
-  const onFluidRecommendationsEnabledChange = (recommendationsEnabled: boolean) =>
-    savePrefs({ ...prefs, fluid: { ...prefs.fluid, recommendationsEnabled } });
+  // Ghostwriter 分项开关只动 ghostwriter 对象里的一个键；节流参数（M3 消费）不暴露 UI，
+  // 设置页整对象保存时原样带回。
+  const onGhostwriterPolishEnabledChange = (polishEnabled: boolean) =>
+    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, polishEnabled } });
+  const onGhostwriterCandidatesEnabledChange = (candidatesEnabled: boolean) =>
+    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, candidatesEnabled } });
+  const onGhostwriterRecommendationsEnabledChange = (recommendationsEnabled: boolean) =>
+    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, recommendationsEnabled } });
 
   // 录音方式（按住说话 / 自动等）横向选框的滑动指示块：跟随选中项移动，
   // left/width 过渡就是切换动画。按钮的 offsetParent 就是 track（position:relative），
@@ -473,22 +473,22 @@ export function RecordingInputSection() {
             aria-hidden={prefs.capsuleStyle !== 'fluid'}
           >
             <div style={{ overflow: 'hidden', minHeight: 0 }}>
-              <SettingRow label={t('settings.fluid.fluidPolishEnabled')}>
+              <SettingRow label={t('settings.ghostwriter.ghostwriterPolishEnabled')}>
                 <Toggle
-                  on={prefs.fluid.polishEnabled}
-                  onToggle={onFluidPolishEnabledChange}
+                  on={prefs.ghostwriter.polishEnabled}
+                  onToggle={onGhostwriterPolishEnabledChange}
                 />
               </SettingRow>
-              <SettingRow label={t('settings.fluid.fluidCandidate')}>
+              <SettingRow label={t('settings.ghostwriter.ghostwriterCandidate')}>
                 <Toggle
-                  on={prefs.fluid.candidatesEnabled}
-                  onToggle={onFluidCandidatesEnabledChange}
+                  on={prefs.ghostwriter.candidatesEnabled}
+                  onToggle={onGhostwriterCandidatesEnabledChange}
                 />
               </SettingRow>
-              <SettingRow label={t('settings.fluid.fluidRecommendation')}>
+              <SettingRow label={t('settings.ghostwriter.ghostwriterRecommendation')}>
                 <Toggle
-                  on={prefs.fluid.recommendationsEnabled}
-                  onToggle={onFluidRecommendationsEnabledChange}
+                  on={prefs.ghostwriter.recommendationsEnabled}
+                  onToggle={onGhostwriterRecommendationsEnabledChange}
                 />
               </SettingRow>
               {/* 机械模式说明恒显示：解释「指令润色」关闭后浮框的行为，不随开关态显隐。 */}
@@ -500,7 +500,7 @@ export function RecordingInputSection() {
                   padding: '2px 0 10px',
                 }}
               >
-                {t('settings.fluid.fluidMechanicalHint')}
+                {t('settings.ghostwriter.ghostwriterMechanicalHint')}
               </div>
             </div>
           </div>

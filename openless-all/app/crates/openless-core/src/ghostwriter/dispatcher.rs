@@ -1,9 +1,9 @@
-//! Fluid 段润色调度器：把会话产出的润色段派给 LLM，并把结果合回会话。
+//! Ghostwriter 段润色调度器：把会话产出的润色段派给 LLM，并把结果合回会话。
 //!
-//! 每个完成的段独立一个 tokio 任务（[`crate::fluid::segment_polisher::polish_segment`]）：
-//! 成功后在状态锁内把结果合回对应会话（[`crate::fluid::session::FluidSession::apply_polished`]）
-//! 并按同一把锁内的最新拼装发布 [`FluidPreviewChanged`]（保证预览事件按修订号升序发布）；
-//! 失败时告警并发布 [`FluidNotice`]。会话可能已被取消/重置移除：找不到会话＝静默丢弃。
+//! 每个完成的段独立一个 tokio 任务（[`crate::ghostwriter::segment_polisher::polish_segment`]）：
+//! 成功后在状态锁内把结果合回对应会话（[`crate::ghostwriter::session::GhostwriterSession::apply_polished`]）
+//! 并按同一把锁内的最新拼装发布 [`GhostwriterPreviewChanged`]（保证预览事件按修订号升序发布）；
+//! 失败时告警并发布 [`GhostwriterNotice`]。会话可能已被取消/重置移除：找不到会话＝静默丢弃。
 //! 尾段补润在 stop 路径同步 await：贴出前必须完成，失败回落尾巴原文（兜底追加仍在）。
 
 use std::sync::{Arc, RwLock};
@@ -16,10 +16,10 @@ use crate::types::SessionId;
 
 use super::segment_polisher::{SegmentPolishRequest, polish_segment};
 use super::session::PolishableSegment;
-use super::types::{FluidNotice, FluidPreviewChanged};
+use super::types::{GhostwriterNotice, GhostwriterPreviewChanged};
 
 #[derive(Clone)]
-pub struct FluidPolishDispatcher {
+pub struct GhostwriterPolishDispatcher {
     state: Arc<RwLock<MutableState>>,
     events: Arc<EventBus>,
     polisher: Arc<dyn TextPolisher>,
@@ -27,7 +27,7 @@ pub struct FluidPolishDispatcher {
     preferences: Arc<crate::PreferencesStore>,
 }
 
-impl FluidPolishDispatcher {
+impl GhostwriterPolishDispatcher {
     pub(crate) fn new(
         state: Arc<RwLock<MutableState>>,
         events: Arc<EventBus>,
@@ -72,10 +72,10 @@ impl FluidPolishDispatcher {
                 {
                     Ok(text) => this.apply_segment(session_id, index, text),
                     Err(error) => {
-                        log::warn!("[fluid] segment polish failed: {error}");
+                        log::warn!("[ghostwriter] segment polish failed: {error}");
                         this.events.publish(
                             Some(session_id),
-                            BackendEventKind::FluidNotice(FluidNotice {
+                            BackendEventKind::GhostwriterNotice(GhostwriterNotice {
                                 message: format!("段润色失败：{error}"),
                                 level: "error".into(),
                             }),
@@ -99,11 +99,11 @@ impl FluidPolishDispatcher {
         {
             Ok(text) => {
                 let mut state = self.state.write().expect("backend state lock poisoned");
-                if let Some(session) = state.fluid_sessions.get_mut(&session_id) {
+                if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
                     if session.apply_tail_polished(text) {
                         self.events.publish(
                             Some(session_id),
-                            BackendEventKind::FluidPreviewChanged(FluidPreviewChanged {
+                            BackendEventKind::GhostwriterPreviewChanged(GhostwriterPreviewChanged {
                                 text: session.assembled_text(),
                                 revision: session.revision(),
                             }),
@@ -112,20 +112,20 @@ impl FluidPolishDispatcher {
                 }
             }
             Err(error) => {
-                // 尾段失败不发布 FluidNotice：此刻 stop 正在收尾，浮框已收起，
+                // 尾段失败不发布 GhostwriterNotice：此刻 stop 正在收尾，浮框已收起，
                 // 没有可承接提示的面板；回落尾巴原文＋材料兜底追加即最终贴出。
-                log::warn!("[fluid] tail polish failed: {error}")
+                log::warn!("[ghostwriter] tail polish failed: {error}")
             }
         }
     }
 
     fn apply_segment(&self, session_id: SessionId, index: usize, text: String) {
         let mut state = self.state.write().expect("backend state lock poisoned");
-        if let Some(session) = state.fluid_sessions.get_mut(&session_id) {
+        if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
             if session.apply_polished(index, text) {
                 self.events.publish(
                     Some(session_id),
-                    BackendEventKind::FluidPreviewChanged(FluidPreviewChanged {
+                    BackendEventKind::GhostwriterPreviewChanged(GhostwriterPreviewChanged {
                         text: session.assembled_text(),
                         revision: session.revision(),
                     }),

@@ -1,7 +1,7 @@
 //! 常用语（snippet）存储：用户存下来的表述实体（触发词/别名 → 表述文本，带贴位与启用开关）。
 //!
 //! 持久化照抄 style_pack_store 模式：Mutex 内存态 + 每次变更后整文件原子写，
-//! 落 `data_dir/fluid-snippets.json`；文件缺失按空库处理。
+//! 落 `data_dir/ghostwriter-snippets.json`；文件缺失按空库处理。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -39,10 +39,10 @@ pub struct SnippetStore {
 }
 
 impl SnippetStore {
-    /// 打开数据目录下的 fluid-snippets.json；文件缺失按空库处理；
+    /// 打开数据目录下的 ghostwriter-snippets.json；文件缺失按空库处理；
     /// 文件损坏时先把原文件改名备份（.corrupt-<uuid4>）再回空库，避免下次变更覆写丢失。
     pub fn at_data_dir(dir: &std::path::Path) -> Self {
-        let path = dir.join("fluid-snippets.json");
+        let path = dir.join("ghostwriter-snippets.json");
         let snippets = match read_or_default(&path) {
             Ok(snippets) => snippets,
             Err(_) => backup_corrupt_file(&path),
@@ -300,12 +300,12 @@ mod tests {
     fn at_data_dir_loads_and_atomic_writes() {
         // temp dir：先写一个合法 json → at_data_dir → list 读出；create → 文件存在且含新条目
         let dir = std::env::temp_dir().join(format!(
-            "openless-core-fluid-snippets-{}",
+            "openless-core-ghostwriter-snippets-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let seeded = vec![snippet("seed-1", "预置")];
-        let path = dir.join("fluid-snippets.json");
+        let path = dir.join("ghostwriter-snippets.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&seeded).unwrap()).unwrap();
         let store = SnippetStore::at_data_dir(&dir);
         assert_eq!(store.list(), seeded);
@@ -324,11 +324,11 @@ mod tests {
     fn at_data_dir_backs_aside_corrupt_file() {
         // 损坏 json → at_data_dir → 空库；原文件被改名备份（原路径消失，.corrupt-* 备份存在且内容原样）
         let dir = std::env::temp_dir().join(format!(
-            "openless-core-fluid-snippets-corrupt-{}",
+            "openless-core-ghostwriter-snippets-corrupt-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("fluid-snippets.json");
+        let path = dir.join("ghostwriter-snippets.json");
         std::fs::write(&path, "{ not json").unwrap();
         let store = SnippetStore::at_data_dir(&dir);
         assert!(store.list().is_empty());
@@ -336,7 +336,7 @@ mod tests {
         let backup = std::fs::read_dir(&dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .find(|name| name.starts_with("fluid-snippets.json.corrupt-"))
+            .find(|name| name.starts_with("ghostwriter-snippets.json.corrupt-"))
             .unwrap();
         assert_eq!(std::fs::read(dir.join(backup)).unwrap(), b"{ not json");
         let _ = std::fs::remove_dir_all(&dir);

@@ -38,7 +38,7 @@ const SelectionVoiceIntentPicker = lazy(() =>
     default: m.SelectionVoiceIntentPicker,
   })),
 );
-const FluidPanel = lazy(() => import('./pages/FluidPanel').then(m => ({ default: m.FluidPanel })));
+const GhostwriterPanel = lazy(() => import('./pages/GhostwriterPanel').then(m => ({ default: m.GhostwriterPanel })));
 // Tauri 的 Less Computer 面板同时面向 macOS 和 Windows；Linux 由原生 egui 提供。
 // TAURI_ENV_PLATFORM 是编译期字面量，不支持该 WebView 的平台可裁掉对应 import，
 // 避免把不能显示的面板 chunk 带入移动端构建。
@@ -55,7 +55,7 @@ const LessComputerGlow = LESS_COMPUTER_BUNDLED
 
 interface AppProps {
   isCapsule: boolean;
-  isFluid: boolean;
+  isGhostwriter: boolean;
   isQa: boolean;
   isSelectionPolishPreview: boolean;
   isSelectionVoiceIntent: boolean;
@@ -100,7 +100,7 @@ export function App(props: AppProps) {
 
 function ReadyApp({
   isCapsule,
-  isFluid,
+  isGhostwriter,
   isQa,
   isSelectionPolishPreview,
   isSelectionVoiceIntent,
@@ -111,8 +111,8 @@ function ReadyApp({
   if (isCapsule) {
     return <Capsule os={forcedOs} />;
   }
-  if (isFluid) {
-    return <Suspense fallback={null}><FluidPanel /></Suspense>;
+  if (isGhostwriter) {
+    return <Suspense fallback={null}><GhostwriterPanel /></Suspense>;
   }
   if (isQa) {
     return (

@@ -18,7 +18,7 @@ use crate::ports::{TextPolisher, TextStreamChunk, TextStreamSink};
 use crate::types::{PolishMode, SessionId};
 
 /// 段润色的指令化 system prompt（逐字使用，勿改动）。
-pub const FLUID_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户在用语音给 AI 助手下指令，下面是一段口语转写。\n把它整理成清晰、直接、结构清楚的指令：\n- 去掉口头语、重复、语气词（嗯、啊、就是那种、类似什么的）\n- 理顺语句顺序，需要时整理成简短要点\n- 把口语化的说法换成准确表述，但绝不改变用户的意思，绝不添加用户没说的要求\n- 原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n- 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n只输出整理后的指令文本，不要任何解释或前缀。";
+pub const GHOSTWRITER_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户在用语音给 AI 助手下指令，下面是一段口语转写。\n把它整理成清晰、直接、结构清楚的指令：\n- 去掉口头语、重复、语气词（嗯、啊、就是那种、类似什么的）\n- 理顺语句顺序，需要时整理成简短要点\n- 把口语化的说法换成准确表述，但绝不改变用户的意思，绝不添加用户没说的要求\n- 原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n- 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n只输出整理后的指令文本，不要任何解释或前缀。";
 
 /// 一次段润色的请求（由 dispatcher 从缓冲与段状态组装）。
 #[derive(Debug, Clone)]
@@ -62,9 +62,9 @@ pub async fn polish_segment(
         &preferences,
         &style_pack,
         DictationProviderInvocations::new(
-            ProviderInvocation::for_provider("fluid-segment-unused-asr"),
+            ProviderInvocation::for_provider("ghostwriter-segment-unused-asr"),
             llm,
-            ProviderInvocation::for_provider("fluid-segment-unused-omni"),
+            ProviderInvocation::for_provider("ghostwriter-segment-unused-omni"),
         ),
         Vec::new(),
         Vec::new(),
@@ -72,7 +72,7 @@ pub async fn polish_segment(
     );
     context.asr.prompt = None;
     context.polish.mode = PolishMode::Light;
-    context.polish.style_system_prompt = FLUID_INSTRUCTION_PROMPT.to_string();
+    context.polish.style_system_prompt = GHOSTWRITER_INSTRUCTION_PROMPT.to_string();
     context.polish.hotwords.clear();
     context.polish.translation_active = false;
     context.polish.cursor_context = None;
@@ -89,7 +89,7 @@ pub async fn polish_segment(
     if text.is_empty() {
         return Err(BackendError::new(
             BackendErrorCode::Provider,
-            "fluid segment polisher returned empty text",
+            "ghostwriter segment polisher returned empty text",
         ));
     }
     Ok(text)
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(calls[0].session_id, request.session_id);
         let context = &calls[0].context;
         assert_eq!(context.llm.provider_id, "test-llm");
-        assert_eq!(context.polish.style_system_prompt, FLUID_INSTRUCTION_PROMPT);
+        assert_eq!(context.polish.style_system_prompt, GHOSTWRITER_INSTRUCTION_PROMPT);
         assert!(context
             .polish
             .style_system_prompt

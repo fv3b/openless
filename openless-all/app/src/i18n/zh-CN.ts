@@ -154,7 +154,7 @@ export const zhCN = {
     approved: '已允许',
     denied: '已拒绝',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: '正在聆听…',
       recording: '语音输入中',
@@ -225,7 +225,7 @@ export const zhCN = {
     },
     localAsr: '模型设置',
     more: '更多',
-    fluidSnippets: '常用语',
+    ghostwriterSnippets: '常用语',
   },
   marketplace: {
     kicker: '风格市场',
@@ -344,7 +344,7 @@ export const zhCN = {
       translation: '翻译：按住 Shift 说话，译成目标语言插入',
       selectionAsk: '划词追问：选中文字后语音提问',
       settings: '偏好设置：快捷键、提供商、隐私与更新',
-      fluidSnippets: '指令台常用语：说话中说到触发词，调优过的表述随叫随到',
+      ghostwriterSnippets: '指令台常用语：说话中说到触发词，调优过的表述随叫随到',
     },
     footer: {
       account: '账户',
@@ -931,14 +931,14 @@ export const zhCN = {
       previewConfirm: '预览确认',
       previewConfirmHint: '在可编辑弹窗中核对结果，再确认覆盖原选区。',
     },
-    fluid: {
-      fluidPolishEnabled: '指令润色',
-      fluidPolishEnabledDesc: '说话中把口语指令整理成准确表述；关闭后浮框贴出原话并附上命中材料。',
-      fluidCandidate: '候选建议',
-      fluidCandidateDesc: '模型说话中现场给出的表述选项，点选或口头确认后融入指令预览。',
-      fluidRecommendation: '常用语推荐',
-      fluidRecommendationDesc: '按当前内容从已启用的常用语中挑出相关的几条，供你快速选用。',
-      fluidMechanicalHint: '关闭指令润色后，浮框将贴出原话并附上命中材料。',
+    ghostwriter: {
+      ghostwriterPolishEnabled: '指令润色',
+      ghostwriterPolishEnabledDesc: '说话中把口语指令整理成准确表述；关闭后浮框贴出原话并附上命中材料。',
+      ghostwriterCandidate: '候选建议',
+      ghostwriterCandidateDesc: '模型说话中现场给出的表述选项，点选或口头确认后融入指令预览。',
+      ghostwriterRecommendation: '常用语推荐',
+      ghostwriterRecommendationDesc: '按当前内容从已启用的常用语中挑出相关的几条，供你快速选用。',
+      ghostwriterMechanicalHint: '关闭指令润色后，浮框将贴出原话并附上命中材料。',
     },
     kicker: '设置',
     title: '设置',

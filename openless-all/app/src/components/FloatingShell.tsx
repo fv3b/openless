@@ -11,7 +11,7 @@ import { SettingsModal } from './SettingsModal';
 import { Overview } from '../pages/Overview';
 import { History } from '../pages/History';
 import { Vocab } from '../pages/Vocab';
-import { FluidSnippets } from '../pages/FluidSnippets';
+import { GhostwriterSnippets } from '../pages/GhostwriterSnippets';
 import { Style } from '../pages/Style';
 import { Marketplace } from '../pages/Marketplace';
 import { Translation } from '../pages/Translation';
@@ -42,7 +42,7 @@ import { useAppState, type AppTab } from '../state/useAppState';
 
 const MORE_TAB_IDS: AppTab[] = [
   'vocab',
-  'fluidSnippets',
+  'ghostwriterSnippets',
   'translation',
   'selectionAsk',
   'corrections',
@@ -58,7 +58,7 @@ const PAGE_CMP: Record<Exclude<AppTab, 'localAsr'>, ComponentType> = {
   overview: Overview,
   history: History,
   vocab: Vocab,
-  fluidSnippets: FluidSnippets,
+  ghostwriterSnippets: GhostwriterSnippets,
   style: Style,
   marketplace: Marketplace,
   translation: Translation,
@@ -75,7 +75,7 @@ const NAV_TREE: NavNode[] = [
   { kind: 'item', id: 'overview', icon: 'overview' },
   { kind: 'item', id: 'history', icon: 'history' },
   { kind: 'item', id: 'vocab', icon: 'vocab' },
-  { kind: 'item', id: 'fluidSnippets', icon: 'tag' },
+  { kind: 'item', id: 'ghostwriterSnippets', icon: 'tag' },
   {
     kind: 'group',
     key: 'style',

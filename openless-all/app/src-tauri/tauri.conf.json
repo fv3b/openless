@@ -48,9 +48,9 @@
         "acceptFirstMouse": true
       },
       {
-        "label": "fluid",
-        "url": "index.html?window=fluid",
-        "title": "OpenLess Fluid",
+        "label": "ghostwriter",
+        "url": "index.html?window=ghostwriter",
+        "title": "OpenLess Ghostwriter",
         "width": 560,
         "height": 420,
         "decorations": false,

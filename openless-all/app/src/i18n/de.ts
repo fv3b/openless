@@ -163,7 +163,7 @@ export const de: typeof zhCN = {
     approved: 'Freigegeben',
     denied: 'Abgelehnt',
   },
-  fluid: {
+  ghostwriter: {
     panel: {
       listening: 'Höre zu…',
       recording: 'Spracheingabe',
@@ -234,7 +234,7 @@ export const de: typeof zhCN = {
     },
     localAsr: 'Modelle',
     more: 'Mehr',
-    fluidSnippets: 'Formulierungen',
+    ghostwriterSnippets: 'Formulierungen',
   },
   marketplace: {
     kicker: 'MARKTPLATZ',
@@ -359,7 +359,7 @@ export const de: typeof zhCN = {
         'Übersetzung: Beim Sprechen Shift gedrückt halten, um Text in der Zielsprache einzufügen',
       selectionAsk: 'Zum ausgewählten Text fragen: Text auswählen und eine Frage dazu sprechen',
       settings: 'Einstellungen: Kurzbefehle, Dienste, Datenschutz und Updates',
-      fluidSnippets:
+      ghostwriterSnippets:
         'Formulierungen: eingespielte Wendungen lösen beim Sprechen auf ihr Schlüsselwort aus',
     },
     footer: {
@@ -972,17 +972,17 @@ export const de: typeof zhCN = {
       editKeywordsDesc:
         'Nur bei deaktivierter automatischer Erkennung. Ein Hinweis pro Zeile erzwingt den Fragemodus. Ansonsten wird anhand von „?“ und Fragewörtern entschieden.',
     },
-    fluid: {
-      fluidPolishEnabled: 'Anweisungsüberarbeitung',
-      fluidPolishEnabledDesc:
+    ghostwriter: {
+      ghostwriterPolishEnabled: 'Anweisungsüberarbeitung',
+      ghostwriterPolishEnabledDesc:
         'Bringt gesprochene Anweisungen in eine präzise Formulierung; ausgeschaltet setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
-      fluidCandidate: 'Kandidaten-Vorschläge',
-      fluidCandidateDesc:
+      ghostwriterCandidate: 'Kandidaten-Vorschläge',
+      ghostwriterCandidateDesc:
         'Formulierungsoptionen, die das Modell während des Sprechens live anbietet; eine Auswahl fließt in die Anweisungsvorschau ein.',
-      fluidRecommendation: 'Formulierungs-Empfehlungen',
-      fluidRecommendationDesc:
+      ghostwriterRecommendation: 'Formulierungs-Empfehlungen',
+      ghostwriterRecommendationDesc:
         'Passende aktivierte Formulierungen, vorgeschlagen anhand dessen, was du gerade sagst.',
-      fluidMechanicalHint:
+      ghostwriterMechanicalHint:
         'Bei ausgeschalteter Anweisungsüberarbeitung setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
     },
     selectionPolish: {
