@@ -6,8 +6,10 @@
 //! 一并落地，上游 merge 时以这些小 diff 为冲突面。
 
 pub mod dispatcher;
+pub mod prompts;
 pub mod segment_polisher;
 pub mod segmenter;
 pub mod session;
 pub mod snippet_store;
+pub mod task_brief_store;
 pub mod types;
