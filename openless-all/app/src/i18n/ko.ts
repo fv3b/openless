@@ -937,17 +937,12 @@ export const ko: typeof zhCN = {
       editKeywordsDesc: '자동 판별 끔일 때만. 한 줄에 하나면 질문. 없으면 ?/의문사 휴리스틱.',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: '지시 다듬기',
-      ghostwriterPolishEnabledDesc:
-        '말하는 동안 구어체 지시를 정확한 표현으로 다듬습니다. 끄면 패널이 원문 전사와 히트 자료를 그대로 붙여넣습니다.',
       ghostwriterCandidate: '후보 제안',
       ghostwriterCandidateDesc:
         '말하는 중에 모델이 제시하는 표현 후보입니다. 선택하면 지시 미리보기에 반영됩니다.',
       ghostwriterRecommendation: '짧은 구문 추천',
       ghostwriterRecommendationDesc:
         '현재 내용을 바탕으로 활성화된 짧은 구문 중 관련 있는 것을 추천합니다.',
-      ghostwriterMechanicalHint:
-        '지시 다듬기를 끄면 패널이 원문 전사와 히트 자료를 그대로 붙여넣습니다.',
     },
     selectionPolish: {
       title: '선택 영역 다듬기',

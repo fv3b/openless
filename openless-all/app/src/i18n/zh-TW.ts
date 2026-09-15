@@ -933,13 +933,10 @@ export const zhTW: typeof zhCN = {
       previewConfirmHint: '在可編輯彈窗中核對結果，再確認覆蓋原選區。',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: '指令潤色',
-      ghostwriterPolishEnabledDesc: '說話中把口語指令整理成準確表述；關閉後浮框貼出原話並附上命中材料。',
       ghostwriterCandidate: '候選建議',
       ghostwriterCandidateDesc: '模型說話中現場給出的表述選項，點選或口頭確認後融入指令預覽。',
       ghostwriterRecommendation: '常用語推薦',
       ghostwriterRecommendationDesc: '按當前內容從已啟用的常用語中挑出相關的幾條，供你快速選用。',
-      ghostwriterMechanicalHint: '關閉指令潤色後，浮框將貼出原話並附上命中材料。',
     },
     kicker: '設定',
     title: '設置',

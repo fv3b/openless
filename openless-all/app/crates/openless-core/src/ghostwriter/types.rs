@@ -2,24 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 听写上下文捕获时冻结的 Ghostwriter 开关快照：润色流开关 + 当前会话是否走 Ghostwriter 浮框。
+/// 听写上下文捕获时冻结的 Ghostwriter 快照：当前会话是否走 Ghostwriter 浮框。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterSnapshot {
-    pub polish_enabled: bool,
     pub active: bool,
-}
-
-/// 会话配置：润色流开关（false＝机械模式：不产润色段，命中与材料追加照常）。
-#[derive(Debug, Clone, Copy)]
-pub struct GhostwriterConfig {
-    pub polish_enabled: bool,
-}
-
-impl Default for GhostwriterConfig {
-    fn default() -> Self {
-        Self { polish_enabled: true }
-    }
 }
 
 /// 一段待润色的生转写：段序号＋已润前文尾部＋本段文本＋随段转移的材料。

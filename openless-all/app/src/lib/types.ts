@@ -327,10 +327,8 @@ export interface StylePackRuntimeDiagnostics {
   previewOmitsFrontApp: boolean;
 }
 
-/** Ghostwriter 层（Ghostwriter 流式浮框）三流开关＋节流参数；与 Core GhostwriterPreferences 对齐。 */
+/** Ghostwriter 层（Ghostwriter 流式浮框）候选/推荐流开关＋节流参数；与 Core GhostwriterPreferences 对齐。 */
 export interface GhostwriterPreferences {
-  /** 润色流开关（指令化）；关闭 = 机械模式（贴原话＋附命中材料）。 */
-  polishEnabled: boolean;
   /** 候选流开关（M3 消费，仅 UI 存储）。 */
   candidatesEnabled: boolean;
   /** 推荐流开关（M3 消费，仅 UI 存储）。 */

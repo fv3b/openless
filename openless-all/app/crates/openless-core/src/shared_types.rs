@@ -318,14 +318,12 @@ fn resolve_windows_sendinput_insertion_only_legacy(
     resolve_windows_insertion_mode(mode, legacy_sendinput_only) == WindowsInsertionMode::SendInput
 }
 
-/// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：三流开关＋节流参数。
-/// 全部默认开启；旧配置缺整个 `ghostwriter` 对象或对象内缺键时按默认值兜底，
-/// 历史配置里的旧键 `fluid` 经 serde alias 继续可读。
+/// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数。
+/// 润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象或对象内
+/// 缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GhostwriterPreferences {
-    /// 润色流开关（指令化）。
-    pub polish_enabled: bool,
     /// 候选流开关（M3 消费）。
     pub candidates_enabled: bool,
     /// 推荐流开关（M3 消费）。
@@ -339,7 +337,6 @@ pub struct GhostwriterPreferences {
 impl Default for GhostwriterPreferences {
     fn default() -> Self {
         Self {
-            polish_enabled: true,
             candidates_enabled: true,
             recommendations_enabled: true,
             candidate_throttle_ms: 2000,
@@ -366,8 +363,8 @@ pub struct UserPreferences {
     /// 录音胶囊外观。偏好事件同步到各窗口，录音状态同时携带当前样式。
     #[serde(default)]
     pub capsule_style: CapsuleStyle,
-    /// Ghostwriter 层三流开关＋节流参数；旧配置缺字段时整体回落默认（全开＋2000ms），
-    /// 旧键名 `fluid` 经 alias 继续可读。
+    /// Ghostwriter 层候选/推荐流开关＋节流参数；旧配置缺字段时整体回落默认
+    /// （全开＋2000ms），旧键名 `fluid` 经 alias 继续可读。
     #[serde(default, alias = "fluid")]
     pub ghostwriter: GhostwriterPreferences,
     /// 录音期间临时静音系统输出，停止/取消/出错后恢复原静音状态。
@@ -3433,7 +3430,7 @@ mod tests {
     #[test]
     fn ghostwriter_preferences_default_all_enabled() {
         let p = GhostwriterPreferences::default();
-        assert!(p.polish_enabled && p.candidates_enabled && p.recommendations_enabled);
+        assert!(p.candidates_enabled && p.recommendations_enabled);
         assert_eq!(p.candidate_throttle_ms, 2000);
     }
 
@@ -3441,23 +3438,23 @@ mod tests {
     fn ghostwriter_preferences_missing_in_old_config_falls_back_to_default() {
         let json = r#"{}"#;
         let p: GhostwriterPreferences = serde_json::from_str(json).unwrap();
-        assert!(p.polish_enabled);
+        assert!(p.candidates_enabled && p.recommendations_enabled);
     }
 
     #[test]
     fn user_preferences_ghostwriter_roundtrips_camel_case() {
-        let json = r#"{"capsuleStyle":"fluid","ghostwriter":{"polishEnabled":false}}"#;
+        let json = r#"{"capsuleStyle":"fluid","ghostwriter":{"candidatesEnabled":false}}"#;
         let prefs: UserPreferences = serde_json::from_str(json).unwrap();
-        assert!(!prefs.ghostwriter.polish_enabled);
-        assert!(prefs.ghostwriter.candidates_enabled); // 未写回落默认
+        assert!(!prefs.ghostwriter.candidates_enabled);
+        assert!(prefs.ghostwriter.recommendations_enabled); // 未写回落默认
     }
 
     #[test]
     fn user_preferences_legacy_fluid_key_maps_to_ghostwriter() {
         // 历史配置的旧键 `fluid`：serde alias 兜底，升级不丢 Ghostwriter 开关。
-        let json = r#"{"capsuleStyle":"fluid","fluid":{"polishEnabled":false}}"#;
+        let json = r#"{"capsuleStyle":"fluid","fluid":{"candidatesEnabled":false}}"#;
         let prefs: UserPreferences = serde_json::from_str(json).unwrap();
-        assert!(!prefs.ghostwriter.polish_enabled);
-        assert!(prefs.ghostwriter.candidates_enabled); // 未写回落默认
+        assert!(!prefs.ghostwriter.candidates_enabled);
+        assert!(prefs.ghostwriter.recommendations_enabled); // 未写回落默认
     }
 }

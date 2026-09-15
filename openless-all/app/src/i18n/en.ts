@@ -974,13 +974,10 @@ export const en: typeof zhCN & {
         'Review the result in an editable window, then confirm to replace the original selection.',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: 'Instruction polish',
-      ghostwriterPolishEnabledDesc: 'Turns spoken instructions into precise phrasing while you speak; off, the panel inserts the raw transcript with hit material attached.',
       ghostwriterCandidate: 'Candidate suggestions',
       ghostwriterCandidateDesc: 'Options the model offers live while you speak; pick one to weave it into the instruction preview.',
       ghostwriterRecommendation: 'Snippet recommendations',
       ghostwriterRecommendationDesc: 'Relevant enabled snippets suggested from what you are saying right now.',
-      ghostwriterMechanicalHint: 'With instruction polish off, the panel inserts the raw transcript with hit material attached.',
     },
     kicker: 'SETTINGS',
     title: 'Settings',

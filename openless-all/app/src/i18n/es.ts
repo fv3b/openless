@@ -967,17 +967,12 @@ export const es: typeof zhCN = {
         'Solo si la detección automática está desactivada. Escribe un indicador por línea para forzar Preguntar; en otros casos se usan «?» y palabras interrogativas.',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: 'Pulido de instrucciones',
-      ghostwriterPolishEnabledDesc:
-        'Convierte las instrucciones habladas en formulaciones precisas mientras hablas; desactivado, el panel inserta la transcripción literal con el material acertado adjunto.',
       ghostwriterCandidate: 'Sugerencias de candidatas',
       ghostwriterCandidateDesc:
         'Opciones que el modelo propone en directo mientras hablas; al elegir una se incorpora a la vista previa de la instrucción.',
       ghostwriterRecommendation: 'Frases recomendadas',
       ghostwriterRecommendationDesc:
         'Frases activadas relevantes, sugeridas a partir de lo que estás diciendo ahora.',
-      ghostwriterMechanicalHint:
-        'Con el pulido de instrucciones desactivado, el panel inserta la transcripción literal con el material acertado adjunto.',
     },
     selectionPolish: {
       title: 'Mejorar selección',

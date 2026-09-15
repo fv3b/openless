@@ -157,7 +157,7 @@ pub struct DictationContext {
     pub omni: ProviderInvocation,
     pub polish: DictationPolishContext,
     pub insertion: DictationInsertionContext,
-    /// capture 时从 preferences 冻结的 Ghostwriter 开关快照。
+    /// capture 时冻结的 Ghostwriter 快照：当前会话是否走 Ghostwriter 浮框。
     pub ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot,
 }
 
@@ -300,7 +300,6 @@ impl DictationContext {
                 android_insert_strategy: preferences.android_insert_strategy,
             },
             ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot {
-                polish_enabled: preferences.ghostwriter.polish_enabled,
                 active: preferences.capsule_style == CapsuleStyle::Fluid,
             },
         }

@@ -973,17 +973,12 @@ export const de: typeof zhCN = {
         'Nur bei deaktivierter automatischer Erkennung. Ein Hinweis pro Zeile erzwingt den Fragemodus. Ansonsten wird anhand von „?“ und Fragewörtern entschieden.',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: 'Anweisungsüberarbeitung',
-      ghostwriterPolishEnabledDesc:
-        'Bringt gesprochene Anweisungen in eine präzise Formulierung; ausgeschaltet setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
       ghostwriterCandidate: 'Kandidaten-Vorschläge',
       ghostwriterCandidateDesc:
         'Formulierungsoptionen, die das Modell während des Sprechens live anbietet; eine Auswahl fließt in die Anweisungsvorschau ein.',
       ghostwriterRecommendation: 'Formulierungs-Empfehlungen',
       ghostwriterRecommendationDesc:
         'Passende aktivierte Formulierungen, vorgeschlagen anhand dessen, was du gerade sagst.',
-      ghostwriterMechanicalHint:
-        'Bei ausgeschalteter Anweisungsüberarbeitung setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
     },
     selectionPolish: {
       title: 'Textauswahl überarbeiten',

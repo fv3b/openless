@@ -980,17 +980,12 @@ export const fr: typeof zhCN = {
         'Uniquement lorsque la détection automatique est désactivée. Un indice par ligne force le mode Question ; sinon, « ? » et les mots interrogatifs servent d’indices.',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: 'Polissage des instructions',
-      ghostwriterPolishEnabledDesc:
-        'Transforme les instructions dictées en formulations précises pendant que vous parlez ; désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
       ghostwriterCandidate: 'Suggestions de candidates',
       ghostwriterCandidateDesc:
         'Options proposées en direct par le modèle pendant que vous parlez ; choisissez-en une pour l’intégrer à l’aperçu de l’instruction.',
       ghostwriterRecommendation: 'Formules recommandées',
       ghostwriterRecommendationDesc:
         'Formules activées pertinentes, suggérées à partir de ce que vous êtes en train de dire.',
-      ghostwriterMechanicalHint:
-        'Avec le polissage des instructions désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
     },
     selectionPolish: {
       title: 'Amélioration de la sélection',

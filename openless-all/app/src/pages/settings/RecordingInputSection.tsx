@@ -189,8 +189,6 @@ export function RecordingInputSection() {
     savePrefs({ ...prefs, autoUpdateCheck });
   // Ghostwriter 分项开关只动 ghostwriter 对象里的一个键；节流参数（M3 消费）不暴露 UI，
   // 设置页整对象保存时原样带回。
-  const onGhostwriterPolishEnabledChange = (polishEnabled: boolean) =>
-    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, polishEnabled } });
   const onGhostwriterCandidatesEnabledChange = (candidatesEnabled: boolean) =>
     savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, candidatesEnabled } });
   const onGhostwriterRecommendationsEnabledChange = (recommendationsEnabled: boolean) =>
@@ -473,12 +471,6 @@ export function RecordingInputSection() {
             aria-hidden={prefs.capsuleStyle !== 'fluid'}
           >
             <div style={{ overflow: 'hidden', minHeight: 0 }}>
-              <SettingRow label={t('settings.ghostwriter.ghostwriterPolishEnabled')}>
-                <Toggle
-                  on={prefs.ghostwriter.polishEnabled}
-                  onToggle={onGhostwriterPolishEnabledChange}
-                />
-              </SettingRow>
               <SettingRow label={t('settings.ghostwriter.ghostwriterCandidate')}>
                 <Toggle
                   on={prefs.ghostwriter.candidatesEnabled}
@@ -491,17 +483,6 @@ export function RecordingInputSection() {
                   onToggle={onGhostwriterRecommendationsEnabledChange}
                 />
               </SettingRow>
-              {/* 机械模式说明恒显示：解释「指令润色」关闭后浮框的行为，不随开关态显隐。 */}
-              <div
-                style={{
-                  fontSize: 11.5,
-                  color: 'var(--ol-ink-4)',
-                  lineHeight: 1.55,
-                  padding: '2px 0 10px',
-                }}
-              >
-                {t('settings.ghostwriter.ghostwriterMechanicalHint')}
-              </div>
             </div>
           </div>
         )}

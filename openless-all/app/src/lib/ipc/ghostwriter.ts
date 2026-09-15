@@ -2,7 +2,7 @@ import type { Snippet } from '../types';
 import { invokeOrMock } from './shared';
 
 /** ghostwriter_cancel_last 的返回：是否撤销了命中＋撤销后的指令预览（拼装文本＋
- * 后端权威修订号，机械模式下撤销是预览前进的唯一推手）。 */
+ * 后端权威修订号，润色结果迟迟未应用时撤销是预览前进的唯一推手）。 */
 export interface GhostwriterCancelLastResult {
   cancelled: boolean;
   assembled: string | null;

@@ -940,17 +940,12 @@ export const ja: typeof zhCN = {
         '自動判定オフ時のみ。1行1語で質問扱い。なければ？/疑問語ヒューリスティック。',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: '指示の整え',
-      ghostwriterPolishEnabledDesc:
-        '話しながら口語の指示を正確な言い回しに整えます。オフにするとパネルは生の書き起こしとヒット資料をそのまま貼り付けます。',
       ghostwriterCandidate: '候補の提案',
       ghostwriterCandidateDesc:
         '発話中にモデルがその場で示す言い回し候補。選ぶと指示プレビューに織り込まれます。',
       ghostwriterRecommendation: '定型句のおすすめ',
       ghostwriterRecommendationDesc:
         '今話している内容から、有効な定型句の中から関連するものをいくつか提案します。',
-      ghostwriterMechanicalHint:
-        '指示の整えをオフにすると、パネルは生の書き起こしとヒット資料をそのまま貼り付けます。',
     },
     selectionPolish: {
       title: '選択範囲の推敲',

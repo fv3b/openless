@@ -932,13 +932,10 @@ export const zhCN = {
       previewConfirmHint: '在可编辑弹窗中核对结果，再确认覆盖原选区。',
     },
     ghostwriter: {
-      ghostwriterPolishEnabled: '指令润色',
-      ghostwriterPolishEnabledDesc: '说话中把口语指令整理成准确表述；关闭后浮框贴出原话并附上命中材料。',
       ghostwriterCandidate: '候选建议',
       ghostwriterCandidateDesc: '模型说话中现场给出的表述选项，点选或口头确认后融入指令预览。',
       ghostwriterRecommendation: '常用语推荐',
       ghostwriterRecommendationDesc: '按当前内容从已启用的常用语中挑出相关的几条，供你快速选用。',
-      ghostwriterMechanicalHint: '关闭指令润色后，浮框将贴出原话并附上命中材料。',
     },
     kicker: '设置',
     title: '设置',
