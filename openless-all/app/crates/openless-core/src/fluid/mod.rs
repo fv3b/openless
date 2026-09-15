@@ -6,4 +6,5 @@
 
 pub mod segmenter;
 pub mod session;
+pub mod snippet_store;
 pub mod types;
