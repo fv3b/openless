@@ -155,6 +155,12 @@ export const ja: typeof zhCN = {
     denied: '拒否済み',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: '定型句',
+      tabBriefs: 'タスク指示書',
+      tabSettings: '設定',
+    },
     panel: {
       listening: '聞き取り中…',
       recording: '音声入力中',
@@ -216,6 +222,26 @@ export const ja: typeof zhCN = {
       updateFailed: '更新失敗：{{error}}',
       deleteFailed: '削除失敗：{{error}}',
     },
+    briefs: {
+      listTitle: 'タスク指示書',
+      listCount: '{{count}} 件',
+      desc: '各機能が AI に渡す指示文です。変更はすぐに反映されます。',
+      modified: '変更済み',
+      fixedPart: '固定部分（読み取り専用）',
+      fixedPartHint: 'データの注入と出力形式はシステム側で固定され、変更できません。',
+      charCount: '{{count}} 文字',
+      save: '保存',
+      saving: '保存中…',
+      saved: '保存しました',
+      reset: '既定に戻す',
+      resetConfirm: '既定に戻しますか？この操作は取り消せません。',
+      cancel: 'キャンセル',
+    },
+    settingsPane: {
+      throttleCandidate: '候補の更新間隔（ミリ秒）',
+      throttleRecommendation: 'おすすめの更新間隔（ミリ秒）',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: '概要',
@@ -233,7 +259,7 @@ export const ja: typeof zhCN = {
     },
     localAsr: 'モデル設定',
     more: 'その他',
-    ghostwriterSnippets: '定型句',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: 'マーケット',
@@ -354,7 +380,7 @@ export const ja: typeof zhCN = {
       translation: '翻訳：Shift を押しながら話すと目標言語で挿入',
       selectionAsk: '選択質問：テキストを選択して音声で質問',
       settings: '環境設定：ショートカット・プロバイダー・プライバシー・更新',
-      ghostwriterSnippets: '定型句：発話中のトリガーワードで調整済みの言い回しを呼び出す',
+      ghostwriter: '指令台：定型句・タスク指示書・パネル設定',
     },
     footer: {
       account: 'アカウント',
@@ -948,6 +974,7 @@ export const ja: typeof zhCN = {
         '自動判定オフ時のみ。1行1語で質問扱い。なければ？/疑問語ヒューリスティック。',
     },
     ghostwriter: {
+      openSettings: 'Ghostwriter 設定を開く',
       ghostwriterCandidate: '候補の提案',
       ghostwriterCandidateDesc:
         '発話中にモデルがその場で示す言い回し候補。選ぶと指示プレビューに織り込まれます。',

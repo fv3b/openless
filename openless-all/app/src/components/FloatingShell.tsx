@@ -11,7 +11,7 @@ import { SettingsModal } from './SettingsModal';
 import { Overview } from '../pages/Overview';
 import { History } from '../pages/History';
 import { Vocab } from '../pages/Vocab';
-import { GhostwriterSnippets } from '../pages/GhostwriterSnippets';
+import { GhostwriterView } from '../pages/GhostwriterView';
 import { Style } from '../pages/Style';
 import { Marketplace } from '../pages/Marketplace';
 import { Translation } from '../pages/Translation';
@@ -39,10 +39,15 @@ import { applyConservativeLayout } from '../lib/conservativeLayout';
 import { useMobileLayout, useConservativeLayout } from '../lib/useMobileLayout';
 import { useHotkeySettings } from '../state/HotkeySettingsContext';
 import { useAppState, type AppTab } from '../state/useAppState';
+import {
+  GHOSTWRITER_TAB_EVENT,
+  isGhostwriterTab,
+  type GhostwriterTab,
+} from '../lib/ghostwriterTabs';
 
 const MORE_TAB_IDS: AppTab[] = [
   'vocab',
-  'ghostwriterSnippets',
+  'ghostwriter',
   'translation',
   'selectionAsk',
   'corrections',
@@ -58,7 +63,7 @@ const PAGE_CMP: Record<Exclude<AppTab, 'localAsr'>, ComponentType> = {
   overview: Overview,
   history: History,
   vocab: Vocab,
-  ghostwriterSnippets: GhostwriterSnippets,
+  ghostwriter: GhostwriterView,
   style: Style,
   marketplace: Marketplace,
   translation: Translation,
@@ -75,7 +80,7 @@ const NAV_TREE: NavNode[] = [
   { kind: 'item', id: 'overview', icon: 'overview' },
   { kind: 'item', id: 'history', icon: 'history' },
   { kind: 'item', id: 'vocab', icon: 'vocab' },
-  { kind: 'item', id: 'ghostwriterSnippets', icon: 'tag' },
+  { kind: 'item', id: 'ghostwriter', icon: 'ghostwriter' },
   {
     kind: 'group',
     key: 'style',
@@ -137,6 +142,9 @@ function FloatingShellBody({
   const hotkeyPromptMount = useExitMount(hotkeyModePromptOpen);
   const [moreOpen, setMoreOpen] = useState(false);
   const [styleOpen, setStyleOpen] = useState(false);
+  // Ghostwriter 视图页签由 Shell 持有：侧栏切走再回来保持原页签；设置页入口经
+  // ghostwriter:open-tab 事件把目标页签带进来（见下方 effect）。
+  const [ghostwriterTab, setGhostwriterTab] = useState<GhostwriterTab>('snippets');
   const shellRef = useRef<HTMLDivElement>(null);
 
   // The dialog records and moves focus before its background becomes inert.
@@ -249,6 +257,22 @@ function FloatingShellBody({
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [os]);
+
+  // 设置页的「Ghostwriter 设置」入口：切到 Ghostwriter 视图、关掉设置弹窗（入口在
+  // 弹窗深处，不关会一直盖住目标视图），并把页签落到设置页。
+  useEffect(() => {
+    const handleOpenGhostwriterTab = (event: Event) => {
+      const tab = (event as CustomEvent<unknown>).detail;
+      if (!isGhostwriterTab(tab)) return;
+      setGhostwriterTab(tab);
+      setCurrentTab('ghostwriter');
+      setSettingsOpen(false);
+      setMoreOpen(false);
+      setStyleOpen(false);
+    };
+    window.addEventListener(GHOSTWRITER_TAB_EVENT, handleOpenGhostwriterTab);
+    return () => window.removeEventListener(GHOSTWRITER_TAB_EVENT, handleOpenGhostwriterTab);
+  }, []);
 
   const openProviderSettings = () => {
     rememberProviderPrompt();
@@ -567,6 +591,8 @@ function FloatingShellBody({
                 >
                   {displayTab === 'selectionAsk' ? (
                     <SelectionAsk onOpenShortcuts={() => openSettings('shortcuts')} />
+                  ) : displayTab === 'ghostwriter' ? (
+                    <GhostwriterView tab={ghostwriterTab} onTabChange={setGhostwriterTab} />
                   ) : (
                     <Page />
                   )}

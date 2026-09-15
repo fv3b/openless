@@ -58,7 +58,7 @@ function parseAliases(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function GhostwriterSnippets() {
+export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const mobile = useMobileLayout();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
@@ -216,28 +216,39 @@ export function GhostwriterSnippets() {
 
   const triggerMissing = Boolean(draft && !draft.trigger.trim());
 
+  const actions = (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <Btn
+        variant="ghost"
+        icon="refresh"
+        size={embedded ? 'sm' : 'md'}
+        onClick={() => void loadSnippets()}
+        disabled={busy === 'loading'}
+      >
+        {t('ghostwriter.snippets.refresh')}
+      </Btn>
+      <Btn
+        variant="primary"
+        icon="plus"
+        size={embedded ? 'sm' : 'md'}
+        onClick={startCreate}
+        disabled={busy === 'loading'}
+      >
+        {t('ghostwriter.snippets.create')}
+      </Btn>
+    </div>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <PageHeader
-        kicker={t('ghostwriter.snippets.kicker')}
-        title={t('ghostwriter.snippets.title')}
-        desc={t('ghostwriter.snippets.desc')}
-        right={
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Btn
-              variant="ghost"
-              icon="refresh"
-              onClick={() => void loadSnippets()}
-              disabled={busy === 'loading'}
-            >
-              {t('ghostwriter.snippets.refresh')}
-            </Btn>
-            <Btn variant="primary" icon="plus" onClick={startCreate} disabled={busy === 'loading'}>
-              {t('ghostwriter.snippets.create')}
-            </Btn>
-          </div>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          kicker={t('ghostwriter.snippets.kicker')}
+          title={t('ghostwriter.snippets.title')}
+          desc={t('ghostwriter.snippets.desc')}
+          right={actions}
+        />
+      )}
 
       <SavedToast saveState={saveState} message={saveMessage} />
 
@@ -265,7 +276,21 @@ export function GhostwriterSnippets() {
           <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
             {t('ghostwriter.snippets.listTitle')}
           </div>
-          <Pill tone="outline">{t('ghostwriter.snippets.listCount', { count: snippets.length })}</Pill>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              flexShrink: 0,
+              flexWrap: 'wrap',
+            }}
+          >
+            <Pill tone="outline">
+              {t('ghostwriter.snippets.listCount', { count: snippets.length })}
+            </Pill>
+            {/* 嵌入 Ghostwriter 视图时页头让给页签，页头按钮落到列表头行。 */}
+            {embedded && actions}
+          </div>
         </div>
 
         <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>

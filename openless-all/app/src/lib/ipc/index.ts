@@ -271,8 +271,12 @@ export {
 // splash（2.0 开屏 PV 首启标记）
 export { takeSplashPlayback, SPLASH_MAJOR } from './splash';
 
-// ghostwriter（常用语库、浮框撤销与候选区点选/沉淀建议）
-export type { GhostwriterCancelLastResult, GhostwriterSelectionKind } from './ghostwriter';
+// ghostwriter（常用语库、任务书、浮框撤销与候选区点选/沉淀建议）
+export type {
+  GhostwriterCancelLastResult,
+  GhostwriterSelectionKind,
+  GhostwriterTaskBrief,
+} from './ghostwriter';
 export {
   listGhostwriterSnippets,
   createGhostwriterSnippet,
@@ -283,6 +287,9 @@ export {
   ghostwriterToggleSelection,
   ghostwriterSaveSuggestion,
   ghostwriterDismissSuggestion,
+  listGhostwriterTaskBriefs,
+  saveGhostwriterTaskBrief,
+  resetGhostwriterTaskBrief,
 } from './ghostwriter';
 
 // utils

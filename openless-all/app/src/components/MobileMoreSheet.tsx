@@ -5,7 +5,7 @@ import type { AppTab } from '../state/useAppState';
 
 const MORE_TABS: Array<{ id: AppTab; icon: string }> = [
   { id: 'vocab', icon: 'vocab' },
-  { id: 'ghostwriterSnippets', icon: 'tag' },
+  { id: 'ghostwriter', icon: 'ghostwriter' },
   { id: 'translation', icon: 'translate' },
   { id: 'selectionAsk', icon: 'selectionAsk' },
   { id: 'corrections', icon: 'filter' },

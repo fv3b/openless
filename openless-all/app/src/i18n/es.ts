@@ -164,6 +164,12 @@ export const es: typeof zhCN = {
     denied: 'Rechazado',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: 'Frases',
+      tabBriefs: 'Instrucciones',
+      tabSettings: 'Ajustes',
+    },
     panel: {
       listening: 'Escuchando…',
       recording: 'Entrada de voz',
@@ -225,6 +231,27 @@ export const es: typeof zhCN = {
       updateFailed: 'No se pudo actualizar: {{error}}',
       deleteFailed: 'No se pudo eliminar: {{error}}',
     },
+    briefs: {
+      listTitle: 'Instrucciones',
+      listCount: '{{count}} instrucciones',
+      desc: 'Son las instrucciones que cada función entrega a la IA; los cambios se aplican al instante.',
+      modified: 'Modificado',
+      fixedPart: 'Parte fija (solo lectura)',
+      fixedPartHint:
+        'La inyección de datos y el formato de salida los fija el sistema; no se pueden editar.',
+      charCount: '{{count}} caracteres',
+      save: 'Guardar',
+      saving: 'Guardando…',
+      saved: 'Guardado',
+      reset: 'Restaurar predeterminada',
+      resetConfirm: '¿Restaurar la predeterminada? Esta acción no se puede deshacer.',
+      cancel: 'Cancelar',
+    },
+    settingsPane: {
+      throttleCandidate: 'Intervalo de refresco de candidatas (ms)',
+      throttleRecommendation: 'Intervalo de refresco de recomendaciones (ms)',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: 'Resumen',
@@ -242,7 +269,7 @@ export const es: typeof zhCN = {
     },
     localAsr: 'Modelos',
     more: 'Más',
-    ghostwriterSnippets: 'Frases',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: 'CATÁLOGO',
@@ -366,7 +393,7 @@ export const es: typeof zhCN = {
         'Traducción: mantén pulsada Mayús mientras hablas para insertar el texto en otro idioma',
       selectionAsk: 'Preguntar sobre una selección: selecciona texto y pregunta por voz',
       settings: 'Preferencias: atajos, proveedores, privacidad y actualizaciones',
-      ghostwriterSnippets: 'Frases de instrucciones: frases afinadas que se activan con su palabra clave al hablar',
+      ghostwriter: 'Consola de instrucciones: frases, instrucciones y ajustes del panel',
     },
     footer: {
       account: 'Cuenta',
@@ -975,6 +1002,7 @@ export const es: typeof zhCN = {
         'Solo si la detección automática está desactivada. Escribe un indicador por línea para forzar Preguntar; en otros casos se usan «?» y palabras interrogativas.',
     },
     ghostwriter: {
+      openSettings: 'Abrir ajustes de Ghostwriter',
       ghostwriterCandidate: 'Sugerencias de candidatas',
       ghostwriterCandidateDesc:
         'Opciones que el modelo propone en directo mientras hablas; al elegir una se incorpora a la vista previa de la instrucción.',

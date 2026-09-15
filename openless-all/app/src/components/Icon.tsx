@@ -60,6 +60,8 @@ export const ICONS: Record<string, LucideIcon> = {
   overview: ChartNoAxesColumn,
   history: History,
   vocab: BookOpenText,
+  // Ghostwriter 各入口统一用羽毛（笔类）字形。
+  ghostwriter: Feather,
   style: SlidersHorizontal,
   translate: Languages,
   selectionAsk: MessageSquareText,

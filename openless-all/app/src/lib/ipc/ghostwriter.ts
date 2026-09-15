@@ -15,6 +15,57 @@ export interface GhostwriterCancelLastResult {
 /** 候选区点选的两种载体（ghostwriter_toggle_selection 的 kind 参数）。 */
 export type GhostwriterSelectionKind = 'candidate' | 'recommendation';
 
+/** 任务书快照：身份＋用途说明＋是否已被用户覆写＋当前生效正文。 */
+export interface GhostwriterTaskBrief {
+  id: string;
+  title: string;
+  description: string;
+  modified: boolean;
+  body: string;
+}
+
+// 非 Tauri 环境的内存 mock：五份任务书的覆写表（无持久化），仅供浏览器内开发。
+const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
+  {
+    id: 'instruction_polish',
+    title: '指令化润色',
+    description: '管段润色怎么把口语转写整理成指令，改了会影响贴给 AI 的指令。',
+    body: '把用户的口语流水账整理成 AI 能一次听懂的指令。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'candidates',
+    title: '候选生成',
+    description: '管说话卡词时出不出候选（精准词/候选表述/命名建议），改了会影响候选区。',
+    body: '判断说话人此刻是否在卡词，卡词时给出现成的候选。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'recommendations',
+    title: '推荐挑选',
+    description: '管从常用语库里挑哪些条目推荐，改了会影响推荐区。',
+    body: '从常用语库里挑出与当前内容真正相关的条目。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'sediment_notice',
+    title: '沉淀提醒',
+    description: '管判断当前内容是否在重复未入库说法，改了会影响沉淀提醒。',
+    body: '判断说话人是否又在说某条还没入库的说法。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'sediment_extraction',
+    title: '沉淀抽取',
+    description: '管从说话内容里抽取哪些说法去沉淀，改了会影响沉淀抽取结果。',
+    body: '从转写里找出值得沉淀成常用语的说法。（浏览器 mock：真实正文由后端提供）',
+  },
+];
+
+const mockTaskBriefOverrides = new Map<string, string>();
+
+function mockTaskBriefInfo(id: string): GhostwriterTaskBrief {
+  const base = mockTaskBriefDefaults.find((brief) => brief.id === id) ?? mockTaskBriefDefaults[0];
+  const override = mockTaskBriefOverrides.get(base.id);
+  return { ...base, modified: override !== undefined, body: override ?? base.body };
+}
+
 // 非 Tauri 环境的内存 mock 库：仅保证 CRUD 与撤销链路走通，无持久化。
 const mockSnippets: Snippet[] = [];
 
@@ -89,4 +140,29 @@ export function ghostwriterSaveSuggestion(sessionId: string): Promise<Snippet | 
 /** 忽略沉淀建议（本次会话不再提）。 */
 export function ghostwriterDismissSuggestion(sessionId: string): Promise<void> {
   return invokeOrMock('ghostwriter_dismiss_suggestion', { sessionId }, () => undefined);
+}
+
+/** 五份任务书的列表（固定顺序由后端注册表决定）。 */
+export function listGhostwriterTaskBriefs(): Promise<GhostwriterTaskBrief[]> {
+  return invokeOrMock('list_ghostwriter_task_briefs', undefined, () =>
+    mockTaskBriefDefaults.map((brief) => mockTaskBriefInfo(brief.id)),
+  );
+}
+
+/** 保存任务书正文覆写（trim 后非空才收）；保存即被 Core 采用。 */
+export function saveGhostwriterTaskBrief(id: string, body: string): Promise<GhostwriterTaskBrief> {
+  return invokeOrMock('save_ghostwriter_task_brief', { id, body }, () => {
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error('task brief body is empty');
+    mockTaskBriefOverrides.set(id, trimmed);
+    return mockTaskBriefInfo(id);
+  });
+}
+
+/** 恢复任务书默认正文（删掉该份覆写）。 */
+export function resetGhostwriterTaskBrief(id: string): Promise<GhostwriterTaskBrief> {
+  return invokeOrMock('reset_ghostwriter_task_brief', { id }, () => {
+    mockTaskBriefOverrides.delete(id);
+    return mockTaskBriefInfo(id);
+  });
 }

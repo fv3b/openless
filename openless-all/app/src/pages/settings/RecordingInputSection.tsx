@@ -27,7 +27,8 @@ import type {
 } from '../../lib/types';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
 import { SelectLite } from '../../components/ui/SelectLite';
-import { Card, Collapsible } from '../_atoms';
+import { Btn, Card, Collapsible } from '../_atoms';
+import { requestGhostwriterTab } from '../../lib/ghostwriterTabs';
 import { SectionTitle, SettingRow, Toggle, inputStyle, segmentedTrackStyle } from './shared';
 import { MicrophoneSelect } from './MicrophoneSelect';
 import { detectOS } from '../../components/WindowChrome';
@@ -187,12 +188,6 @@ export function RecordingInputSection() {
     savePrefs({ ...prefs, startMinimized });
   const onAutoUpdateCheckChange = (autoUpdateCheck: boolean) =>
     savePrefs({ ...prefs, autoUpdateCheck });
-  // Ghostwriter 分项开关只动 ghostwriter 对象里的一个键；节流参数（M3 消费）不暴露 UI，
-  // 设置页整对象保存时原样带回。
-  const onGhostwriterCandidatesEnabledChange = (candidatesEnabled: boolean) =>
-    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, candidatesEnabled } });
-  const onGhostwriterRecommendationsEnabledChange = (recommendationsEnabled: boolean) =>
-    savePrefs({ ...prefs, ghostwriter: { ...prefs.ghostwriter, recommendationsEnabled } });
 
   // 录音方式（按住说话 / 自动等）横向选框的滑动指示块：跟随选中项移动，
   // left/width 过渡就是切换动画。按钮的 offsetParent 就是 track（position:relative），
@@ -455,35 +450,17 @@ export function RecordingInputSection() {
             </div>
           </SettingRow>
         )}
-        {os !== 'linux' && !isAndroid && (
-          // fluid 样式的分项开关：选中 fluid 时从胶囊样式行下方拉出、切走时收回
-          // （grid 0fr→1fr 过渡，与「静音后自动停止」同款，不再突然跳出；inert
-          // 把折叠态开关移出 tab 顺序与 a11y 树）。
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateRows: prefs.capsuleStyle === 'fluid' ? '1fr' : '0fr',
-              transition:
-                'grid-template-rows 0.22s var(--ol-motion-soft), opacity 0.18s var(--ol-motion-quick)',
-              opacity: prefs.capsuleStyle === 'fluid' ? 1 : 0,
-            }}
-            {...(prefs.capsuleStyle !== 'fluid' ? { inert: '' } : {})}
-            aria-hidden={prefs.capsuleStyle !== 'fluid'}
-          >
-            <div style={{ overflow: 'hidden', minHeight: 0 }}>
-              <SettingRow label={t('settings.ghostwriter.ghostwriterCandidate')}>
-                <Toggle
-                  on={prefs.ghostwriter.candidatesEnabled}
-                  onToggle={onGhostwriterCandidatesEnabledChange}
-                />
-              </SettingRow>
-              <SettingRow label={t('settings.ghostwriter.ghostwriterRecommendation')}>
-                <Toggle
-                  on={prefs.ghostwriter.recommendationsEnabled}
-                  onToggle={onGhostwriterRecommendationsEnabledChange}
-                />
-              </SettingRow>
-            </div>
+        {prefs.capsuleStyle === 'fluid' && (
+          // Ghostwriter 的候选/推荐开关与节流参数集中在 Ghostwriter 视图 → 设置页签；
+          // 宿主页只留一枚入口（ADR 0001：每处一入口、内容集中）。
+          <div style={{ padding: '14px 0', borderTop: '0.5px solid var(--ol-line-soft)' }}>
+            <Btn
+              variant="ghost"
+              icon="ghostwriter"
+              onClick={() => requestGhostwriterTab('settings')}
+            >
+              {t('settings.ghostwriter.openSettings')}
+            </Btn>
           </div>
         )}
         <SettingRow

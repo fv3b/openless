@@ -164,6 +164,12 @@ export const fr: typeof zhCN = {
     denied: 'Refusé',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: 'Formules',
+      tabBriefs: 'Consignes',
+      tabSettings: 'Réglages',
+    },
     panel: {
       listening: 'Écoute en cours…',
       recording: 'Saisie vocale',
@@ -225,6 +231,27 @@ export const fr: typeof zhCN = {
       updateFailed: 'Échec de la mise à jour : {{error}}',
       deleteFailed: 'Échec de la suppression : {{error}}',
     },
+    briefs: {
+      listTitle: 'Consignes',
+      listCount: '{{count}} consignes',
+      desc: "Ce sont les consignes que chaque fonction confie à l'IA ; toute modification s'applique immédiatement.",
+      modified: 'Modifié',
+      fixedPart: 'Partie fixe (lecture seule)',
+      fixedPartHint:
+        "L'injection des données et le format de sortie sont fixés par le système ; non modifiables.",
+      charCount: '{{count}} caractères',
+      save: 'Enregistrer',
+      saving: 'Enregistrement…',
+      saved: 'Enregistré',
+      reset: 'Rétablir la consigne par défaut',
+      resetConfirm: 'Rétablir la valeur par défaut ? Cette action est irréversible.',
+      cancel: 'Annuler',
+    },
+    settingsPane: {
+      throttleCandidate: 'Intervalle de rafraîchissement des candidates (ms)',
+      throttleRecommendation: 'Intervalle de rafraîchissement des recommandations (ms)',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: 'Vue d’ensemble',
@@ -242,7 +269,7 @@ export const fr: typeof zhCN = {
     },
     localAsr: 'Modèles',
     more: 'Plus',
-    ghostwriterSnippets: 'Formules',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: 'CATALOGUE',
@@ -369,8 +396,8 @@ export const fr: typeof zhCN = {
       selectionAsk:
         'Questions sur la sélection : sélectionnez du texte, puis posez une question à voix haute',
       settings: 'Préférences : raccourcis, fournisseurs, confidentialité et mises à jour',
-      ghostwriterSnippets:
-        'Formules : des formulations peaufinées se déclenchent sur leur mot-clé pendant que vous parlez',
+      ghostwriter:
+        'Console d’instructions : formules, consignes et réglages du panneau',
     },
     footer: {
       account: 'Compte',
@@ -988,6 +1015,7 @@ export const fr: typeof zhCN = {
         'Uniquement lorsque la détection automatique est désactivée. Un indice par ligne force le mode Question ; sinon, « ? » et les mots interrogatifs servent d’indices.',
     },
     ghostwriter: {
+      openSettings: 'Ouvrir les réglages Ghostwriter',
       ghostwriterCandidate: 'Suggestions de candidates',
       ghostwriterCandidateDesc:
         'Options proposées en direct par le modèle pendant que vous parlez ; choisissez-en une pour l’intégrer à l’aperçu de l’instruction.',

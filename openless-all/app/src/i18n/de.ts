@@ -164,6 +164,12 @@ export const de: typeof zhCN = {
     denied: 'Abgelehnt',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: 'Formulierungen',
+      tabBriefs: 'Aufgaben-Briefings',
+      tabSettings: 'Einstellungen',
+    },
     panel: {
       listening: 'Höre zu…',
       recording: 'Spracheingabe',
@@ -225,6 +231,26 @@ export const de: typeof zhCN = {
       updateFailed: 'Aktualisieren fehlgeschlagen: {{error}}',
       deleteFailed: 'Löschen fehlgeschlagen: {{error}}',
     },
+    briefs: {
+      listTitle: 'Aufgaben-Briefings',
+      listCount: '{{count}} Briefings',
+      desc: 'Das sind die Anweisungen, die jede Funktion an die KI übergibt; Änderungen wirken sofort.',
+      modified: 'Geändert',
+      fixedPart: 'Fester Teil (schreibgeschützt)',
+      fixedPartHint: 'Dateninjektion und Ausgabeformat sind systemseitig festgelegt und nicht änderbar.',
+      charCount: '{{count}} Zeichen',
+      save: 'Speichern',
+      saving: 'Speichern…',
+      saved: 'Gespeichert',
+      reset: 'Standard wiederherstellen',
+      resetConfirm: 'Standard wiederherstellen? Diese Aktion kann nicht rückgängig gemacht werden.',
+      cancel: 'Abbrechen',
+    },
+    settingsPane: {
+      throttleCandidate: 'Kandidaten-Aktualisierungsintervall (ms)',
+      throttleRecommendation: 'Empfehlungs-Aktualisierungsintervall (ms)',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: 'Übersicht',
@@ -242,7 +268,7 @@ export const de: typeof zhCN = {
     },
     localAsr: 'Modelle',
     more: 'Mehr',
-    ghostwriterSnippets: 'Formulierungen',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: 'MARKTPLATZ',
@@ -367,8 +393,8 @@ export const de: typeof zhCN = {
         'Übersetzung: Beim Sprechen Shift gedrückt halten, um Text in der Zielsprache einzufügen',
       selectionAsk: 'Zum ausgewählten Text fragen: Text auswählen und eine Frage dazu sprechen',
       settings: 'Einstellungen: Kurzbefehle, Dienste, Datenschutz und Updates',
-      ghostwriterSnippets:
-        'Formulierungen: eingespielte Wendungen lösen beim Sprechen auf ihr Schlüsselwort aus',
+      ghostwriter:
+        'Instruktionskonsole: Formulierungen, Aufgaben-Briefings und Panel-Einstellungen',
     },
     footer: {
       account: 'Konto',
@@ -981,6 +1007,7 @@ export const de: typeof zhCN = {
         'Nur bei deaktivierter automatischer Erkennung. Ein Hinweis pro Zeile erzwingt den Fragemodus. Ansonsten wird anhand von „?“ und Fragewörtern entschieden.',
     },
     ghostwriter: {
+      openSettings: 'Ghostwriter-Einstellungen öffnen',
       ghostwriterCandidate: 'Kandidaten-Vorschläge',
       ghostwriterCandidateDesc:
         'Formulierungsoptionen, die das Modell während des Sprechens live anbietet; eine Auswahl fließt in die Anweisungsvorschau ein.',

@@ -153,6 +153,12 @@ export const ko: typeof zhCN = {
     denied: '거부됨',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: '짧은 구문',
+      tabBriefs: '작업 지시서',
+      tabSettings: '설정',
+    },
     panel: {
       listening: '듣고 있어요…',
       recording: '음성 입력 중',
@@ -214,6 +220,26 @@ export const ko: typeof zhCN = {
       updateFailed: '업데이트 실패: {{error}}',
       deleteFailed: '삭제 실패: {{error}}',
     },
+    briefs: {
+      listTitle: '작업 지시서',
+      listCount: '{{count}}개',
+      desc: '각 기능이 AI에게 전달하는 지시문입니다. 수정하면 즉시 반영됩니다.',
+      modified: '수정됨',
+      fixedPart: '고정 부분(읽기 전용)',
+      fixedPartHint: '데이터 주입과 출력 형식은 시스템이 고정하며 수정할 수 없습니다.',
+      charCount: '{{count}}자',
+      save: '저장',
+      saving: '저장 중…',
+      saved: '저장됨',
+      reset: '기본값 복원',
+      resetConfirm: '기본값으로 복원할까요? 이 작업은 되돌릴 수 없습니다.',
+      cancel: '취소',
+    },
+    settingsPane: {
+      throttleCandidate: '후보 새로고침 간격(밀리초)',
+      throttleRecommendation: '추천 새로고침 간격(밀리초)',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: '개요',
@@ -231,7 +257,7 @@ export const ko: typeof zhCN = {
     },
     localAsr: '모델 설정',
     more: '더보기',
-    ghostwriterSnippets: '짧은 구문',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: '마켓',
@@ -352,7 +378,7 @@ export const ko: typeof zhCN = {
       translation: '번역: Shift를 누른 채 말하면 대상 언어로 삽입',
       selectionAsk: '선택 질문: 텍스트를 선택한 뒤 음성으로 질문',
       settings: '환경설정: 단축키, 제공자, 개인정보 및 업데이트',
-      ghostwriterSnippets: '짧은 구문: 말하는 중 트리거 단어로 다듬어 둔 표현을 불러옵니다',
+      ghostwriter: '지시 콘솔: 짧은 구문, 작업 지시서, 패널 설정',
     },
     footer: {
       account: '계정',
@@ -945,6 +971,7 @@ export const ko: typeof zhCN = {
       editKeywordsDesc: '자동 판별 끔일 때만. 한 줄에 하나면 질문. 없으면 ?/의문사 휴리스틱.',
     },
     ghostwriter: {
+      openSettings: 'Ghostwriter 설정 열기',
       ghostwriterCandidate: '후보 제안',
       ghostwriterCandidateDesc:
         '말하는 중에 모델이 제시하는 표현 후보입니다. 선택하면 지시 미리보기에 반영됩니다.',

@@ -168,6 +168,12 @@ export const en: typeof zhCN & {
     denied: 'Denied',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: 'Snippets',
+      tabBriefs: 'Task briefs',
+      tabSettings: 'Settings',
+    },
     panel: {
       listening: 'Listening…',
       recording: 'Voice input',
@@ -233,6 +239,26 @@ export const en: typeof zhCN & {
       updateFailed: 'Failed to update: {{error}}',
       deleteFailed: 'Failed to delete: {{error}}',
     },
+    briefs: {
+      listTitle: 'Task briefs',
+      listCount: '{{count}} briefs',
+      desc: 'These are the instructions each feature hands to the AI; edits take effect immediately.',
+      modified: 'Edited',
+      fixedPart: 'Fixed part (read-only)',
+      fixedPartHint: 'Data injection and output format are fixed by the system and cannot be edited.',
+      charCount: '{{count}} characters',
+      save: 'Save',
+      saving: 'Saving…',
+      saved: 'Saved',
+      reset: 'Restore default',
+      resetConfirm: 'Restore the default? This cannot be undone.',
+      cancel: 'Cancel',
+    },
+    settingsPane: {
+      throttleCandidate: 'Candidate refresh interval (ms)',
+      throttleRecommendation: 'Recommendation refresh interval (ms)',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: 'Overview',
@@ -250,7 +276,7 @@ export const en: typeof zhCN & {
     },
     localAsr: 'Models',
     more: 'More',
-    ghostwriterSnippets: 'Snippets',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: 'MARKETPLACE',
@@ -371,7 +397,7 @@ export const en: typeof zhCN & {
       translation: 'Translation: hold Shift while speaking to insert in a target language',
       selectionAsk: 'Selection ask: select text, then ask about it by voice',
       settings: 'Preferences: shortcuts, providers, privacy and updates',
-      ghostwriterSnippets: 'Instruction snippets: saved phrasings fire on their trigger words while you speak',
+      ghostwriter: 'Instruction console: snippets, task briefs and panel settings',
     },
     footer: {
       account: 'Account',
@@ -982,6 +1008,7 @@ export const en: typeof zhCN & {
         'Review the result in an editable window, then confirm to replace the original selection.',
     },
     ghostwriter: {
+      openSettings: 'Open Ghostwriter settings',
       ghostwriterCandidate: 'Candidate suggestions',
       ghostwriterCandidateDesc: 'Options the model offers live while you speak; pick one to weave it into the instruction preview.',
       ghostwriterRecommendation: 'Snippet recommendations',

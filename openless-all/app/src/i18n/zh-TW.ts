@@ -157,6 +157,12 @@ export const zhTW: typeof zhCN = {
     denied: '已拒絕',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: '常用語',
+      tabBriefs: '任務書',
+      tabSettings: '設定',
+    },
     panel: {
       listening: '正在聆聽…',
       recording: '語音輸入中',
@@ -218,6 +224,26 @@ export const zhTW: typeof zhCN = {
       updateFailed: '更新失敗：{{error}}',
       deleteFailed: '刪除失敗：{{error}}',
     },
+    briefs: {
+      listTitle: '任務書',
+      listCount: '{{count}} 份',
+      desc: '這些是各功能交給 AI 的任務說明，改了立即生效。',
+      modified: '已改',
+      fixedPart: '固定部分（唯讀）',
+      fixedPartHint: '資料注入與輸出格式由系統固定，不在可改範圍。',
+      charCount: '{{count}} 字元',
+      save: '儲存',
+      saving: '儲存中…',
+      saved: '已儲存',
+      reset: '恢復預設',
+      resetConfirm: '恢復預設？此操作不可撤銷。',
+      cancel: '取消',
+    },
+    settingsPane: {
+      throttleCandidate: '候選重新整理間隔（毫秒）',
+      throttleRecommendation: '推薦重新整理間隔（毫秒）',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: '概覽',
@@ -235,7 +261,7 @@ export const zhTW: typeof zhCN = {
     },
     localAsr: '模型設置',
     more: '更多',
-    ghostwriterSnippets: '常用語',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: '風格市場',
@@ -354,7 +380,7 @@ export const zhTW: typeof zhCN = {
       translation: '翻譯：按住 Shift 說話，譯成目標語言插入',
       selectionAsk: '劃詞追問：選取文字後語音提問',
       settings: '偏好設定：快捷鍵、提供商、隱私與更新',
-      ghostwriterSnippets: '指令台常用語：說話中說到觸發詞，調優過的表述隨叫隨到',
+      ghostwriter: '指令台：常用語、任務書與浮框設定，說話中隨叫隨到',
     },
     footer: {
       account: '賬戶',
@@ -941,6 +967,7 @@ export const zhTW: typeof zhCN = {
       previewConfirmHint: '在可編輯彈窗中核對結果，再確認覆蓋原選區。',
     },
     ghostwriter: {
+      openSettings: '開啟 Ghostwriter 設定',
       ghostwriterCandidate: '候選建議',
       ghostwriterCandidateDesc: '模型說話中現場給出的表述選項，點選或口頭確認後融入指令預覽。',
       ghostwriterRecommendation: '常用語推薦',

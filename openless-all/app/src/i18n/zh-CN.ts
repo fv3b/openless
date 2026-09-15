@@ -155,6 +155,12 @@ export const zhCN = {
     denied: '已拒绝',
   },
   ghostwriter: {
+    view: {
+      title: 'Ghostwriter',
+      tabSnippets: '常用语',
+      tabBriefs: '任务书',
+      tabSettings: '设置',
+    },
     panel: {
       listening: '正在聆听…',
       recording: '语音输入中',
@@ -216,6 +222,26 @@ export const zhCN = {
       updateFailed: '更新失败：{{error}}',
       deleteFailed: '删除失败：{{error}}',
     },
+    briefs: {
+      listTitle: '任务书',
+      listCount: '{{count}} 份',
+      desc: '这些是各功能交给 AI 的任务说明，改了立即生效。',
+      modified: '已改',
+      fixedPart: '固定部分（只读）',
+      fixedPartHint: '数据注入与输出格式由系统固定，不在可改范围。',
+      charCount: '{{count}} 字符',
+      save: '保存',
+      saving: '保存中…',
+      saved: '已保存',
+      reset: '恢复默认',
+      resetConfirm: '恢复默认？此操作不可撤销。',
+      cancel: '取消',
+    },
+    settingsPane: {
+      throttleCandidate: '候选刷新间隔（毫秒）',
+      throttleRecommendation: '推荐刷新间隔（毫秒）',
+      throttleRangeHint: '500–10000',
+    },
   },
   nav: {
     overview: '概览',
@@ -233,7 +259,7 @@ export const zhCN = {
     },
     localAsr: '模型设置',
     more: '更多',
-    ghostwriterSnippets: '常用语',
+    ghostwriter: 'Ghostwriter',
   },
   marketplace: {
     kicker: '风格市场',
@@ -352,7 +378,7 @@ export const zhCN = {
       translation: '翻译：按住 Shift 说话，译成目标语言插入',
       selectionAsk: '划词追问：选中文字后语音提问',
       settings: '偏好设置：快捷键、提供商、隐私与更新',
-      ghostwriterSnippets: '指令台常用语：说话中说到触发词，调优过的表述随叫随到',
+      ghostwriter: '指令台：常用语、任务书与浮框设置，说话中随叫随到',
     },
     footer: {
       account: '账户',
@@ -940,6 +966,7 @@ export const zhCN = {
       previewConfirmHint: '在可编辑弹窗中核对结果，再确认覆盖原选区。',
     },
     ghostwriter: {
+      openSettings: '打开 Ghostwriter 设置',
       ghostwriterCandidate: '候选建议',
       ghostwriterCandidateDesc: '模型说话中现场给出的表述选项，点选或口头确认后融入指令预览。',
       ghostwriterRecommendation: '常用语推荐',
