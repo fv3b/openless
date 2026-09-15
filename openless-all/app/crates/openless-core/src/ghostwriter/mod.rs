@@ -8,8 +8,10 @@
 pub mod assist;
 pub mod dispatcher;
 pub mod prompts;
+pub mod recurrence_store;
 pub mod segment_polisher;
 pub mod segmenter;
+pub mod sediment_extractor;
 pub mod session;
 pub mod snippet_store;
 pub mod task_brief_store;

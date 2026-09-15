@@ -606,6 +606,7 @@ pub struct FixtureTextPolisher {
     session_ids: Arc<Mutex<Vec<SessionId>>>,
     contexts: Arc<Mutex<Vec<Arc<DictationContext>>>>,
     assist_json: Option<String>,
+    extraction_json: Option<String>,
 }
 
 impl FixtureTextPolisher {
@@ -617,6 +618,7 @@ impl FixtureTextPolisher {
             session_ids: Arc::new(Mutex::new(Vec::new())),
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
+            extraction_json: None,
         }
     }
 
@@ -628,6 +630,7 @@ impl FixtureTextPolisher {
             session_ids: Arc::new(Mutex::new(Vec::new())),
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
+            extraction_json: None,
         }
     }
 
@@ -638,6 +641,14 @@ impl FixtureTextPolisher {
     /// 字符串前缀，计划里的「按 session_id 前缀路由」落成此调用特征路由。
     pub fn with_assist_json(mut self, json: impl Into<String>) -> Self {
         self.assist_json = Some(json.into());
+        self
+    }
+
+    /// 沉淀抽取调用（会话后抽取）返回预置 JSON 数组——按控制器裁决路由：
+    /// session_id 精确等于 [`crate::ghostwriter::sediment_extractor::extraction_session_id()`]
+    /// （uuid5 确定性 id，Task 6 dispatcher 传同一 helper 的值）即认抽取调用。
+    pub fn with_extraction_json(mut self, json: impl Into<String>) -> Self {
+        self.extraction_json = Some(json.into());
         self
     }
 
@@ -675,13 +686,24 @@ impl TextPolisher for FixtureTextPolisher {
         raw_text: String,
         partials: Arc<dyn TextStreamSink>,
     ) -> BoxFuture<'static, Result<crate::ports::PolishOutput, BackendError>> {
-        let is_assist = context
-            .polish
-            .style_system_prompt
-            .ends_with(crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT);
-        let result = match (&self.assist_json, is_assist) {
-            (Some(assist_json), true) => Ok(crate::ports::PolishOutput::text(assist_json.clone())),
-            _ => self.result.clone(),
+        let is_extraction =
+            session_id == crate::ghostwriter::sediment_extractor::extraction_session_id();
+        let result = if is_extraction {
+            match &self.extraction_json {
+                Some(extraction_json) => {
+                    Ok(crate::ports::PolishOutput::text(extraction_json.clone()))
+                }
+                None => self.result.clone(),
+            }
+        } else {
+            let is_assist = context
+                .polish
+                .style_system_prompt
+                .ends_with(crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT);
+            match (&self.assist_json, is_assist) {
+                (Some(assist_json), true) => Ok(crate::ports::PolishOutput::text(assist_json.clone())),
+                _ => self.result.clone(),
+            }
         };
         self.session_ids
             .lock()
