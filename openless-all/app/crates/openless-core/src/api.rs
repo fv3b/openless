@@ -5776,6 +5776,67 @@ impl OpenLessBackend {
             .and_then(|session| session.cancel_last_hit()))
     }
 
+    /// 会话当前指令预览拼装文本（撤销后前端刷新预览用；会话不存在返回 None）。
+    pub fn fluid_assembled_text(&self, session_id: SessionId) -> Option<String> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_sessions
+            .get(&session_id)
+            .map(|session| session.assembled_text())
+    }
+
+    /// 常用语全量列表（存储内存态的克隆；Tauri 命令层入口）。
+    pub fn list_snippets(&self) -> Vec<crate::fluid::snippet_store::Snippet> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_snippets
+            .list()
+    }
+
+    /// 新增常用语（id 空由存储层生成；trigger 空/重复返回错误）。
+    pub fn create_snippet(
+        &self,
+        snippet: crate::fluid::snippet_store::Snippet,
+    ) -> Result<crate::fluid::snippet_store::Snippet, BackendError> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_snippets
+            .create(snippet)
+    }
+
+    /// 保存常用语（按 id 覆写；id 不存在或 trigger 规则不满足返回错误）。
+    pub fn save_snippet(
+        &self,
+        snippet: crate::fluid::snippet_store::Snippet,
+    ) -> Result<crate::fluid::snippet_store::Snippet, BackendError> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_snippets
+            .update(snippet)
+    }
+
+    /// 删除常用语（id 不存在返回错误）。
+    pub fn delete_snippet(&self, id: &str) -> Result<(), BackendError> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_snippets
+            .remove(id)
+    }
+
+    /// 启用/停用常用语（id 不存在返回错误）。
+    pub fn set_snippet_enabled(&self, id: &str, enabled: bool) -> Result<(), BackendError> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .fluid_snippets
+            .set_enabled(id, enabled)
+    }
+
     async fn capture_dictation_context(
         &self,
         options: &DictationStartOptions,

@@ -23,7 +23,7 @@ pub const FLUID_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户
 /// 一次段润色的请求（由 dispatcher 从缓冲与段状态组装）。
 #[derive(Debug, Clone)]
 pub struct SegmentPolishRequest {
-    /// 段会话 id：独立前缀 `fluid-segment-{index}`，dispatcher 负责补唯一后缀。
+    /// 段会话 id：dispatcher 以 `SessionId::new()` 现生成，与听写会话 id 无关联。
     pub session_id: SessionId,
     /// 该段在会话中的序号。
     pub segment_index: usize,

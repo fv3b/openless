@@ -53,6 +53,8 @@ mod credentials;
 mod dictation;
 mod dictionary;
 #[cfg(not(mobile))]
+mod fluid;
+#[cfg(not(mobile))]
 mod foundry_asr;
 mod github_oauth;
 mod history;
@@ -82,6 +84,8 @@ pub use cloud_sync::*;
 pub use credentials::*;
 pub use dictation::*;
 pub use dictionary::*;
+#[cfg(not(mobile))]
+pub use fluid::*;
 #[cfg(not(mobile))]
 pub use foundry_asr::*;
 pub use github_oauth::*;
