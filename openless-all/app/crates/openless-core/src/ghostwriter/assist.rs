@@ -212,10 +212,24 @@ struct SedimentJson {
     suggested_trigger: String,
 }
 
+/// 剥掉 LLM 输出外的 ``` 代码围栏：契约要求裸 JSON，模型偶尔仍包 ```/```json
+/// 围栏。trim 后以 ``` 开头就剥掉首行（含语言标注）与末行围栏，其余原样返回。
+pub(crate) fn strip_json_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let Some((_, body)) = rest.split_once('\n') else {
+        return trimmed;
+    };
+    let body = body.trim();
+    body.strip_suffix("```").map(str::trim).unwrap_or(body)
+}
+
 /// 解析 LLM 输出为产出：`serde_json::from_str`；失败/空 → 空 outcome（合法返回，
 /// log::warn）。解析侧强制裁剪：候选 ≤2 组、每组 ≤5 条、总 ≤8 条、推荐 ≤3 个。
 fn parse_outcome(text: &str) -> AssistOutcome {
-    let parsed: AssistJson = match serde_json::from_str(text.trim()) {
+    let parsed: AssistJson = match serde_json::from_str(strip_json_fence(text)) {
         Ok(parsed) => parsed,
         Err(error) => {
             log::warn!("[ghostwriter] assist output is not valid JSON, treating as empty: {error}");
@@ -364,6 +378,24 @@ mod tests {
             .expect("assist should not error on unparseable output");
 
         assert_eq!(outcome, AssistOutcome::default());
+    }
+
+    #[tokio::test]
+    async fn assist_parses_fenced_canned_json() {
+        // 契约要求裸 JSON，模型偶尔仍包 ``` 围栏：剥掉后照常解析。
+        let fenced = format!("```json\n{CANNED_JSON}\n```");
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(fenced);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &default_bodies_input())
+            .await
+            .expect("assist should succeed");
+
+        assert_eq!(outcome.candidate_groups.len(), 2);
+        assert_eq!(
+            outcome.recommendation_ids,
+            vec!["rec-1".to_string(), "rec-2".to_string(), "rec-3".to_string()]
+        );
     }
 
     #[tokio::test]

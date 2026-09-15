@@ -162,8 +162,8 @@ impl RecurrenceStore {
 }
 
 /// 归一化：trim＋连续空白折叠为单个空格（split_whitespace 恰好两者兼得），
-/// 作为合并匹配与存储的统一键。
-fn normalize_phrase(phrase: &str) -> String {
+/// 作为合并匹配与存储的统一键（dispatcher 的库去重复用同一规则）。
+pub(crate) fn normalize_phrase(phrase: &str) -> String {
     phrase.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

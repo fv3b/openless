@@ -450,7 +450,7 @@ export function RecordingInputSection() {
             </div>
           </SettingRow>
         )}
-        {prefs.capsuleStyle === 'fluid' && (
+        {os !== 'linux' && !isAndroid && prefs.capsuleStyle === 'fluid' && (
           // Ghostwriter 的候选/推荐开关与节流参数集中在 Ghostwriter 视图 → 设置页签；
           // 宿主页只留一枚入口（ADR 0001：每处一入口、内容集中）。
           <div style={{ padding: '14px 0', borderTop: '0.5px solid var(--ol-line-soft)' }}>

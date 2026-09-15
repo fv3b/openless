@@ -914,8 +914,6 @@ export function History() {
   );
 }
 
-/** 后端超时错误在 IPC 边界退化成裸字符串（LLMError::Timeout → "timeout"）。
- *  只匹配整串的常见超时形态，避免其它含 "timeout" 字样的错误被误判成超时。 */
 /** Ghostwriter 历史明细面板：stop 时仍生效的常用语命中（✓ 标题·贴位）与仍选中的
  *  候选/推荐（类型标签＋文本）。两个明细字段都为空（或旧记录无字段）不渲染；
  *  展开态由父级持有（按钮在上方按钮组里），这里只管内容。 */
@@ -994,6 +992,8 @@ function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
   );
 }
 
+/** 后端超时错误在 IPC 边界退化成裸字符串（LLMError::Timeout → "timeout"）。
+ *  只匹配整串的常见超时形态，避免其它含 "timeout" 字样的错误被误判成超时。 */
 function isTimeout(message: string): boolean {
   const trimmed = message.trim();
   return /^(timeout|timed out|request timed out)$/i.test(trimmed) || trimmed.includes('超时');

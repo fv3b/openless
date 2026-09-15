@@ -15,7 +15,7 @@
 //! 到点则现取并更新缓存（单槽即可——assist 天然单飞）。沉淀命中进建议槽并
 //! 标记重复档已提示；批次与建议整体随 [`GhostwriterAssistChanged`] 发布，
 //! 失败发 [`GhostwriterNotice`]（error）轻提示。节流计时一律走注入的
-//! [`Clock`]（不读墙钟），时间锚点在调用收尾写入。
+//! [`Clock`]（不读墙钟）；候选节流锚点在调用收尾写入，推荐节流锚点在现取时写入。
 //!
 //! 会话后沉淀抽取（[`Self::trigger_extraction`]）：fire-and-forget，抽取出的
 //! 说法合入重复档；失败静默（仅日志，不打扰收尾中的浮框）。
@@ -35,6 +35,7 @@ use super::prompts::TaskBriefId;
 use super::recurrence_store::RecurrenceStore;
 use super::segment_polisher::{SegmentPolishRequest, polish_segment};
 use super::session::PolishableSegment;
+use super::snippet_store::Snippet;
 use super::task_brief_store::TaskBriefStore;
 use super::types::{
     AssistSnapshot, GhostwriterAssistChanged, GhostwriterCandidateGroup, GhostwriterCandidateItem,
@@ -42,7 +43,8 @@ use super::types::{
     GhostwriterSedimentSuggestion, LiveRecommendation,
 };
 
-/// 静默触发阈值毫秒数：说话增量间隔达到该值视为一次停顿（feed 点消费）。
+/// 静默触发阈值毫秒数：说话纯静默（无新增量）达到该值视为一次停顿
+/// （api feed 点 spawn 的定时任务消费；锚点被更新即作废）。
 pub const ASSIST_PAUSE_MS: u64 = 1500;
 
 /// 助手上下文截取：说话缓冲尾部进 AssistInput 的最大字符数（dispatcher 侧截取）。
@@ -271,7 +273,16 @@ impl GhostwriterPolishDispatcher {
             )
             .await
             {
-                Ok(phrases) => this.recurrence.apply_extraction(phrases),
+                Ok(phrases) => {
+                    // 任务书不再承诺库注入/去重（ADR 0002：注入由代码固定）：
+                    // 落库前在此对已启用常用语做归一化精确去重（控制器裁决）。
+                    let enabled = {
+                        let state = this.state.read().expect("backend state lock poisoned");
+                        state.ghostwriter_snippets.enabled()
+                    };
+                    this.recurrence
+                        .apply_extraction(dedup_extracted_phrases(phrases, &enabled));
+                }
                 Err(error) => {
                     log::warn!(
                         "[ghostwriter] sediment extraction dropped for session {session_id}: {error}"
@@ -478,6 +489,29 @@ impl GhostwriterPolishDispatcher {
     fn active_llm_provider(&self) -> String {
         self.preferences.get().active_llm_provider
     }
+}
+
+/// 抽取结果对已启用常用语的归一化精确去重：说法与任何常用语触发词或文本
+/// （归一化后）相同即丢弃，不同说法照常返回（归一化复用重复档的统一规则）。
+fn dedup_extracted_phrases(
+    phrases: Vec<(String, String)>,
+    snippets: &[Snippet],
+) -> Vec<(String, String)> {
+    let existing: std::collections::HashSet<String> = snippets
+        .iter()
+        .flat_map(|snippet| {
+            [
+                super::recurrence_store::normalize_phrase(&snippet.trigger),
+                super::recurrence_store::normalize_phrase(&snippet.text),
+            ]
+        })
+        .collect();
+    phrases
+        .into_iter()
+        .filter(|(phrase, _)| {
+            !existing.contains(&super::recurrence_store::normalize_phrase(phrase))
+        })
+        .collect()
 }
 
 /// 会话批次视图＋建议 → 事件载荷；无批次 → 空数组＋建议（推荐行不闪失由
@@ -798,5 +832,37 @@ mod tests {
         assert_eq!(second.recommendations.len(), 1);
         assert_eq!(second.recommendations[0].snippet_id, "s-rec");
         assert_eq!(second.recommendations[0].title, "推荐触发词");
+    }
+
+    /// 沉淀抽取落库前的库去重（控制器裁决）：抽取结果含与已启用常用语文本或
+    /// 触发词相同的说法 → 落库后重复档不含它；不同说法照常入库。
+    #[tokio::test]
+    async fn trigger_extraction_dedups_against_enabled_snippets() {
+        let harness = harness(
+            (0, 0),
+            vec![r#"[{"phrase":"推荐常用语的完整表述文本","example":"例句一"},{"phrase":"推荐触发词","example":"例句二"},{"phrase":"全新说法","example":"例句三"}]"#],
+        );
+
+        harness
+            .dispatcher
+            .trigger_extraction(&harness.session_id, "说话内容");
+
+        // 抽取在 fire-and-forget 任务里跑：轮询等落库完成。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let entries = harness.dispatcher.recurrence_store().pending_matches();
+            if !entries.is_empty() {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].phrase, "全新说法");
+                assert_eq!(entries[0].last_example, "例句三");
+                break;
+            }
+            tokio::time::timeout_at(
+                deadline,
+                tokio::time::sleep(std::time::Duration::from_millis(10)),
+            )
+            .await
+            .expect("extraction did not complete in time");
+        }
     }
 }

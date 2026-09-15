@@ -1375,8 +1375,8 @@ pub(crate) struct MutableState {
     pub(crate) ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore,
     /// 段润色调度器（selection_polisher 配置了才有；段/尾润色的合回与预览发布）。
     ghostwriter_dispatcher: Option<Arc<crate::ghostwriter::dispatcher::GhostwriterPolishDispatcher>>,
-    /// 每会话最近一次转写增量到达时刻：静默触发实时助手的计时锚点
-    /// （间隔 ≥ ASSIST_PAUSE_MS 视为停顿，feed 点消费；随会话增删）。
+    /// 每会话最近一次转写增量到达时刻：纯静默停顿计时锚点（feed 时刷新，
+    /// 定时任务醒来比对锚点未被更新才触发实时助手；随会话增删）。
     ghostwriter_last_delta: HashMap<SessionId, std::time::Instant>,
     silence_monitor: Option<SilenceMonitor>,
 }
@@ -1809,23 +1809,18 @@ impl EngineProgressSink for BackendEngineProgress {
                     .apply(&delta)?;
                 let mut ghostwriter_dispatch = None;
                 let mut ghostwriter_preview = None;
-                let mut ghostwriter_pause_assist = None;
+                let mut ghostwriter_pause_timer = None;
                 let mut ghostwriter_selections_refresh = None;
                 if state.ghostwriter_sessions.contains_key(&session_id) {
-                    // 静默计时：本次增量距上次增量的间隔 ≥ ASSIST_PAUSE_MS 视为
-                    // 一次停顿（实时助手 Pause 触发；锚点随每次增量刷新，随会话清理）。
-                    let now = std::time::Instant::now();
-                    let paused = state
-                        .ghostwriter_last_delta
-                        .get(&session_id)
-                        .is_some_and(|previous| {
-                            now.duration_since(*previous)
-                                >= std::time::Duration::from_millis(
-                                    crate::ghostwriter::dispatcher::ASSIST_PAUSE_MS,
-                                )
-                        });
-                    state.ghostwriter_last_delta.insert(session_id, now);
+                    // 静默计时（定时器语义）：每次增量刷新锚点并 spawn 一次性
+                    // 定时任务——醒来时锚点未被更新（纯静默 ≥ ASSIST_PAUSE_MS）
+                    // 且会话仍在才触发实时助手 Pause；期间任何新增量都会刷新
+                    // 锚点使旧定时器作废，节流＋在飞守卫防叠（锚点随会话清理）。
+                    let anchor = std::time::Instant::now();
+                    state.ghostwriter_last_delta.insert(session_id, anchor);
                     let snippets = state.ghostwriter_snippets.enabled();
+                    ghostwriter_pause_timer =
+                        state.ghostwriter_dispatcher.clone().map(|d| (d, anchor));
                     match state.ghostwriter_sessions.get_mut(&session_id).map(|ghostwriter| {
                         let outcome = ghostwriter.feed(&delta, &snippets);
                         // feed 改动了会话缓冲，指令预览（此刻贴出的完整文本）
@@ -1856,9 +1851,6 @@ impl EngineProgressSink for BackendEngineProgress {
                                 // 口头命令新选中：候选区选中态变化，锁外按最新快照刷新。
                                 ghostwriter_selections_refresh = state.ghostwriter_dispatcher.clone();
                             }
-                            if paused {
-                                ghostwriter_pause_assist = state.ghostwriter_dispatcher.clone();
-                            }
                             ghostwriter_preview = Some(preview);
                         }
                         Some(Err(error)) => log::debug!("[ghostwriter] feed failed: {error}"),
@@ -1872,11 +1864,28 @@ impl EngineProgressSink for BackendEngineProgress {
                         BackendEventKind::GhostwriterPreviewChanged(preview),
                     );
                 }
-                if let Some(dispatcher) = ghostwriter_pause_assist {
-                    dispatcher.maybe_trigger_assist(
-                        &session_id,
-                        crate::ghostwriter::dispatcher::AssistTrigger::Pause,
-                    );
+                if let Some((dispatcher, anchor)) = ghostwriter_pause_timer {
+                    let state = Arc::clone(&self.state);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            crate::ghostwriter::dispatcher::ASSIST_PAUSE_MS,
+                        ))
+                        .await;
+                        // 醒来时锚点已被更新（期间有新增量）或会话已收尾清理：
+                        // 纯静默不成立，本次定时器作废。
+                        {
+                            let state = state.read().expect("backend state lock poisoned");
+                            if state.ghostwriter_last_delta.get(&session_id) != Some(&anchor)
+                                || !state.ghostwriter_sessions.contains_key(&session_id)
+                            {
+                                return;
+                            }
+                        }
+                        dispatcher.maybe_trigger_assist(
+                            &session_id,
+                            crate::ghostwriter::dispatcher::AssistTrigger::Pause,
+                        );
+                    });
                 }
                 if let Some((dispatcher, segments)) = ghostwriter_dispatch {
                     dispatcher.dispatch_segments(session_id, segments);
@@ -10567,6 +10576,64 @@ mod tests {
             .contains(&crate::ghostwriter::assist::assist_session_id()));
         // 排空事件流：没有任何 GhostwriterAssistChanged。
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        while let Ok(event) = tokio::time::timeout_at(deadline, events.recv()).await {
+            assert!(!matches!(
+                event.expect("event stream closed").kind,
+                BackendEventKind::GhostwriterAssistChanged(_)
+            ));
+        }
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 纯静默停顿触发实时助手（定时器语义，控制器裁决）：喂一条无句读增量后
+    /// 不再说话，静默 ≥ ASSIST_PAUSE_MS 定时器醒来且锚点未被更新 → assist 到达；
+    /// 再喂新增量刷新锚点后，第二个停顿定时器被 candidate_throttle_ms 节流，
+    /// 不重复触发。ASSIST_PAUSE_MS 保持生产值 1.5s，测试等真实时间（≈3.5s），
+    /// 未缩短常量以免波及其它集成测试。
+    #[tokio::test]
+    async fn ghostwriter_assist_fires_on_pure_silence_pause() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-pause-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["停顿候选"]}],"recommendations":[],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("还在说那个继续说别的"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend =
+            backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        // 节流调大到测试时长之外：第一个停顿 assist 放行（从未跑过），第二个
+        // 停顿定时器必被节流——不依赖真实计时竞争。
+        preferences.ghostwriter.candidate_throttle_ms = 60_000;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 纯静默：喂一条无句读增量后不再说话 → 停顿定时器触发 assist。
+        transcription.pump("还在说那个");
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert_eq!(assist.candidate_groups.len(), 1);
+        assert_eq!(assist.candidate_groups[0].kind, "term");
+        assert_eq!(assist.candidate_groups[0].items[0].text, "停顿候选");
+
+        // 再喂新增量刷新锚点：第二个停顿定时器醒来被节流，无 assist 事件。
+        transcription.pump("继续说别的");
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                crate::ghostwriter::dispatcher::ASSIST_PAUSE_MS + 500,
+            );
         while let Ok(event) = tokio::time::timeout_at(deadline, events.recv()).await {
             assert!(!matches!(
                 event.expect("event stream closed").kind,

@@ -110,15 +110,16 @@ struct ExtractionItem {
 /// 解析 LLM 输出为 (说法, 例句) 列表：`serde_json::from_str`；失败/空 → 空
 /// Vec（合法返回，log::warn）。解析侧强制至多 3 条（先到先得）。
 fn parse_phrases(text: &str) -> Vec<(String, String)> {
-    let parsed: Vec<ExtractionItem> = match serde_json::from_str(text.trim()) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            log::warn!(
-                "[ghostwriter] extraction output is not valid JSON, treating as empty: {error}"
-            );
-            return Vec::new();
-        }
-    };
+    let parsed: Vec<ExtractionItem> =
+        match serde_json::from_str(super::assist::strip_json_fence(text)) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                log::warn!(
+                    "[ghostwriter] extraction output is not valid JSON, treating as empty: {error}"
+                );
+                return Vec::new();
+            }
+        };
     parsed
         .into_iter()
         .take(MAX_PHRASES)
@@ -201,5 +202,27 @@ mod tests {
         .expect("extraction should not error on unparseable output");
 
         assert!(phrases.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_parses_fenced_canned_array() {
+        // 契约要求裸 JSON 数组，模型偶尔仍包 ``` 围栏：剥掉后照常解析。
+        let fenced = format!("```json\n{CANNED_ARRAY}\n```");
+        let fixture = FixtureTextPolisher::successful("unused").with_extraction_json(fenced);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        let phrases = extract_phrases(
+            &polisher,
+            &store(),
+            "test-llm",
+            extraction_session_id(),
+            "随便说点什么",
+            TaskBriefId::SedimentExtraction.default_body(),
+        )
+        .await
+        .expect("extraction should succeed");
+
+        assert_eq!(phrases.len(), 3);
+        assert_eq!(phrases[0].0, "把日志清一下");
     }
 }
