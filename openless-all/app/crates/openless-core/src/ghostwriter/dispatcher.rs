@@ -331,19 +331,24 @@ impl GhostwriterPolishDispatcher {
                 state.ghostwriter_snippets.enabled(),
             )
         };
-        // 推荐节流独立计时：首次或距上次现取 ≥ recommendation_throttle_ms 才现取。
+        // 推荐节流独立计时：首次或距上次现取 ≥ recommendation_throttle_ms 才现取；
+        // 现取即写锚点（窗口自本次重算起计），否则 last_rec 恒为 None、节流失效。
         let include_recommendations = {
-            let previous = *self
+            let mut previous = self
                 .last_rec
                 .lock()
                 .expect("recommendation throttle lock poisoned");
-            match previous {
+            let recompute = match *previous {
                 None => true,
                 Some(previous) => {
                     (self.clock.now_utc() - previous).num_milliseconds()
                         >= prefs.recommendation_throttle_ms as i64
                 }
+            };
+            if recompute {
+                *previous = Some(self.clock.now_utc());
             }
+            recompute
         };
         let input = AssistInput {
             session_id: super::assist::assist_session_id(),
@@ -374,18 +379,27 @@ impl GhostwriterPolishDispatcher {
                     })
             })
             .collect();
-        let batch_recommendations = if include_recommendations {
-            *self
-                .last_recommendations
-                .lock()
-                .expect("recommendation cache lock poisoned") = Some(recommendations.clone());
-            recommendations
-        } else {
+        let batch_recommendations = if !include_recommendations {
+            // 推荐节流未到点：用缓存的上次推荐填批次（推荐行不闪失）。
             self.last_recommendations
                 .lock()
                 .expect("recommendation cache lock poisoned")
                 .clone()
                 .unwrap_or_default()
+        } else if recommendations.is_empty() {
+            // 现取结果为空（LLM 返回空推荐或 id 不在库内）：空结果不覆盖缓存、
+            // 本次批次也沿用缓存——否则推荐行会闪失一次再凭旧缓存复活。
+            self.last_recommendations
+                .lock()
+                .expect("recommendation cache lock poisoned")
+                .clone()
+                .unwrap_or_default()
+        } else {
+            *self
+                .last_recommendations
+                .lock()
+                .expect("recommendation cache lock poisoned") = Some(recommendations.clone());
+            recommendations
         };
         // 沉淀命中：重复档标记已提示（本次会话不再提醒）＋建议槽写入。
         if let Some(sediment) = &outcome.sediment {
@@ -480,5 +494,283 @@ fn assist_changed_payload(
             })
             .collect(),
         sediment,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    use crate::credentials::InMemoryCredentialStore;
+    use crate::dictation_context::DictationContext;
+    use crate::events::EventSubscription;
+    use crate::ghostwriter::snippet_store::{Snippet, SnippetMode};
+    use crate::ports::{PolishOutput, TextStreamSink};
+    use crate::shared_types::GhostwriterPreferences;
+    use crate::types::TranscriptDelta;
+
+    /// 测试时钟：now 可推进，供节流窗口断言（不读墙钟，全走注入 clock）。
+    struct MutableClock {
+        now: Mutex<chrono::DateTime<chrono::Utc>>,
+    }
+
+    impl MutableClock {
+        fn new() -> Self {
+            Self {
+                now: Mutex::new(chrono::Utc::now()),
+            }
+        }
+
+        fn advance_ms(&self, ms: u64) {
+            *self.now.lock().expect("clock lock poisoned") +=
+                chrono::Duration::milliseconds(ms as i64);
+        }
+    }
+
+    impl crate::config::Clock for MutableClock {
+        fn now_utc(&self) -> chrono::DateTime<chrono::Utc> {
+            *self.now.lock().expect("clock lock poisoned")
+        }
+
+        fn today_local(&self) -> chrono::NaiveDate {
+            self.now_utc().date_naive()
+        }
+    }
+
+    /// 脚本化润色器：按调用序吐出预置响应，记录每次调用的 (session_id, context)。
+    struct ScriptedPolisher {
+        responses: Mutex<VecDeque<PolishOutput>>,
+        calls: Arc<Mutex<Vec<(SessionId, Arc<DictationContext>)>>>,
+    }
+
+    impl ScriptedPolisher {
+        fn scripted(responses: Vec<PolishOutput>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<(SessionId, Arc<DictationContext>)> {
+            self.calls.lock().expect("calls lock poisoned").clone()
+        }
+    }
+
+    impl TextPolisher for ScriptedPolisher {
+        fn polish(
+            &self,
+            session_id: SessionId,
+            context: Arc<DictationContext>,
+            _raw_text: String,
+            _partials: Arc<dyn TextStreamSink>,
+        ) -> futures_util::future::BoxFuture<'static, Result<PolishOutput, crate::errors::BackendError>>
+        {
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push((session_id, Arc::clone(&context)));
+            let response = self
+                .responses
+                .lock()
+                .expect("responses lock poisoned")
+                .pop_front()
+                .expect("unexpected polish call");
+            Box::pin(async move { Ok(response) })
+        }
+
+        fn cancel(
+            &self,
+            _session_id: SessionId,
+        ) -> futures_util::future::BoxFuture<'static, Result<(), crate::errors::BackendError>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct Harness {
+        dispatcher: GhostwriterPolishDispatcher,
+        events: Arc<EventBus>,
+        clock: Arc<MutableClock>,
+        polisher: Arc<ScriptedPolisher>,
+        #[allow(dead_code)]
+        state: Arc<RwLock<MutableState>>,
+        session_id: SessionId,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn harness(throttles: (u64, u64), responses: Vec<&str>) -> Harness {
+        let dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-dispatcher-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let preferences = Arc::new(
+            crate::PreferencesStore::open(dir.join("preferences.json")).unwrap(),
+        );
+        let mut user_prefs = crate::shared_types::UserPreferences::default();
+        user_prefs.ghostwriter = GhostwriterPreferences {
+            candidates_enabled: true,
+            recommendations_enabled: true,
+            candidate_throttle_ms: throttles.0,
+            recommendation_throttle_ms: throttles.1,
+        };
+        preferences.set(user_prefs).unwrap();
+        let snippets = crate::ghostwriter::snippet_store::SnippetStore::in_memory();
+        snippets
+            .create(Snippet {
+                id: "s-rec".into(),
+                trigger: "推荐触发词".into(),
+                aliases: Vec::new(),
+                text: "推荐常用语的完整表述文本".into(),
+                mode: SnippetMode::Inline,
+                enabled: true,
+            })
+            .unwrap();
+        let state = Arc::new(RwLock::new(MutableState::for_ghostwriter_tests(snippets)));
+        let session_id = SessionId::new();
+        {
+            let mut guard = state.write().expect("state lock poisoned");
+            let mut session = crate::ghostwriter::session::GhostwriterSession::new();
+            session
+                .feed(
+                    &TranscriptDelta {
+                        text: "把日志清一下就是那种缓存".into(),
+                        offset: 0,
+                        is_final: true,
+                    },
+                    &[],
+                )
+                .unwrap();
+            guard.ghostwriter_sessions.insert(session_id, session);
+        }
+        let events = Arc::new(EventBus::new(64));
+        let clock = Arc::new(MutableClock::new());
+        let polisher = Arc::new(ScriptedPolisher::scripted(
+            responses
+                .into_iter()
+                .map(PolishOutput::text)
+                .collect::<Vec<_>>(),
+        ));
+        let dispatcher = GhostwriterPolishDispatcher::new(
+            Arc::clone(&state),
+            Arc::clone(&events),
+            Arc::clone(&polisher) as Arc<dyn TextPolisher>,
+            Arc::new(InMemoryCredentialStore::default()),
+            preferences,
+            Arc::new(TaskBriefStore::in_memory()),
+            Arc::new(RecurrenceStore::in_memory()),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        );
+        Harness {
+            dispatcher,
+            events,
+            clock,
+            polisher,
+            state,
+            session_id,
+            dir,
+        }
+    }
+
+    async fn next_assist_changed(events: &mut EventSubscription) -> GhostwriterAssistChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("assist event did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::GhostwriterAssistChanged(payload) = event.kind {
+                return payload;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn recommendation_throttle_gates_recompute_and_reuses_cache() {
+        // 推荐节流（1000ms）内第二次触发：include_recommendations=false——
+        // system prompt 不含推荐任务书，推荐行仍非空（来自缓存）。
+        let harness = harness(
+            (0, 1000),
+            vec![
+                r#"{"candidateGroups":[],"recommendations":["s-rec"],"sediment":null}"#,
+                r#"{"candidateGroups":[],"recommendations":["s-rec"],"sediment":null}"#,
+            ],
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let first = next_assist_changed(&mut events).await;
+        assert_eq!(first.recommendations.len(), 1);
+        assert_eq!(first.recommendations[0].snippet_id, "s-rec");
+        let (session_id, context) = &harness.polisher.calls()[0];
+        assert_eq!(*session_id, super::super::assist::assist_session_id());
+        assert!(context
+            .polish
+            .style_system_prompt
+            .contains(TaskBriefId::Recommendations.default_body()));
+
+        harness.clock.advance_ms(400);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let second = next_assist_changed(&mut events).await;
+        // 节流生效：第二次现取被拦，推荐来自缓存且行不闪失。
+        assert_eq!(second.recommendations.len(), 1);
+        assert_eq!(second.recommendations[0].snippet_id, "s-rec");
+        assert_eq!(harness.polisher.calls().len(), 2);
+        let (_, context) = &harness.polisher.calls()[1];
+        assert!(!context
+            .polish
+            .style_system_prompt
+            .contains(TaskBriefId::Recommendations.default_body()));
+    }
+
+    #[tokio::test]
+    async fn empty_recompute_does_not_clobber_cached_recommendations() {
+        // 推荐节流（0ms）放行第二次现取：LLM 返回库外 id → 映射为空 →
+        // 空结果不覆盖缓存、本次批次沿用缓存（推荐行不闪失）。
+        let harness = harness(
+            (0, 0),
+            vec![
+                r#"{"candidateGroups":[],"recommendations":["s-rec"],"sediment":null}"#,
+                r#"{"candidateGroups":[],"recommendations":["ghost-unknown-id"],"sediment":null}"#,
+            ],
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let first = next_assist_changed(&mut events).await;
+        assert_eq!(first.recommendations.len(), 1);
+        assert!(harness.polisher.calls()[0]
+            .1
+            .polish
+            .style_system_prompt
+            .contains(TaskBriefId::Recommendations.default_body()));
+
+        harness.clock.advance_ms(1);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let second = next_assist_changed(&mut events).await;
+        // 第二次确实走了现取（prompt 含推荐任务书），但空结果没有清空推荐行。
+        assert!(harness.polisher.calls()[1]
+            .1
+            .polish
+            .style_system_prompt
+            .contains(TaskBriefId::Recommendations.default_body()));
+        assert_eq!(second.recommendations.len(), 1);
+        assert_eq!(second.recommendations[0].snippet_id, "s-rec");
+        assert_eq!(second.recommendations[0].title, "推荐触发词");
     }
 }

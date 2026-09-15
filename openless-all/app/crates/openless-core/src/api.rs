@@ -1387,6 +1387,28 @@ struct SilenceMonitor {
     detector: crate::silence_auto_stop::SilenceAutoStop,
 }
 
+#[cfg(test)]
+impl MutableState {
+    /// dispatcher 单测构造：Ghostwriter 会话表与常用语库可注入，其余字段走默认。
+    pub(crate) fn for_ghostwriter_tests(
+        snippets: crate::ghostwriter::snippet_store::SnippetStore,
+    ) -> Self {
+        Self {
+            running: false,
+            dictation: DictationStateSnapshot::default(),
+            dictation_context: None,
+            dictation_translation_requested: None,
+            credentials: CredentialsStatus::default(),
+            transcripts: HashMap::new(),
+            ghostwriter_sessions: HashMap::new(),
+            ghostwriter_snippets: snippets,
+            ghostwriter_dispatcher: None,
+            ghostwriter_last_delta: HashMap::new(),
+            silence_monitor: None,
+        }
+    }
+}
+
 // Preparation itself can switch a native input source. Register one shared
 // future before polling it so cancellation can join and restore even when the
 // original start caller is dropped. Synchronous progress only sees ready values.
