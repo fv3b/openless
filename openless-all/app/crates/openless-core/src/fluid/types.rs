@@ -10,6 +10,39 @@ pub struct FluidSnapshot {
     pub active: bool,
 }
 
+/// 会话配置：润色流开关（false＝机械模式：不产润色段，命中与材料追加照常）。
+#[derive(Debug, Clone, Copy)]
+pub struct FluidConfig {
+    pub polish_enabled: bool,
+}
+
+impl Default for FluidConfig {
+    fn default() -> Self {
+        Self { polish_enabled: true }
+    }
+}
+
+/// 一段待润色的生转写：段序号＋已润前文尾部＋本段文本＋随段转移的材料。
+#[derive(Debug, Clone)]
+pub struct PolishableSegment {
+    /// 段在会话中的序号（apply_polished 的对位索引）。
+    pub index: usize,
+    /// 已润前文尾部（≤200 字符，截断自 polished 缓冲）。
+    pub prior: String,
+    /// 本段生转写（或尾巴补润时的尾巴原文）。
+    pub text: String,
+    /// 本段挂着的 inline 常用语材料（随产出转移，待融队列清空）。
+    pub materials: Vec<String>,
+}
+
+/// 一次 [`crate::fluid::session::FluidSession::feed`] 的结果：
+/// 新产出的润色段与新生效的常用语命中。
+#[derive(Debug, Clone, Default)]
+pub struct FeedOutcome {
+    pub new_segments: Vec<PolishableSegment>,
+    pub new_hits: Vec<FluidSnippetHit>,
+}
+
 /// 指令预览的实时结果：此刻停下将贴给 AI 的完整文本与递增修订号。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

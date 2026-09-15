@@ -1778,7 +1778,7 @@ impl EngineProgressSink for BackendEngineProgress {
                     .or_default()
                     .apply(&delta)?;
                 if let Some(fluid) = state.fluid_sessions.get_mut(&session_id) {
-                    if let Err(error) = fluid.feed(&delta) {
+                    if let Err(error) = fluid.feed(&delta, &[]) {
                         log::debug!("[fluid] feed failed: {error}");
                     }
                 }
