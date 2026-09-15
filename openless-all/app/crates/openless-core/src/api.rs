@@ -1358,7 +1358,7 @@ impl BackendRepositories {
     }
 }
 
-struct MutableState {
+pub(crate) struct MutableState {
     running: bool,
     dictation: DictationStateSnapshot,
     dictation_context: Option<Arc<DictationContext>>,
@@ -1369,7 +1369,11 @@ struct MutableState {
     credentials: CredentialsStatus,
     transcripts: HashMap<SessionId, crate::types::TranscriptAccumulator>,
     /// 活跃会话的 Fluid 层缓冲（仅 fluid 激活时创建；生命周期同 transcripts）。
-    fluid_sessions: HashMap<SessionId, crate::fluid::session::FluidSession>,
+    pub(crate) fluid_sessions: HashMap<SessionId, crate::fluid::session::FluidSession>,
+    /// 常用语存储（fluid-snippets.json；feed 时按启用项做命中扫描）。
+    fluid_snippets: crate::fluid::snippet_store::SnippetStore,
+    /// 段润色调度器（selection_polisher 配置了才有；段/尾润色的合回与预览发布）。
+    fluid_dispatcher: Option<Arc<crate::fluid::dispatcher::FluidPolishDispatcher>>,
     silence_monitor: Option<SilenceMonitor>,
 }
 
@@ -1777,12 +1781,36 @@ impl EngineProgressSink for BackendEngineProgress {
                     .entry(session_id)
                     .or_default()
                     .apply(&delta)?;
-                if let Some(fluid) = state.fluid_sessions.get_mut(&session_id) {
-                    if let Err(error) = fluid.feed(&delta, &[]) {
-                        log::debug!("[fluid] feed failed: {error}");
+                let mut fluid_dispatch = None;
+                if state.fluid_sessions.contains_key(&session_id) {
+                    let snippets = state.fluid_snippets.enabled();
+                    match state
+                        .fluid_sessions
+                        .get_mut(&session_id)
+                        .map(|fluid| fluid.feed(&delta, &snippets))
+                    {
+                        Some(Ok(outcome)) => {
+                            for hit in outcome.new_hits {
+                                self.events.publish(
+                                    Some(session_id),
+                                    BackendEventKind::FluidSnippetsHit(hit),
+                                );
+                            }
+                            if !outcome.new_segments.is_empty() {
+                                fluid_dispatch = state
+                                    .fluid_dispatcher
+                                    .clone()
+                                    .map(|dispatcher| (dispatcher, outcome.new_segments));
+                            }
+                        }
+                        Some(Err(error)) => log::debug!("[fluid] feed failed: {error}"),
+                        None => {}
                     }
                 }
                 drop(state);
+                if let Some((dispatcher, segments)) = fluid_dispatch {
+                    dispatcher.dispatch_segments(session_id, segments);
+                }
                 self.events
                     .publish(Some(session_id), BackendEventKind::TranscriptDelta(delta));
             }
@@ -2033,6 +2061,9 @@ impl OpenLessBackend {
             ));
         }
         let events = Arc::new(EventBus::new(256));
+        // 段润色用 LLM 通道与 selection 共用同一 polisher：在 selection 服务
+        // 把 deps 里的 polisher take 走之前留一份给 Fluid 调度器。
+        let fluid_polisher = deps.selection_polisher.clone();
         let preferences_revision = Arc::new(AtomicU64::new(0));
         let style_pack_revision = Arc::new(AtomicU64::new(0));
         let history_revision = Arc::new(AtomicU64::new(0));
@@ -2228,21 +2259,39 @@ impl OpenLessBackend {
         deps.services
             .remote_input
             .bind_event_publisher(BackendEventPublisher::new(Arc::clone(&events)));
+        let state = Arc::new(RwLock::new(MutableState {
+            running: false,
+            dictation: DictationStateSnapshot::default(),
+            dictation_context: None,
+            dictation_translation_requested: None,
+            credentials: CredentialsStatus::default(),
+            transcripts: HashMap::new(),
+            fluid_sessions: HashMap::new(),
+            fluid_snippets: crate::fluid::snippet_store::SnippetStore::at_data_dir(&config.data_dir),
+            fluid_dispatcher: None,
+            silence_monitor: None,
+        }));
+        let fluid_dispatcher = fluid_polisher.map(|polisher| {
+            Arc::new(crate::fluid::dispatcher::FluidPolishDispatcher::new(
+                Arc::clone(&state),
+                Arc::clone(&events),
+                polisher,
+                Arc::clone(&deps.credential_store),
+                Arc::clone(&repositories.preferences),
+            ))
+        });
+        if let Some(dispatcher) = fluid_dispatcher.as_ref() {
+            state
+                .write()
+                .expect("backend state lock poisoned")
+                .fluid_dispatcher = Some(Arc::clone(dispatcher));
+        }
         Ok(Self {
             config,
             deps,
             clock,
             events,
-            state: Arc::new(RwLock::new(MutableState {
-                running: false,
-                dictation: DictationStateSnapshot::default(),
-                dictation_context: None,
-                dictation_translation_requested: None,
-                credentials: CredentialsStatus::default(),
-                transcripts: HashMap::new(),
-                fluid_sessions: HashMap::new(),
-                silence_monitor: None,
-            })),
+            state,
             phase_changed: Arc::new(tokio::sync::Notify::new()),
             hotkey: Mutex::new(crate::hotkey_interpreter::HotkeyInterpreter::default()),
             hotkey_dispatch_gate: tokio::sync::Mutex::new(()),
@@ -4761,9 +4810,9 @@ impl OpenLessBackend {
                     );
                 state.fluid_sessions.insert(
                     session_id,
-                    crate::fluid::session::FluidSession::new(
-                        crate::fluid::session::FluidConfig::default(),
-                    ),
+                    crate::fluid::session::FluidSession::new(crate::fluid::session::FluidConfig {
+                        polish_enabled: context.fluid.polish_enabled,
+                    }),
                 );
                 Arc::new(raw_context)
             } else {
@@ -5167,6 +5216,23 @@ impl OpenLessBackend {
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
         // Fluid 激活时最终文本取自 FluidSession 拼装缓冲（M2 起含命令剥离等）；
         // 仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
+        // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
+        {
+            let (tail_input, dispatcher) = {
+                let state = self.state.read().expect("backend state lock poisoned");
+                (
+                    state
+                        .fluid_sessions
+                        .get(&session_id)
+                        .and_then(|session| session.tail_polish_input()),
+                    state.fluid_dispatcher.clone(),
+                )
+            };
+            if let (Some(dispatcher), Some(segment)) = (dispatcher, tail_input) {
+                let request = dispatcher.segment_request(&segment);
+                dispatcher.dispatch_tail(session_id, request).await;
+            }
+        }
         let fluid_assembled = {
             let state = self.state.read().expect("backend state lock poisoned");
             state
@@ -5694,6 +5760,20 @@ impl OpenLessBackend {
         cancel_result?;
         host_result?;
         Ok(())
+    }
+
+    /// 撤销本会话最近一次生效的常用语命中（浮框撤销的底层入口）：
+    /// 撤销后同 snippet 在本会话再次说到可重新生效。无可撤销的命中返回 Ok(None)。
+    pub fn cancel_fluid_last_hit(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<crate::fluid::types::FluidSnippetHit>, BackendError> {
+        let mut state = self.state.write().expect("backend state lock poisoned");
+        ensure_active_session(&state, session_id)?;
+        Ok(state
+            .fluid_sessions
+            .get_mut(&session_id)
+            .and_then(|session| session.cancel_last_hit()))
     }
 
     async fn capture_dictation_context(
@@ -9610,6 +9690,339 @@ mod tests {
         let state = backend.state.read().expect("backend state lock poisoned");
         assert!(state.fluid_sessions.is_empty());
         drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    // ===== Fluid M2 接线（dispatcher＋feed 升级＋stop 尾段补润）=====
+
+    /// 多段转写 fixture：engine 启动时把 partials 按全量快照（offset 0）依次
+    /// 注入转写流，finish 返回与累计一致的 final_text（模拟正常 ASR 终态）。
+    struct FixturePartialTranscripts {
+        partials: Vec<String>,
+        final_text: String,
+        pcm: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl FixturePartialTranscripts {
+        fn new(partials: &[&str], final_text: &str) -> Self {
+            Self {
+                partials: partials.iter().map(|text| (*text).to_string()).collect(),
+                final_text: final_text.to_string(),
+                pcm: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    struct FixturePartialTranscriptSession {
+        output: Result<crate::ports::TranscriptOutput, BackendError>,
+        pcm: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl AudioConsumer for FixturePartialTranscriptSession {
+        fn consume_pcm_chunk(&self, pcm: &[u8]) {
+            self.pcm.lock().unwrap().extend_from_slice(pcm);
+        }
+    }
+
+    impl crate::ports::TranscriptionSession for FixturePartialTranscriptSession {
+        fn finish(
+            &self,
+        ) -> BoxFuture<'static, Result<crate::ports::TranscriptOutput, BackendError>> {
+            let output = self.output.clone();
+            Box::pin(async move { output })
+        }
+
+        fn cancel(&self) -> BoxFuture<'static, Result<(), BackendError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl crate::ports::TranscriptionEngine for FixturePartialTranscripts {
+        fn start(
+            &self,
+            _session_id: SessionId,
+            _context: Arc<DictationContext>,
+            partials: Arc<dyn TextStreamSink>,
+        ) -> BoxFuture<'static, Result<Arc<dyn TranscriptionSession>, BackendError>> {
+            let output = Ok(crate::ports::TranscriptOutput {
+                text: self.final_text.clone(),
+                duration_ms: 125,
+            });
+            let chunks = self
+                .partials
+                .iter()
+                .map(|text| TextStreamChunk {
+                    text: text.clone(),
+                    offset: 0,
+                })
+                .collect::<Vec<_>>();
+            let pcm = Arc::clone(&self.pcm);
+            Box::pin(async move {
+                for chunk in chunks {
+                    partials.publish(chunk)?;
+                }
+                Ok(Arc::new(FixturePartialTranscriptSession { output, pcm })
+                    as Arc<dyn TranscriptionSession>)
+            })
+        }
+    }
+
+    fn backend_with_fluid_polisher(
+        data_dir: std::path::PathBuf,
+        dictation_engine: Arc<dyn DictationEngine>,
+        polisher: Arc<dyn crate::ports::TextPolisher>,
+    ) -> OpenLessBackend {
+        OpenLessBackend::new(
+            BackendConfig {
+                data_dir,
+                ..BackendConfig::default()
+            },
+            BackendDependencies {
+                host_actions: Arc::new(FakeHost::default()),
+                text_inserter: Arc::new(crate::testing::FixtureTextInserter::with_outcome(
+                    InsertOutcome::Inserted,
+                )),
+                dictation_engine,
+                task_spawner: Arc::new(TokioTaskSpawner),
+                credential_store: Arc::new(crate::credentials::InMemoryCredentialStore::default()),
+                services: crate::domains::BackendServices::unsupported(),
+                local_asr_runtime: None,
+                marketplace_config: None,
+                selection_runtime: Some(Arc::new(
+                    crate::testing::FixtureSelectionRuntime::successful(
+                        crate::domains::SelectionCapture {
+                            text: String::new(),
+                            source_app: None,
+                        },
+                        InsertOutcome::Inserted,
+                    ),
+                )),
+                selection_polisher: Some(polisher),
+                qa_runtime: None,
+            },
+        )
+        .unwrap()
+    }
+
+    fn fluid_engine_with(
+        transcription: Arc<FixturePartialTranscripts>,
+        polisher: Arc<dyn crate::ports::TextPolisher>,
+    ) -> crate::PipelineDictationEngine {
+        let recorder = crate::AudioRecorderRouter::new(
+            Arc::new(crate::testing::FixtureAudioRecorder::new(
+                Vec::new(),
+                Vec::new(),
+            )),
+            crate::ExternalAudioRecorder::default(),
+        );
+        crate::PipelineDictationEngine::new(Arc::new(recorder), transcription, polisher)
+    }
+
+    fn fluid_snippet(
+        id: &str,
+        trigger: &str,
+        text: &str,
+        mode: crate::fluid::snippet_store::SnippetMode,
+    ) -> crate::fluid::snippet_store::Snippet {
+        crate::fluid::snippet_store::Snippet {
+            id: id.to_string(),
+            trigger: trigger.to_string(),
+            aliases: Vec::new(),
+            text: text.to_string(),
+            mode,
+            enabled: true,
+        }
+    }
+
+    fn insert_fluid_snippet(
+        backend: &OpenLessBackend,
+        snippet: crate::fluid::snippet_store::Snippet,
+    ) {
+        let state = backend.state.write().expect("backend state lock poisoned");
+        state.fluid_snippets.create(snippet).unwrap();
+    }
+
+    fn collect_fluid_snippet_hits(
+        events: &mut EventSubscription,
+    ) -> Vec<crate::fluid::types::FluidSnippetHit> {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event.kind {
+                BackendEventKind::FluidSnippetsHit(hit) => Some(hit),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn wait_for_fluid_preview(
+        events: &mut EventSubscription,
+        needle: &str,
+    ) -> crate::fluid::types::FluidPreviewChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("FluidPreviewChanged did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::FluidPreviewChanged(payload) = event.kind {
+                if payload.text.contains(needle) {
+                    return payload;
+                }
+            }
+        }
+    }
+
+    fn fluid_assembled(backend: &OpenLessBackend, session_id: SessionId) -> String {
+        let state = backend.state.read().expect("backend state lock poisoned");
+        state.fluid_sessions[&session_id].assembled_text()
+    }
+
+    #[tokio::test]
+    async fn fluid_segments_get_polished_and_preview_event_fires() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-fluid-polish-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。", "第一句。第二句来了"],
+            "第一句。第二句来了",
+        ));
+        let engine = fluid_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 说话中完成的段被派润并合回：预览事件与递增修订号。
+        let preview = wait_for_fluid_preview(&mut events, "润后文本").await;
+        assert!(preview.revision >= 1);
+        assert_eq!(preview.text, "润后文本第二句来了");
+
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(result.raw_text, "第一句。第二句来了");
+        // 已润段＋stop 尾段补润都进最终拼装。
+        assert_eq!(result.polished_text, "润后文本润后文本");
+
+        let state = backend.state.read().expect("backend state lock poisoned");
+        assert!(state.fluid_sessions.is_empty());
+        drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn fluid_mechanical_mode_keeps_raw_text_and_inline_append() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-fluid-mechanical-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["帮我翻译一下。加个附注。完毕"],
+            "帮我翻译一下。加个附注。完毕",
+        ));
+        let engine = fluid_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend =
+            backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        preferences.fluid.polish_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        insert_fluid_snippet(
+            &backend,
+            fluid_snippet(
+                "s-inline",
+                "翻译",
+                "请把上文翻译成英文",
+                crate::fluid::snippet_store::SnippetMode::Inline,
+            ),
+        );
+        insert_fluid_snippet(
+            &backend,
+            fluid_snippet(
+                "f-note",
+                "附注",
+                "这里是附注的完整说明文本",
+                crate::fluid::snippet_store::SnippetMode::Footnote,
+            ),
+        );
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(
+            result.polished_text,
+            format!(
+                "帮我翻译一下。加个附注。完毕{}{}",
+                "请把上文翻译成英文",
+                "\n\n[附注]\n- 附注：这里是附注的完整说明文本"
+            )
+        );
+        assert!(
+            polisher.inputs().is_empty(),
+            "mechanical mode must not call the polisher: {:?}",
+            polisher.inputs()
+        );
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn fluid_hit_dedup_and_cancel_command() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-fluid-cancel-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["帮我加个附注说明", "帮我加个附注说明，再提一次附注"],
+            "帮我加个附注说明，再提一次附注",
+        ));
+        let engine = fluid_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        insert_fluid_snippet(
+            &backend,
+            fluid_snippet(
+                "f-note",
+                "附注",
+                "这里是附注的完整说明文本",
+                crate::fluid::snippet_store::SnippetMode::Footnote,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 同 snippet 说到两次：事件只发一次（会话内去重）。
+        let hits = collect_fluid_snippet_hits(&mut events);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet_id, "f-note");
+        assert_eq!(hits[0].mode, "footnote");
+
+        let cancelled = backend.cancel_fluid_last_hit(session_id).unwrap();
+        assert_eq!(cancelled.map(|hit| hit.snippet_id), Some("f-note".into()));
+        assert!(!fluid_assembled(&backend, session_id).contains("[附注]"));
+        // 撤销本身不再生成命中事件。
+        assert!(collect_fluid_snippet_hits(&mut events).is_empty());
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

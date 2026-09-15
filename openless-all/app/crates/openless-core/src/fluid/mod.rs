@@ -4,6 +4,7 @@
 //! 接入点（M2 起）：`api.rs` 的 progress 循环把 `TranscriptDelta` 喂给
 //! [`crate::fluid::session::FluidSession`]，见实施计划。
 
+pub mod dispatcher;
 pub mod segment_polisher;
 pub mod segmenter;
 pub mod session;
