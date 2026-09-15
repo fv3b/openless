@@ -226,6 +226,64 @@
 .ol-siri-capsule-preview > div {
   transform: scale(0.5);
 }
+/* Fluid 预览 = 真实浮框卡的迷你示意（深色卡恒定不变主题，与 pages/FluidPanel 卡面同色调）：
+  状态点＋预览/转写双行占位＋右侧电平条。 */
+.ol-fluid-capsule-preview {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 210px;
+  height: 58px;
+  padding: 0 13px;
+  box-sizing: border-box;
+  border-radius: 15px;
+  background: rgba(19, 21, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 14%);
+}
+.ol-fluid-capsule-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #60a5fa;
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.7);
+}
+.ol-fluid-capsule-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ol-fluid-capsule-line {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  width: 62%;
+}
+.ol-fluid-capsule-line-main {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.46);
+}
+.ol-fluid-capsule-bars {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 14px;
+}
+.ol-fluid-capsule-bars > span {
+  width: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+}
+.ol-fluid-capsule-bars > span:nth-child(1) { height: 4px; }
+.ol-fluid-capsule-bars > span:nth-child(2) { height: 7px; }
+.ol-fluid-capsule-bars > span:nth-child(3) { height: 13px; }
+.ol-fluid-capsule-bars > span:nth-child(4) { height: 7px; }
+.ol-fluid-capsule-bars > span:nth-child(5) { height: 4px; }
 
 [data-ol-theme='dark'] .ol-typeless-capsule-wrap {
   --ol-typeless-bg: #101014;

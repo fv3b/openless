@@ -187,6 +187,14 @@ export function RecordingInputSection() {
     savePrefs({ ...prefs, startMinimized });
   const onAutoUpdateCheckChange = (autoUpdateCheck: boolean) =>
     savePrefs({ ...prefs, autoUpdateCheck });
+  // Fluid 分项开关只动 fluid 对象里的一个键；节流参数（M3 消费）不暴露 UI，
+  // 展开 spread 原样保留，整包 set_settings 落盘时不会丢默认值。
+  const onFluidPolishEnabledChange = (polishEnabled: boolean) =>
+    savePrefs({ ...prefs, fluid: { ...prefs.fluid, polishEnabled } });
+  const onFluidCandidatesEnabledChange = (candidatesEnabled: boolean) =>
+    savePrefs({ ...prefs, fluid: { ...prefs.fluid, candidatesEnabled } });
+  const onFluidRecommendationsEnabledChange = (recommendationsEnabled: boolean) =>
+    savePrefs({ ...prefs, fluid: { ...prefs.fluid, recommendationsEnabled } });
 
   // 录音方式（按住说话 / 自动等）横向选框的滑动指示块：跟随选中项移动，
   // left/width 过渡就是切换动画。按钮的 offsetParent 就是 track（position:relative），
@@ -448,6 +456,54 @@ export function RecordingInputSection() {
               <CapsuleStylePreview style={prefs.capsuleStyle ?? 'siri'} />
             </div>
           </SettingRow>
+        )}
+        {os !== 'linux' && !isAndroid && (
+          // fluid 样式的分项开关：选中 fluid 时从胶囊样式行下方拉出、切走时收回
+          // （grid 0fr→1fr 过渡，与「静音后自动停止」同款，不再突然跳出；inert
+          // 把折叠态开关移出 tab 顺序与 a11y 树）。
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateRows: prefs.capsuleStyle === 'fluid' ? '1fr' : '0fr',
+              transition:
+                'grid-template-rows 0.22s var(--ol-motion-soft), opacity 0.18s var(--ol-motion-quick)',
+              opacity: prefs.capsuleStyle === 'fluid' ? 1 : 0,
+            }}
+            {...(prefs.capsuleStyle !== 'fluid' ? { inert: '' } : {})}
+            aria-hidden={prefs.capsuleStyle !== 'fluid'}
+          >
+            <div style={{ overflow: 'hidden', minHeight: 0 }}>
+              <SettingRow label={t('settings.fluid.fluidPolishEnabled')}>
+                <Toggle
+                  on={prefs.fluid.polishEnabled}
+                  onToggle={onFluidPolishEnabledChange}
+                />
+              </SettingRow>
+              <SettingRow label={t('settings.fluid.fluidCandidate')}>
+                <Toggle
+                  on={prefs.fluid.candidatesEnabled}
+                  onToggle={onFluidCandidatesEnabledChange}
+                />
+              </SettingRow>
+              <SettingRow label={t('settings.fluid.fluidRecommendation')}>
+                <Toggle
+                  on={prefs.fluid.recommendationsEnabled}
+                  onToggle={onFluidRecommendationsEnabledChange}
+                />
+              </SettingRow>
+              {/* 机械模式说明恒显示：解释「指令润色」关闭后浮框的行为，不随开关态显隐。 */}
+              <div
+                style={{
+                  fontSize: 11.5,
+                  color: 'var(--ol-ink-4)',
+                  lineHeight: 1.55,
+                  padding: '2px 0 10px',
+                }}
+              >
+                {t('settings.fluid.fluidMechanicalHint')}
+              </div>
+            </div>
+          </div>
         )}
         <SettingRow
           label={t('settings.recording.muteDuringRecordingLabel')}

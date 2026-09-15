@@ -975,7 +975,7 @@ export const de: typeof zhCN = {
     fluid: {
       fluidPolishEnabled: 'Anweisungsüberarbeitung',
       fluidPolishEnabledDesc:
-        'Bringt gesprochene Anweisungen in eine präzise Formulierung; ausgeschaltet setzt das Panel das Rohttranskript mit angehängtem Treffermaterial ein.',
+        'Bringt gesprochene Anweisungen in eine präzise Formulierung; ausgeschaltet setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
       fluidCandidate: 'Kandidaten-Vorschläge',
       fluidCandidateDesc:
         'Formulierungsoptionen, die das Modell während des Sprechens live anbietet; eine Auswahl fließt in die Anweisungsvorschau ein.',
@@ -983,7 +983,7 @@ export const de: typeof zhCN = {
       fluidRecommendationDesc:
         'Passende aktivierte Formulierungen, vorgeschlagen anhand dessen, was du gerade sagst.',
       fluidMechanicalHint:
-        'Bei ausgeschalteter Anweisungsüberarbeitung setzt das Panel das Rohttranskript mit angehängtem Treffermaterial ein.',
+        'Bei ausgeschalteter Anweisungsüberarbeitung setzt das Panel das Rohtranskript mit angehängtem Treffermaterial ein.',
     },
     selectionPolish: {
       title: 'Textauswahl überarbeiten',

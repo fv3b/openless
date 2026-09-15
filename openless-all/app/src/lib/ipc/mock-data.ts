@@ -47,6 +47,13 @@ export let mockSettings: UserPreferences = {
   launchAtLogin: false,
   showCapsule: true,
   capsuleStyle: 'siri',
+  fluid: {
+    polishEnabled: true,
+    candidatesEnabled: true,
+    recommendationsEnabled: true,
+    candidateThrottleMs: 2000,
+    recommendationThrottleMs: 2000,
+  },
   muteDuringRecording: false,
   audioCueOnRecord: true,
   silenceAutoStopEnabled: false,

@@ -121,6 +121,21 @@ export function CapsuleStylePreview({ style }: { style: CapsuleStyle }) {
             <Icon name="check" size={13} />
           </span>
         </div>
+      ) : style === 'fluid' ? (
+        <div className="ol-fluid-capsule-preview">
+          <span className="ol-fluid-capsule-dot" />
+          <div className="ol-fluid-capsule-lines">
+            <span className="ol-fluid-capsule-line ol-fluid-capsule-line-main" />
+            <span className="ol-fluid-capsule-line" />
+          </div>
+          <div className="ol-fluid-capsule-bars" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        </div>
       ) : (
         <div className="ol-siri-capsule-preview">
           <VoiceOrbStage os="mac" state="recording" level={0.2} />
