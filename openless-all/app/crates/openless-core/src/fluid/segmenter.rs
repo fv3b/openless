@@ -1,7 +1,7 @@
 //! 中英混合断句：把流式转写缓冲切成「可润色的完整句」。
 //!
 //! 使用方式：持有当前完整缓冲文本的一方（M2 起是 `FluidSession` 的
-//! `TranscriptAccumulator`）每次文本变化后调 [`Segmenter::update`]，
+//! 自适应缓冲 `buffer`）每次文本变化后调 [`Segmenter::update`]，
 //! 拿到本次新完成的段；未完成的尾巴用 [`Segmenter::tail`] 读取，
 //! 会话结束时补润。
 //!

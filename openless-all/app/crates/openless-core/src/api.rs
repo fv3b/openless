@@ -4759,9 +4759,12 @@ impl OpenLessBackend {
                     crate::style_packs::default_style_system_prompt_for_mode(
                         crate::types::PolishMode::Raw,
                     );
-                state
-                    .fluid_sessions
-                    .insert(session_id, crate::fluid::session::FluidSession::new());
+                state.fluid_sessions.insert(
+                    session_id,
+                    crate::fluid::session::FluidSession::new(
+                        crate::fluid::session::FluidConfig::default(),
+                    ),
+                );
                 Arc::new(raw_context)
             } else {
                 context
