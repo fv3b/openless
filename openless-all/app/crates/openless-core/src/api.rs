@@ -1527,8 +1527,7 @@ impl ActiveTextInsertion {
                 .lock()
                 .expect("text insertion lock poisoned")
                 .scheduled
-            {
-                break;
+            {                break;
             }
             notified.await;
         }
@@ -1551,8 +1550,7 @@ impl ActiveTextInsertion {
         let insertion = Arc::clone(self);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.task_spawner.spawn(Box::pin(async move {
-            let result = insertion.finish_committed(final_text).await;
-            insertion.terminal.store(3, Ordering::Release);
+            let result = insertion.finish_committed(final_text).await;            insertion.terminal.store(3, Ordering::Release);
             insertion.drained.notify_waiters();
             let _ = result_tx.send(result);
         }));
@@ -5522,8 +5520,7 @@ impl OpenLessBackend {
                 )
             })?;
         let insertion = insertion.await?;
-        let result = insertion.finish(final_text).await;
-        let mut insertions = self
+        let result = insertion.finish(final_text).await;        let mut insertions = self
             .text_insertions
             .lock()
             .expect("text insertion registry lock poisoned");

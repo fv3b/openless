@@ -1034,6 +1034,7 @@ export const zhCN = {
       capsuleStyleLabel: '胶囊样式',
       capsuleStyleSiri: '流光 Siri 风格',
       capsuleStyleClassic: 'Openless 默认风格',
+      capsuleStyleFluid: 'Fluid 流式浮框',
       muteDuringRecordingLabel: '录音时静音',
       muteDuringRecordingDesc: '录音期间临时静音系统输出，避免扬声器回音。',
       audioCueLabel: '录音提示音',

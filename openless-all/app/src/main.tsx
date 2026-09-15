@@ -13,6 +13,7 @@ import type { OS } from './components/WindowChrome';
 const params = new URLSearchParams(window.location.search);
 const windowKind = params.get('window');
 const isCapsule = windowKind === 'capsule';
+const isFluid = windowKind === 'fluid';
 const isQa = windowKind === 'qa';
 const isSelectionPolishPreview = windowKind === 'selection-polish-preview';
 const isSelectionVoiceIntent = windowKind === 'selection-voice-intent';
@@ -34,6 +35,7 @@ const renderApp = () => {
       {isMainWindow && <SplashVideo />}
       <App
         isCapsule={isCapsule}
+        isFluid={isFluid}
         isQa={isQa}
         isSelectionPolishPreview={isSelectionPolishPreview}
         isSelectionVoiceIntent={isSelectionVoiceIntent}

@@ -2966,8 +2966,7 @@ impl TauriTextInsertionSession {
             tauri::async_runtime::spawn_blocking(move || {
                 map_insert_status(
                     crate::insertion::TextInserter::new().insert(&text, restore, shortcut),
-                )
-            })
+                )            })
             .await
             .map_err(|error| {
                 BackendError::new(
