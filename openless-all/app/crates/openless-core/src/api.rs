@@ -5793,13 +5793,19 @@ impl OpenLessBackend {
                 .ghostwriter_sessions
                 .get_mut(&session_id)
                 .and_then(|session| {
-                    session.cancel_last_hit().map(|hit| {
-                        let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
-                            text: session.assembled_text(),
-                            revision: session.revision(),
-                        };
-                        (hit, preview)
-                    })
+                    session
+                        .cancel_last_action()
+                        .and_then(|action| match action {
+                            crate::ghostwriter::types::LastAction::Hit(hit) => Some(hit),
+                            crate::ghostwriter::types::LastAction::Selection(_) => None,
+                        })
+                        .map(|hit| {
+                            let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
+                                text: session.assembled_text(),
+                                revision: session.revision(),
+                            };
+                            (hit, preview)
+                        })
                 })
         };
         if let Some((hit, preview)) = cancelled {
