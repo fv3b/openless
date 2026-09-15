@@ -389,6 +389,7 @@ async fn forward_legacy_event(
         // emit above; no legacy per-domain forwarding exists for them.
         BackendEventKind::GhostwriterPreviewChanged(_)
         | BackendEventKind::GhostwriterSnippetsHit(_)
+        | BackendEventKind::GhostwriterAssistChanged(_)
         | BackendEventKind::GhostwriterNotice(_) => {}
     }
 }

@@ -1810,6 +1810,7 @@ impl EngineProgressSink for BackendEngineProgress {
                 let mut ghostwriter_dispatch = None;
                 let mut ghostwriter_preview = None;
                 let mut ghostwriter_pause_assist = None;
+                let mut ghostwriter_selections_refresh = None;
                 if state.ghostwriter_sessions.contains_key(&session_id) {
                     // 静默计时：本次增量距上次增量的间隔 ≥ ASSIST_PAUSE_MS 视为
                     // 一次停顿（实时助手 Pause 触发；锚点随每次增量刷新，随会话清理）。
@@ -1851,6 +1852,10 @@ impl EngineProgressSink for BackendEngineProgress {
                                     .clone()
                                     .map(|dispatcher| (dispatcher, outcome.new_segments));
                             }
+                            if !outcome.new_selections.is_empty() {
+                                // 口头命令新选中：候选区选中态变化，锁外按最新快照刷新。
+                                ghostwriter_selections_refresh = state.ghostwriter_dispatcher.clone();
+                            }
                             if paused {
                                 ghostwriter_pause_assist = state.ghostwriter_dispatcher.clone();
                             }
@@ -1879,6 +1884,10 @@ impl EngineProgressSink for BackendEngineProgress {
                         &session_id,
                         crate::ghostwriter::dispatcher::AssistTrigger::SegmentEnd,
                     );
+                }
+                if let Some(dispatcher) = ghostwriter_selections_refresh {
+                    // 刷新在锁外发布（dispatcher 自己取读锁组快照）。
+                    dispatcher.refresh_assist_event(&session_id);
                 }
                 self.events
                     .publish(Some(session_id), BackendEventKind::TranscriptDelta(delta));
@@ -5348,6 +5357,20 @@ impl OpenLessBackend {
                 apply_correction_rules(&engine_result.polished_text, &correction_rules);
         }
 
+        // 会话后沉淀抽取（stop 点）：assembled 已定格，fire-and-forget 合入重复档；
+        // 非 Ghostwriter 会话没有幽灵缓冲，跳过。
+        let extraction_dispatcher = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            if state.ghostwriter_sessions.contains_key(&session_id) {
+                state.ghostwriter_dispatcher.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(dispatcher) = extraction_dispatcher {
+            dispatcher.trigger_extraction(&session_id, &engine_result.polished_text);
+        }
+
         // Cancellation may happen while ASR/LLM work is in flight. Never
         // insert a result after the session has been cancelled or replaced.
         {
@@ -5840,16 +5863,16 @@ impl OpenLessBackend {
         Ok(())
     }
 
-    /// 撤销本会话最近一次生效的常用语命中（浮框撤销的底层入口）：
-    /// 撤销后同 snippet 在本会话再次说到可重新生效。成功撤销推进会话修订号
-    /// （后端权威：润色结果迟迟未应用时，撤销后预览靠它继续流动）并发布
-    /// 撤销后的指令预览事件——拼装文本与修订号在撤销的同一锁窗内读取、
-    /// 锁外发布（同 feed 臂模式）。返回被撤销者与撤销后的修订号；无可撤销
-    /// 的命中返回 Ok(None)。
-    pub fn cancel_ghostwriter_last_hit(
+    /// 撤销本会话最近一次生效的动作（命中与选中统一；浮框 ✕ 的底层入口）：
+    /// 命中撤销后同 snippet 在本会话再次说到可重新生效，选中撤销后同批次可再选。
+    /// 成功撤销推进会话修订号（后端权威：润色结果迟迟未应用时，撤销后预览靠它
+    /// 继续流动）——命中撤销发布撤销后的指令预览事件（拼装文本与修订号在撤销的
+    /// 同一锁窗内读取、锁外发布，同 feed 臂模式）；选中撤销刷新候选区事件（选中
+    /// 态变化）。返回被撤销者与撤销后的修订号；无可撤销动作返回 Ok(None)。
+    pub fn cancel_ghostwriter_last_action(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<(crate::ghostwriter::types::GhostwriterSnippetHit, u64)>, BackendError> {
+    ) -> Result<Option<(crate::ghostwriter::types::LastAction, u64)>, BackendError> {
         let cancelled = {
             let mut state = self.state.write().expect("backend state lock poisoned");
             ensure_active_session(&state, session_id)?;
@@ -5857,31 +5880,162 @@ impl OpenLessBackend {
                 .ghostwriter_sessions
                 .get_mut(&session_id)
                 .and_then(|session| {
-                    session
-                        .cancel_last_action()
-                        .and_then(|action| match action {
-                            crate::ghostwriter::types::LastAction::Hit(hit) => Some(hit),
-                            crate::ghostwriter::types::LastAction::Selection(_) => None,
-                        })
-                        .map(|hit| {
-                            let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
-                                text: session.assembled_text(),
-                                revision: session.revision(),
-                            };
-                            (hit, preview)
-                        })
+                    session.cancel_last_action().map(|action| {
+                        let preview = crate::ghostwriter::types::GhostwriterPreviewChanged {
+                            text: session.assembled_text(),
+                            revision: session.revision(),
+                        };
+                        (action, preview)
+                    })
                 })
         };
-        if let Some((hit, preview)) = cancelled {
-            let revision = preview.revision;
-            self.events.publish(
-                Some(session_id),
-                BackendEventKind::GhostwriterPreviewChanged(preview),
-            );
-            Ok(Some((hit, revision)))
-        } else {
-            Ok(None)
+        let Some((action, preview)) = cancelled else {
+            return Ok(None);
+        };
+        let revision = preview.revision;
+        match action {
+            crate::ghostwriter::types::LastAction::Hit(_) => {
+                self.events.publish(
+                    Some(session_id),
+                    BackendEventKind::GhostwriterPreviewChanged(preview),
+                );
+            }
+            crate::ghostwriter::types::LastAction::Selection(_) => {
+                if let Some(dispatcher) = self.ghostwriter_dispatcher_handle() {
+                    dispatcher.refresh_assist_event(&session_id);
+                }
+            }
         }
+        Ok(Some((action, revision)))
+    }
+
+    /// 点选/取消一条批次内选择（1-based 全局序号，kind 由命令层字符串解析）：
+    /// 无批次/序号越界/缓存推荐引用的条目已删都不 panic（batch_text 越界即 None，
+    /// 只刷新不生效）。会话在即按最新快照重发候选区事件（选中态由后端权威）。
+    pub fn toggle_ghostwriter_selection(
+        &self,
+        session_id: SessionId,
+        kind: crate::ghostwriter::types::SelectionKind,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        let dispatcher = {
+            let mut state = self.state.write().expect("backend state lock poisoned");
+            ensure_active_session(&state, session_id)?;
+            if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
+                session.toggle_selection(kind, index);
+            }
+            state.ghostwriter_dispatcher.clone()
+        };
+        if let Some(dispatcher) = dispatcher {
+            dispatcher.refresh_assist_event(&session_id);
+        }
+        Ok(())
+    }
+
+    /// 沉淀建议存为常用语（trigger＝建议触发词、贴位 inline、启用）：取走建议 →
+    /// 建条目（触发词重复 → Err 原样返回前端提示，建议放回可重试）→ 重复档移除
+    /// 该说法 → 刷新候选区事件。无建议/无 dispatcher 返回 Ok(None)。
+    pub fn save_ghostwriter_suggestion(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<crate::ghostwriter::snippet_store::Snippet>, BackendError> {
+        let Some(dispatcher) = self.ghostwriter_dispatcher_handle() else {
+            return Ok(None);
+        };
+        let Some(suggestion) = dispatcher.take_suggestion(&session_id) else {
+            return Ok(None);
+        };
+        let created = self
+            .state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_snippets
+            .create(crate::ghostwriter::snippet_store::Snippet {
+                id: String::new(),
+                trigger: suggestion.suggested_trigger.clone(),
+                aliases: Vec::new(),
+                text: suggestion.phrase.clone(),
+                mode: crate::ghostwriter::snippet_store::SnippetMode::Inline,
+                enabled: true,
+            });
+        let snippet = match created {
+            Ok(snippet) => snippet,
+            Err(error) => {
+                dispatcher.restore_suggestion(&session_id, suggestion);
+                return Err(error);
+            }
+        };
+        dispatcher.recurrence_store().mark_saved(&suggestion.phrase);
+        dispatcher.refresh_assist_event(&session_id);
+        Ok(Some(snippet))
+    }
+
+    /// 忽略沉淀建议：取走建议（清槽）→ 重复档标记已提示（本次会话不再提）→
+    /// 刷新候选区事件。无建议/无 dispatcher 也刷新（状态即空）。
+    pub fn dismiss_ghostwriter_suggestion(&self, session_id: SessionId) -> Result<(), BackendError> {
+        let Some(dispatcher) = self.ghostwriter_dispatcher_handle() else {
+            return Ok(());
+        };
+        if let Some(suggestion) = dispatcher.take_suggestion(&session_id) {
+            dispatcher.recurrence_store().mark_prompted(&suggestion.phrase);
+        }
+        dispatcher.refresh_assist_event(&session_id);
+        Ok(())
+    }
+
+    /// 五份任务书快照（固定注册表顺序；命令层列表入口）。
+    pub fn list_ghostwriter_task_briefs(
+        &self,
+    ) -> Result<Vec<crate::ghostwriter::task_brief_store::TaskBriefInfo>, BackendError> {
+        Ok(self.ghostwriter_task_briefs()?.list())
+    }
+
+    /// 覆写某份任务书正文（trim 后非空才收；保存即生效，下次调用即用新正文）。
+    pub fn save_ghostwriter_task_brief(
+        &self,
+        id: &str,
+        body: &str,
+    ) -> Result<crate::ghostwriter::task_brief_store::TaskBriefInfo, BackendError> {
+        self.ghostwriter_task_briefs()?
+            .set_body(parse_task_brief_id(id)?, body)
+    }
+
+    /// 恢复某份任务书默认正文（删覆写并落盘；无覆写时 no-op）。
+    pub fn reset_ghostwriter_task_brief(
+        &self,
+        id: &str,
+    ) -> Result<crate::ghostwriter::task_brief_store::TaskBriefInfo, BackendError> {
+        Ok(self
+            .ghostwriter_task_briefs()?
+            .reset(parse_task_brief_id(id)?))
+    }
+
+    /// 当前 dispatcher（命令层入口；selection_polisher 未配置时 None）。
+    fn ghostwriter_dispatcher_handle(
+        &self,
+    ) -> Option<Arc<crate::ghostwriter::dispatcher::GhostwriterPolishDispatcher>> {
+        self.state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_dispatcher
+            .clone()
+    }
+
+    /// 当前任务书存储（经 dispatcher；未配置 dispatcher 返回错误）。
+    fn ghostwriter_task_briefs(
+        &self,
+    ) -> Result<
+        Arc<crate::ghostwriter::task_brief_store::TaskBriefStore>,
+        BackendError,
+    > {
+        self.ghostwriter_dispatcher_handle()
+            .map(|dispatcher| dispatcher.task_brief_store())
+            .ok_or_else(|| {
+                BackendError::new(
+                    BackendErrorCode::Internal,
+                    "ghostwriter dispatcher is not configured",
+                )
+            })
     }
 
     /// 会话当前指令预览拼装文本（撤销后前端刷新预览用；会话不存在返回 None）。
@@ -6141,6 +6295,16 @@ fn ensure_active_session(state: &MutableState, session_id: SessionId) -> Result<
             "dictation progress belongs to an inactive session",
         ))
     }
+}
+
+/// 任务书命令的字符串 id → 身份；未知键 → InvalidArgument（命令层原样透传）。
+fn parse_task_brief_id(id: &str) -> Result<crate::ghostwriter::prompts::TaskBriefId, BackendError> {
+    crate::ghostwriter::prompts::TaskBriefId::from_key(id).ok_or_else(|| {
+        BackendError::new(
+            BackendErrorCode::InvalidArgument,
+            format!("unknown ghostwriter task brief id: {id}"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -10194,9 +10358,12 @@ mod tests {
         assert_eq!(hits[0].snippet_id, "f-note");
         assert_eq!(hits[0].mode, "footnote");
 
-        let cancelled = backend.cancel_ghostwriter_last_hit(session_id).unwrap();
+        let cancelled = backend.cancel_ghostwriter_last_action(session_id).unwrap();
         // 撤销成功返回被撤销者与撤销后的修订号（后端权威，≥ 1）。
-        let (hit, revision) = cancelled.expect("cancel should succeed");
+        let (action, revision) = cancelled.expect("cancel should succeed");
+        let crate::ghostwriter::types::LastAction::Hit(hit) = action else {
+            panic!("hit cancel must report a hit action");
+        };
         assert_eq!(hit.snippet_id, "f-note");
         assert_eq!(hit.mode, "footnote");
         assert!(revision >= 1);
@@ -10327,6 +10494,350 @@ mod tests {
         }
 
         backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 按谓词等待一条 `GhostwriterAssistChanged`（选中态/沉淀提醒等状态断言用）。
+    async fn wait_for_ghostwriter_assist_matching(
+        events: &mut EventSubscription,
+        predicate: impl Fn(&crate::ghostwriter::types::GhostwriterAssistChanged) -> bool,
+    ) -> crate::ghostwriter::types::GhostwriterAssistChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("GhostwriterAssistChanged did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::GhostwriterAssistChanged(payload) = event.kind {
+                if predicate(&payload) {
+                    return payload;
+                }
+            }
+        }
+    }
+
+    /// 口头命令「用候选一」：批次已就位（句毕 assist 已出）后，命令增量选中候选、
+    /// 命令短语被剔除、材料随拼装并入（浮框所见即所贴）；选中态经事件回敬。
+    #[tokio::test]
+    async fn ghostwriter_voice_command_selects_and_merges() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-voice-select-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲","精准词乙"]}],"recommendations":[],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。用候选一"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert_eq!(assist.candidate_groups[0].items.len(), 2);
+
+        transcription.pump("用候选一");
+        let selected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .candidate_groups
+                .first()
+                .and_then(|group| group.items.first())
+                .is_some_and(|item| item.selected)
+        })
+        .await;
+        assert_eq!(selected.candidate_groups[0].items[0].text, "精准词甲");
+        let assembled = ghostwriter_assembled(&backend, session_id);
+        assert!(assembled.contains("精准词甲"), "material missing: {assembled}");
+        assert!(!assembled.contains("用候选一"), "command leaked: {assembled}");
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 点选命令往返：选中 → 事件 selected=true 且材料进拼装；再 toggle → 取消并
+    /// 材料出拼装。命令即 api 方法（Tauri 层只做参数解析）。
+    #[tokio::test]
+    async fn ghostwriter_toggle_selection_command_roundtrip() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-toggle-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":[],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let _ = wait_for_ghostwriter_assist(&mut events).await;
+
+        backend
+            .toggle_ghostwriter_selection(
+                session_id,
+                crate::ghostwriter::types::SelectionKind::Candidate,
+                1,
+            )
+            .unwrap();
+        let selected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .candidate_groups
+                .first()
+                .and_then(|group| group.items.first())
+                .is_some_and(|item| item.selected)
+        })
+        .await;
+        assert!(selected.candidate_groups[0].items[0].selected);
+        assert!(ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+
+        backend
+            .toggle_ghostwriter_selection(
+                session_id,
+                crate::ghostwriter::types::SelectionKind::Candidate,
+                1,
+            )
+            .unwrap();
+        let unselected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .candidate_groups
+                .first()
+                .and_then(|group| group.items.first())
+                .is_some_and(|item| !item.selected)
+        })
+        .await;
+        assert!(!unselected.candidate_groups[0].items[0].selected);
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 沉淀建议一键入库：存 → 常用语列表出现新条目（trigger＝建议触发词、
+    /// inline、启用）、重复档移除该说法、沉淀提醒随刷新事件消失。
+    #[tokio::test]
+    async fn ghostwriter_save_suggestion_creates_snippet() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-save-suggestion-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[],"recommendations":[],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("把日志清一下。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        // 重复档先有该说法：保存后必须从中移除（mark_saved 生效的依据）。
+        let dispatcher = backend
+            .state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_dispatcher
+            .clone()
+            .expect("ghostwriter dispatcher");
+        dispatcher
+            .recurrence_store()
+            .apply_extraction(vec![("把日志清一下".to_string(), "例句".to_string())]);
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("把日志清一下。继续");
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert_eq!(
+            assist.sediment.as_ref().map(|sediment| sediment.phrase.as_str()),
+            Some("把日志清一下")
+        );
+
+        let saved = backend
+            .save_ghostwriter_suggestion(session_id)
+            .unwrap()
+            .expect("suggestion should be saveable");
+        assert_eq!(saved.trigger, "清日志");
+        assert_eq!(saved.text, "把日志清一下");
+        assert_eq!(
+            saved.mode,
+            crate::ghostwriter::snippet_store::SnippetMode::Inline
+        );
+        assert!(saved.enabled);
+        assert!(backend
+            .list_snippets()
+            .iter()
+            .any(|snippet| snippet.id == saved.id));
+        assert!(!dispatcher
+            .recurrence_store()
+            .pending_matches()
+            .iter()
+            .any(|entry| entry.phrase == "把日志清一下"));
+
+        let refreshed =
+            wait_for_ghostwriter_assist_matching(&mut events, |assist| assist.sediment.is_none())
+                .await;
+        assert!(refreshed.sediment.is_none());
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// stop 点沉淀抽取：assembled 定格后 fire-and-forget 调抽取（fixture 收到固定
+    /// 抽取会话 id 的调用；每次 stop 恰好一次）。
+    #[tokio::test]
+    async fn ghostwriter_stop_triggers_extraction() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-extract-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_extraction_json("[]"),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(
+            data_dir.clone(),
+            Arc::new(engine),
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。");
+        backend.stop_dictation_session(session_id).await.unwrap();
+
+        let extraction_id = crate::ghostwriter::sediment_extractor::extraction_session_id();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while polisher
+            .session_ids()
+            .iter()
+            .filter(|id| **id == extraction_id)
+            .count()
+            == 0
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "extraction call did not arrive in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // 留出余量确认没有第二次抽取调用（每次 stop 恰好一次）。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            polisher
+                .session_ids()
+                .iter()
+                .filter(|id| **id == extraction_id)
+                .count(),
+            1,
+            "extraction must fire exactly once per stop"
+        );
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 任务书命令往返：列表五份（固定序）→ 覆写正文（dispatcher 现取即新正文，
+    /// 保存即生效）→ 恢复默认 → 未知 id 原样报错。
+    #[tokio::test]
+    async fn ghostwriter_task_brief_commands_roundtrip() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-briefs-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let engine = ghostwriter_engine_with(
+            Arc::new(crate::testing::FixtureTranscriptionEngine::successful("raw", 125)),
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+
+        let briefs = backend.list_ghostwriter_task_briefs().unwrap();
+        assert_eq!(
+            briefs
+                .iter()
+                .map(|brief| brief.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "instruction_polish",
+                "candidates",
+                "recommendations",
+                "sediment_notice",
+                "sediment_extraction",
+            ]
+        );
+        assert!(briefs.iter().all(|brief| !brief.modified));
+
+        let saved = backend
+            .save_ghostwriter_task_brief("candidates", "自定义候选正文")
+            .unwrap();
+        assert_eq!(saved.id, "candidates");
+        assert!(saved.modified);
+        assert_eq!(saved.body, "自定义候选正文");
+        // dispatcher 现取即新正文（保存即生效的存储共享验证）。
+        let dispatcher = backend
+            .state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_dispatcher
+            .clone()
+            .expect("ghostwriter dispatcher");
+        assert_eq!(
+            dispatcher
+                .task_brief_store()
+                .body(crate::ghostwriter::prompts::TaskBriefId::Candidates),
+            "自定义候选正文"
+        );
+
+        let reset = backend
+            .reset_ghostwriter_task_brief("candidates")
+            .unwrap();
+        assert!(!reset.modified);
+        assert_eq!(
+            reset.body,
+            crate::ghostwriter::prompts::TaskBriefId::Candidates.default_body()
+        );
+        assert!(backend
+            .save_ghostwriter_task_brief("nope", "正文")
+            .is_err());
+        assert!(backend.reset_ghostwriter_task_brief("nope").is_err());
+
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

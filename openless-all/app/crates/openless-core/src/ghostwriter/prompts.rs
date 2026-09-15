@@ -37,6 +37,18 @@ impl TaskBriefId {
         }
     }
 
+    /// 从稳定键解析任务书身份（命令层字符串入口）；未知键 → None。
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "instruction_polish" => Some(Self::InstructionPolish),
+            "candidates" => Some(Self::Candidates),
+            "recommendations" => Some(Self::Recommendations),
+            "sediment_notice" => Some(Self::SedimentNotice),
+            "sediment_extraction" => Some(Self::SedimentExtraction),
+            _ => None,
+        }
+    }
+
     /// 界面列表展示用标题。
     pub fn title(self) -> &'static str {
         match self {
@@ -108,10 +120,12 @@ mod tests {
         ];
         for (id, key, title) in expected {
             assert_eq!(id.key(), key);
+            assert_eq!(TaskBriefId::from_key(key), Some(id));
             assert_eq!(id.title(), title);
             assert!(!id.description().is_empty());
             assert!(!id.default_body().is_empty());
         }
+        assert_eq!(TaskBriefId::from_key("unknown"), None);
     }
 
     #[test]

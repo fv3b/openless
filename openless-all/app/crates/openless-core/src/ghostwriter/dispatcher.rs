@@ -297,6 +297,32 @@ impl GhostwriterPolishDispatcher {
         }
     }
 
+    /// 归还沉淀建议（save 失败时放回，前端可重试）：槽已被更新的建议占用时
+    /// 不覆盖（新的就是用户当前看到的）。
+    pub fn restore_suggestion(
+        &self,
+        session_id: &SessionId,
+        suggestion: GhostwriterSedimentSuggestion,
+    ) {
+        let mut slot = self
+            .suggestion
+            .lock()
+            .expect("suggestion lock poisoned");
+        if slot.is_none() {
+            *slot = Some((*session_id, suggestion));
+        }
+    }
+
+    /// 任务书存储句柄（命令层读取/保存/恢复默认用；Arc 克隆共享同一份状态）。
+    pub fn task_brief_store(&self) -> Arc<TaskBriefStore> {
+        Arc::clone(&self.task_briefs)
+    }
+
+    /// 重复档存储句柄（命令层 save/dismiss 标记用；Arc 克隆共享同一份状态）。
+    pub fn recurrence_store(&self) -> Arc<RecurrenceStore> {
+        Arc::clone(&self.recurrence)
+    }
+
     /// 候选节流：从未跑过（None）直接放行；否则距上次 assist 收尾须 ≥ throttle_ms。
     fn assist_throttle_passed(&self, throttle_ms: u64) -> bool {
         let previous = *self
