@@ -329,7 +329,9 @@ impl FluidSession {
 
     /// 撤销最近一个生效的命中：inline 从待融队列出队其材料，
     /// footnote 从附注块移除；被撤销的 snippet 恢复「未生效」状态，
-    /// 同会话再次说到可重新生效。返回被撤销者供事件确认。
+    /// 同会话再次说到可重新生效。成功撤销推进修订号（后端权威：机械模式
+    /// 没有 apply_* 可增，撤销是预览前进的唯一推手），调用方据此发布
+    /// 撤销后的预览并让前端丢弃在途旧预览。返回被撤销者供事件确认。
     pub fn cancel_last_hit(&mut self) -> Option<FluidSnippetHit> {
         let active = self.active_hits.pop()?;
         self.cancelled_once.insert(active.hit.snippet_id.clone());
@@ -338,6 +340,7 @@ impl FluidSession {
                 self.inline_pending.remove(position);
             }
         }
+        self.revision += 1;
         Some(active.hit)
     }
 
@@ -412,7 +415,7 @@ impl FluidSession {
         self.assembled_text().is_empty()
     }
 
-    /// 预览修订号：每次润色结果应用成功后递增。
+    /// 预览修订号：润色结果应用成功或命中撤销成功后递增。
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -584,6 +587,36 @@ mod tests {
     }
 
     #[test]
+    fn alias_match_fires_hit_case_folded() {
+        // 别名分支：trigger 未出现，别名 "fy" 以大写形式出现在文本里 → 大小写折叠命中；
+        // 机械模式下 inline 材料照常追加在生转写后
+        let mut s = FluidSession::new(FluidConfig { polish_enabled: false });
+        let mut snippet = snip("s-fy", "翻译", SnippetMode::Inline);
+        snippet.aliases = vec!["fy".to_string()];
+        let material = snippet.text.clone();
+        let snippets = vec![snippet];
+        let outcome = s
+            .feed(&delta("帮我FY一下。完", 0, false), &snippets)
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "s-fy");
+        assert!(s.assembled_text().contains(&material));
+    }
+
+    #[test]
+    fn alias_match_skips_blank_and_tolerates_surrounding_space() {
+        // 别名容错：空串不得通配命中；两侧空白经 trim 折叠后命中
+        let mut s = FluidSession::new(FluidConfig::default());
+        let mut snippet = snip("s-alias", "翻译", SnippetMode::Inline);
+        snippet.aliases = vec![" a ".to_string(), String::new(), "  b  ".to_string()];
+        let snippets = vec![snippet];
+        let outcome = s
+            .feed(&delta("请B一下。", 0, false), &snippets)
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+    }
+
+    #[test]
     fn assembled_joins_polished_with_fallback_and_footnote_block() {
         // 两段：第 1 段已润、第 2 段未润回落原文；附注块格式「- 标题：文本」
         let mut s = FluidSession::new(FluidConfig::default());
@@ -743,6 +776,29 @@ mod tests {
         let outcome = s.feed(&delta("帮我翻译一下。", 0, true), &snippets).unwrap();
         assert!(outcome.new_hits.is_empty());
         assert_eq!(s.assembled_text(), "帮我翻译一下。");
+    }
+
+    #[test]
+    fn cancel_last_hit_bumps_revision_so_mechanical_previews_flow_after_undo() {
+        // 机械模式（apply_* 永远 false）：修订号原本永久为 0，撤销后前端会把
+        // 后续 feed 预览按旧修订全部丢弃（预览冻结到会话结束）。撤销成功须由
+        // 后端推进修订号；feed 路径不增号，新内容照常进预览（等号规则接受）。
+        let mut s = FluidSession::new(FluidConfig { polish_enabled: false });
+        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippets = vec![snippet.clone()];
+        let outcome = s
+            .feed(&delta("加个附注。完毕", 0, false), &snippets)
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(s.revision(), 0);
+        assert!(s.cancel_last_hit().is_some());
+        assert_eq!(s.revision(), 1);
+        assert!(!s.assembled_text().contains("[附注]"));
+        // 撤销后再喂新内容：预览反映新内容，修订号保持（feed 路径不增）
+        s.feed(&delta("，新话来了。", 0, false), &snippets).unwrap();
+        assert_eq!(s.revision(), 1);
+        assert!(s.assembled_text().contains("新话来了"));
+        assert!(!s.assembled_text().contains("[附注]"));
     }
 
     #[test]

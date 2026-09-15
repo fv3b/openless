@@ -1,9 +1,13 @@
 // English resources — translated from zh-CN.ts. Keep keys in sync.
+// Exception: `noticeInserted` splits into i18next plural keys (_one/_other) here;
+// zh-CN and the other locales have no plural forms and keep the flat {{count}} key.
 
 import type { zhCN } from './zh-CN';
 
 // Type-level guarantee that en mirrors the zh-CN shape.
-export const en: typeof zhCN = {
+export const en: typeof zhCN & {
+  fluid: { panel: { noticeInserted_one: string; noticeInserted_other: string } };
+} = {
   cloudSync: {
     title: 'Cloud sync',
     description:
@@ -173,7 +177,11 @@ export const en: typeof zhCN = {
       noticePastedConfirm: 'Paste sent — confirm the destination',
       noticeCopiedFallback: 'Copied — paste manually',
       noticeNotRequested: 'Done',
+      // count 传入时 i18next 按 en 复数规则取 _one/_other；扁平键留作
+      // 无复数语言回退。中文等语言沿用各文件的扁平 {{count}} 约定。
       noticeInserted: 'Inserted {{count}} characters',
+      noticeInserted_one: 'Inserted {{count}} character',
+      noticeInserted_other: 'Inserted {{count}} characters',
     },
     snippets: {
       title: 'Snippets',

@@ -25,7 +25,9 @@ impl Default for FluidConfig {
 /// 一段待润色的生转写：段序号＋已润前文尾部＋本段文本＋随段转移的材料。
 #[derive(Debug, Clone)]
 pub struct PolishableSegment {
-    /// 段在会话中的序号（apply_polished 的对位索引）。
+    /// 段在会话中的序号（apply_polished 的对位索引）。尾巴补润请求
+    /// （tail_polish_input）复用本结构时取 segments.len() 作哨兵——
+    /// 对位不存在，apply_polished 对它一律 false，须走 apply_tail_polished。
     pub index: usize,
     /// 已润前文尾部（≤200 字符，截断自 polished 缓冲）。
     pub prior: String,

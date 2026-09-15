@@ -343,6 +343,20 @@ mod tests {
     }
 
     #[test]
+    fn create_normalizes_aliases_trim_and_drop_empty() {
+        // 别名逐条 trim、空串丢弃、顺序保留：[" a ", "", " b ", "   "] → ["a", "b"]
+        let mut input = snippet("", "发货");
+        input.aliases = vec![
+            " a ".to_string(),
+            String::new(),
+            " b ".to_string(),
+            "   ".to_string(),
+        ];
+        let created = SnippetStore::in_memory().create(input).unwrap();
+        assert_eq!(created.aliases, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
     fn enabled_filters_disabled() {
         // 2 条，1 禁用 → enabled() 只回启用的那条
         let store = SnippetStore::in_memory();

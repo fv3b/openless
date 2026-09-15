@@ -84,9 +84,11 @@ export function emptyFluidPreviewState(): FluidPreviewState {
  * 指令预览纯状态机：
  * - fluid_preview_changed：revision 低于本地即丢弃（乱序/重复事件不留痕）；
  * - fluid_snippets_hit：按 snippetId 去重入列；
- * - fluid_cancel_done：后端 cancel 不推新预览事件也不增 revision，所以成功撤销时
- *   本地换上后端拼装文本并前进一档修订（挡掉撤销前在途的旧预览），同时移除
- *   最近一枚徽标；无可撤销（cancelled=false / payload 缺失）原样返回；
+ * - fluid_cancel_done：后端撤销成功即推进修订号并发布撤销后的预览事件，
+ *   响应里的修订号是后端权威值——本地换上响应的拼装文本（在时）与修订号，
+ *   撤销前在途的旧预览（修订号更低）由严格排序丢弃；响应缺修订号
+ *   （旧响应/mock）时保持本地修订号。同时移除最近一枚徽标；无可撤销
+ *   （cancelled=false / payload 缺失）原样返回；
  * - 未知事件原样返回。
  */
 export function fluidPreviewReducer(
@@ -125,11 +127,17 @@ export function fluidPreviewReducer(
     };
   }
   if (event.type === 'fluid_cancel_done') {
-    const payload = event.payload as { cancelled?: unknown; assembled?: unknown } | undefined;
+    const payload = event.payload as
+      | { cancelled?: unknown; assembled?: unknown; revision?: unknown }
+      | undefined;
     if (!payload || payload.cancelled !== true) return state;
     const hits = state.hits.slice(0, -1);
-    if (typeof payload.assembled !== 'string') return { ...state, hits };
-    return { ...state, text: payload.assembled, revision: state.revision + 1, hits };
+    const revision =
+      typeof payload.revision === 'number' && Number.isFinite(payload.revision)
+        ? payload.revision
+        : state.revision;
+    const base = { ...state, revision, hits };
+    return typeof payload.assembled === 'string' ? { ...base, text: payload.assembled } : base;
   }
   return state;
 }

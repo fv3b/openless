@@ -1782,14 +1782,23 @@ impl EngineProgressSink for BackendEngineProgress {
                     .or_default()
                     .apply(&delta)?;
                 let mut fluid_dispatch = None;
+                let mut fluid_preview = None;
                 if state.fluid_sessions.contains_key(&session_id) {
                     let snippets = state.fluid_snippets.enabled();
-                    match state
-                        .fluid_sessions
-                        .get_mut(&session_id)
-                        .map(|fluid| fluid.feed(&delta, &snippets))
-                    {
-                        Some(Ok(outcome)) => {
+                    match state.fluid_sessions.get_mut(&session_id).map(|fluid| {
+                        let outcome = fluid.feed(&delta, &snippets);
+                        // feed 改动了会话缓冲，指令预览（此刻贴出的完整文本）
+                        // 随之变化：机械模式下这是预览事件的唯一来源，润色流
+                        // 下让尾巴增长也即时反映；修订号供前端去重乱序事件。
+                        outcome.map(|outcome| {
+                            let preview = crate::fluid::types::FluidPreviewChanged {
+                                text: fluid.assembled_text(),
+                                revision: fluid.revision(),
+                            };
+                            (outcome, preview)
+                        })
+                    }) {
+                        Some(Ok((outcome, preview))) => {
                             for hit in outcome.new_hits {
                                 self.events.publish(
                                     Some(session_id),
@@ -1802,12 +1811,19 @@ impl EngineProgressSink for BackendEngineProgress {
                                     .clone()
                                     .map(|dispatcher| (dispatcher, outcome.new_segments));
                             }
+                            fluid_preview = Some(preview);
                         }
                         Some(Err(error)) => log::debug!("[fluid] feed failed: {error}"),
                         None => {}
                     }
                 }
                 drop(state);
+                if let Some(preview) = fluid_preview {
+                    self.events.publish(
+                        Some(session_id),
+                        BackendEventKind::FluidPreviewChanged(preview),
+                    );
+                }
                 if let Some((dispatcher, segments)) = fluid_dispatch {
                     dispatcher.dispatch_segments(session_id, segments);
                 }
@@ -5214,8 +5230,8 @@ impl OpenLessBackend {
         }
 
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
-        // Fluid 激活时最终文本取自 FluidSession 拼装缓冲（M2 起含命令剥离等）；
-        // 仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
+        // Fluid 激活时最终文本取自 FluidSession 拼装缓冲（含生转写、
+        // 材料、附注块）；仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
         // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
         {
             let (tail_input, dispatcher) = {
@@ -5763,17 +5779,41 @@ impl OpenLessBackend {
     }
 
     /// 撤销本会话最近一次生效的常用语命中（浮框撤销的底层入口）：
-    /// 撤销后同 snippet 在本会话再次说到可重新生效。无可撤销的命中返回 Ok(None)。
+    /// 撤销后同 snippet 在本会话再次说到可重新生效。成功撤销推进会话修订号
+    /// （后端权威：机械模式没有润色应用可增，撤销后预览靠它继续流动）并发布
+    /// 撤销后的指令预览事件——拼装文本与修订号在撤销的同一锁窗内读取、
+    /// 锁外发布（同 feed 臂模式）。返回被撤销者与撤销后的修订号；无可撤销
+    /// 的命中返回 Ok(None)。
     pub fn cancel_fluid_last_hit(
         &self,
         session_id: SessionId,
-    ) -> Result<Option<crate::fluid::types::FluidSnippetHit>, BackendError> {
-        let mut state = self.state.write().expect("backend state lock poisoned");
-        ensure_active_session(&state, session_id)?;
-        Ok(state
-            .fluid_sessions
-            .get_mut(&session_id)
-            .and_then(|session| session.cancel_last_hit()))
+    ) -> Result<Option<(crate::fluid::types::FluidSnippetHit, u64)>, BackendError> {
+        let cancelled = {
+            let mut state = self.state.write().expect("backend state lock poisoned");
+            ensure_active_session(&state, session_id)?;
+            state
+                .fluid_sessions
+                .get_mut(&session_id)
+                .and_then(|session| {
+                    session.cancel_last_hit().map(|hit| {
+                        let preview = crate::fluid::types::FluidPreviewChanged {
+                            text: session.assembled_text(),
+                            revision: session.revision(),
+                        };
+                        (hit, preview)
+                    })
+                })
+        };
+        if let Some((hit, preview)) = cancelled {
+            let revision = preview.revision;
+            self.events.publish(
+                Some(session_id),
+                BackendEventKind::FluidPreviewChanged(preview),
+            );
+            Ok(Some((hit, revision)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// 会话当前指令预览拼装文本（撤销后前端刷新预览用；会话不存在返回 None）。
@@ -9830,6 +9870,59 @@ mod tests {
         }
     }
 
+    /// 手动泵式转写 fixture：start 时存下 TextStreamSink 而不自动发增量，
+    /// 测试用 [`Self::pump`] 按需注入（撤销后再喂新内容，覆盖「撤销后预览
+    /// 恢复流动」这类需要精确踩节拍的场景）；finish 返回 final_text。
+    struct PumpedTranscripts {
+        sink: std::sync::Mutex<Option<Arc<dyn crate::ports::TextStreamSink>>>,
+        final_text: String,
+        pcm: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PumpedTranscripts {
+        fn new(final_text: &str) -> Self {
+            Self {
+                sink: std::sync::Mutex::new(None),
+                final_text: final_text.to_string(),
+                pcm: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn pump(&self, text: &str) {
+            let sink = self
+                .sink
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("transcription session not started");
+            sink.publish(TextStreamChunk {
+                text: text.to_string(),
+                offset: 0,
+            })
+            .unwrap();
+        }
+    }
+
+    impl crate::ports::TranscriptionEngine for PumpedTranscripts {
+        fn start(
+            &self,
+            _session_id: SessionId,
+            _context: Arc<DictationContext>,
+            partials: Arc<dyn crate::ports::TextStreamSink>,
+        ) -> BoxFuture<'static, Result<Arc<dyn TranscriptionSession>, BackendError>> {
+            *self.sink.lock().unwrap() = Some(partials);
+            let output = Ok(crate::ports::TranscriptOutput {
+                text: self.final_text.clone(),
+                duration_ms: 125,
+            });
+            let pcm = Arc::clone(&self.pcm);
+            Box::pin(async move {
+                Ok(Arc::new(FixturePartialTranscriptSession { output, pcm })
+                    as Arc<dyn TranscriptionSession>)
+            })
+        }
+    }
+
     fn backend_with_fluid_polisher(
         data_dir: std::path::PathBuf,
         dictation_engine: Arc<dyn DictationEngine>,
@@ -9868,7 +9961,7 @@ mod tests {
     }
 
     fn fluid_engine_with(
-        transcription: Arc<FixturePartialTranscripts>,
+        transcription: Arc<dyn crate::ports::TranscriptionEngine>,
         polisher: Arc<dyn crate::ports::TextPolisher>,
     ) -> crate::PipelineDictationEngine {
         let recorder = crate::AudioRecorderRouter::new(
@@ -10020,6 +10113,7 @@ mod tests {
                 crate::fluid::snippet_store::SnippetMode::Footnote,
             ),
         );
+        let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
         let result = backend.stop_dictation_session(session_id).await.unwrap();
@@ -10036,6 +10130,12 @@ mod tests {
             "mechanical mode must not call the polisher: {:?}",
             polisher.inputs()
         );
+
+        // 机械模式同样发布指令预览（所见＝贴出的生转写＋材料＋附注），
+        // 否则浮框预览区整个会话空转、违背所见即所贴；修订号不增（无润色
+        // 应用），前端 reducer 接受等号修订、按到达顺序取最新文本。
+        let preview = wait_for_fluid_preview(&mut events, "帮我翻译一下").await;
+        assert!(preview.text.contains("请把上文翻译成英文"));
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -10080,10 +10180,97 @@ mod tests {
         assert_eq!(hits[0].mode, "footnote");
 
         let cancelled = backend.cancel_fluid_last_hit(session_id).unwrap();
-        assert_eq!(cancelled.map(|hit| hit.snippet_id), Some("f-note".into()));
+        // 撤销成功返回被撤销者与撤销后的修订号（后端权威，≥ 1）。
+        let (hit, revision) = cancelled.expect("cancel should succeed");
+        assert_eq!(hit.snippet_id, "f-note");
+        assert_eq!(hit.mode, "footnote");
+        assert!(revision >= 1);
         assert!(!fluid_assembled(&backend, session_id).contains("[附注]"));
         // 撤销本身不再生成命中事件。
         assert!(collect_fluid_snippet_hits(&mut events).is_empty());
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn fluid_mechanical_cancel_bumps_revision_and_previews_flow_afterwards() {
+        // 机械模式回归：修订号曾永久为 0，撤销后 feed 预览全部被前端按旧修订
+        // 丢弃（指令预览冻结在撤销快照直到会话结束）。撤销须由后端推进修订号
+        // 并发布撤销后的预览，之后的 feed 预览继续流动。
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-fluid-cancel-mechanical-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(PumpedTranscripts::new("帮我加个附注说明，新话来了"));
+        let engine = fluid_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend =
+            backend_with_fluid_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        preferences.fluid.polish_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        insert_fluid_snippet(
+            &backend,
+            fluid_snippet(
+                "f-note",
+                "附注",
+                "这里是附注的完整说明文本",
+                crate::fluid::snippet_store::SnippetMode::Footnote,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 首条增量：命中生效，预览随 feed 发布（机械模式 feed 不增号 → rev 0）。
+        // 进度处理是同步的：pump 返回即两类事件都已入队，一次性取空再分别断言。
+        transcription.pump("帮我加个附注说明");
+        let mut hits = Vec::new();
+        let mut first = None;
+        while let Some(event) = events.try_recv().ok() {
+            match event.kind {
+                BackendEventKind::FluidSnippetsHit(hit) => hits.push(hit),
+                BackendEventKind::FluidPreviewChanged(preview) => first = Some(preview),
+                _ => {}
+            }
+        }
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet_id, "f-note");
+        let first = first.expect("first feed preview should be published");
+        assert_eq!(first.revision, 0);
+        assert!(first.text.contains("[附注]"));
+
+        // 撤销：后端权威修订号 +1，并发布撤销后的预览事件（无附注）。
+        let (hit, revision) = backend
+            .cancel_fluid_last_hit(session_id)
+            .unwrap()
+            .expect("cancel should succeed");
+        assert_eq!(hit.snippet_id, "f-note");
+        assert!(revision >= 1);
+        let cancel_preview = wait_for_fluid_preview(&mut events, "帮我加个附注说明").await;
+        assert_eq!(cancel_preview.revision, revision);
+        assert!(!cancel_preview.text.contains("[附注]"));
+
+        // 撤销后再喂新内容：预览事件继续流动（feed 路径不增号，修订号保持，
+        // 前端按等号规则接受）——旧实现里这里是冻住的撤销快照。
+        transcription.pump("，新话来了");
+        let later = wait_for_fluid_preview(&mut events, "新话来了").await;
+        assert_eq!(later.revision, revision);
+        assert!(later.text.contains("新话来了"));
+        assert!(!later.text.contains("[附注]"));
+
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(result.polished_text, "帮我加个附注说明，新话来了");
+        assert!(
+            polisher.inputs().is_empty(),
+            "mechanical mode must not call the polisher: {:?}",
+            polisher.inputs()
+        );
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

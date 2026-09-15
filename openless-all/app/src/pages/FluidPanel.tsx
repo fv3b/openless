@@ -27,7 +27,7 @@ import { fluidCancelLast, getSettings } from '../lib/ipc';
  * （fluid_preview_changed，若此刻停下将贴给 AI 的完整结果）、底区转写流（小字
  * 上下文参照）。命中/预览状态走 fluidCapsule.fluidPreviewReducer 纯状态机，
  * 撤销结果经同一 reducer 回流，revision 单调。
- * 定位沿用当前显示器底部居中；跟随光标所在屏的 Rust 编排在 M2 接入。
+ * 定位固定当前显示器底部居中（Rust 侧未感知光标所在屏；跟随光标屏未实现）。
  */
 
 const WINDOW_WIDTH = 560;
@@ -42,6 +42,11 @@ interface FallbackNotice {
 
 export function FluidPanel() {
   const { t } = useTranslation();
+  // 事件监听只挂一次，经 ref 取最新 t：语言切换后兜底提示不再回退旧语言。
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  });
   const [visible, setVisible] = useState(false);
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
@@ -107,12 +112,16 @@ export function FluidPanel() {
     void (async () => {
       try {
         const result = await fluidCancelLast(sessionId);
-        // 后端撤销后不推新预览事件：拼装文本从这里回流，reducer 内前进一档
-        // 修订挡掉在途旧预览，同时移除最近一枚徽标。
+        // 后端撤销即推进修订号并发布撤销后的预览事件：响应里的修订号是
+        // 后端权威值，凭它挡掉撤销前在途的旧预览，同时移除最近一枚徽标。
         setPreview(state =>
           fluidPreviewReducer(state, {
             type: 'fluid_cancel_done',
-            payload: { cancelled: result.cancelled, assembled: result.assembled },
+            payload: {
+              cancelled: result.cancelled,
+              assembled: result.assembled,
+              revision: result.revision,
+            },
           }),
         );
       } catch (error) {
@@ -182,7 +191,7 @@ export function FluidPanel() {
             setRecording(false);
             clearTimers();
             const notice = completionNotice(payload?.inserted, (payload?.polishedText ?? '').length);
-            setNotice({ text: t(notice.key, { count: notice.count ?? 0 }) });
+            setNotice({ text: tRef.current(notice.key, { count: notice.count ?? 0 }) });
             later(() => setNotice(null), FALLBACK_TOAST_MS);
             // 停止阶段窗口可能已被 hideNow 真隐藏；兜底提示是修订版决策 1 里唯一
             // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。

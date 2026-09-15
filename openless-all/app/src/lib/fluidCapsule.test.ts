@@ -105,7 +105,7 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
   assert(s4.hits.length === 2, 'payload 缺字段时原样返回');
 }
 
-// 撤销命中（fluidCancelLast 结果回流）：文本替换 + 修订前进 + 最后一枚徽标移除
+// 撤销命中（fluidCancelLast 结果回流）：文本换响应拼装 + 修订号取响应权威值 + 移除最后一枚徽标
 {
   const s1 = fluidPreviewReducer(EMPTY, {
     type: 'fluid_preview_changed',
@@ -121,31 +121,52 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
   });
   const s4 = fluidPreviewReducer(s3, {
     type: 'fluid_cancel_done',
-    payload: { cancelled: true, assembled: '第一句。' },
+    payload: { cancelled: true, assembled: '第一句。', revision: 3 },
   });
   assert(s4.text === '第一句。', '撤销后应显示后端拼装文本');
-  assert(s4.revision === 3, '本地修订前进一档（fresh revision）');
+  assert(s4.revision === 3, '修订号取响应权威值（撤销推进后的 N+1）');
   assert(s4.hits.length === 1 && s4.hits[0].snippetId === 's1', '撤销移除最后一枚徽标');
 
-  // 撤销前在途的旧 preview（revision 较小）仍被丢弃，预览不被旧文本打回
+  // 撤销前在途的旧 preview（revision N）被严格排序丢弃，预览不被旧文本打回
   const s5 = fluidPreviewReducer(s4, {
     type: 'fluid_preview_changed',
     payload: { text: '撤销前的旧预览', revision: 2 },
   });
   assert(s5.text === '第一句。', '撤销后的旧预览事件应被丢弃');
-  // 后端下一次 apply 的 revision 从本地档位继续接受（≥ 本地即可）
+  assert(s5.revision === 3, '丢弃时不改修订号');
+  // 后端 feed 路径不再增修订号：撤销后的新预览与响应同修订，按等号规则接受
   const s6 = fluidPreviewReducer(s5, {
     type: 'fluid_preview_changed',
     payload: { text: '第一句。新话', revision: 3 },
   });
-  assert(s6.text === '第一句。新话', '撤销后的新预览应被接受');
+  assert(s6.text === '第一句。新话', '撤销后的新预览应按等号规则被接受');
 }
 
-// 无可撤销：cancelled=false 或无 assembled → 状态原样
+// 修订号以后端响应为唯一权威（非本地 +1）：响应跳档时本地跟着跳，
+// 在途的低修订预览一律丢弃
+{
+  const s1 = fluidPreviewReducer(EMPTY, {
+    type: 'fluid_preview_changed',
+    payload: { text: '第一句。', revision: 2 },
+  });
+  const s2 = fluidPreviewReducer(s1, {
+    type: 'fluid_cancel_done',
+    payload: { cancelled: true, revision: 9 },
+  });
+  assert(s2.revision === 9, '修订号取响应值而非本地 +1');
+  assert(s2.text === '第一句。', '响应无拼装文本时保留现有预览文本');
+  const s3 = fluidPreviewReducer(s2, {
+    type: 'fluid_preview_changed',
+    payload: { text: '在途旧预览', revision: 4 },
+  });
+  assert(s3.text === '第一句。' && s3.revision === 9, '低于响应修订的在途预览应被丢弃');
+}
+
+// 无可撤销：cancelled=false 或无 payload → 状态原样；响应缺修订号 → 保持本地档位
 {
   const s1 = fluidPreviewReducer(EMPTY, {
     type: 'fluid_cancel_done',
-    payload: { cancelled: false, assembled: 'x' },
+    payload: { cancelled: false, assembled: 'x', revision: 5 },
   });
   assert(s1 === EMPTY, '无可撤销时原样返回');
   const s2 = fluidPreviewReducer(EMPTY, { type: 'fluid_cancel_done' });
@@ -158,7 +179,7 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
     type: 'fluid_cancel_done',
     payload: { cancelled: true },
   });
-  assert(s3.hits.length === 0 && s3.revision === base.revision, '无 assembled 只移除徽标');
+  assert(s3.hits.length === 0 && s3.revision === base.revision, '响应缺修订号只移除徽标');
 }
 
 // 未知事件原样返回

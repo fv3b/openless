@@ -1,10 +1,12 @@
 import type { Snippet } from '../types';
 import { invokeOrMock } from './shared';
 
-/** fluid_cancel_last 的返回：是否撤销了命中＋撤销后的指令预览拼装文本。 */
+/** fluid_cancel_last 的返回：是否撤销了命中＋撤销后的指令预览（拼装文本＋
+ * 后端权威修订号，机械模式下撤销是预览前进的唯一推手）。 */
 export interface FluidCancelLastResult {
   cancelled: boolean;
   assembled: string | null;
+  revision: number;
 }
 
 // 非 Tauri 环境的内存 mock 库：仅保证 CRUD 与撤销链路走通，无持久化。
@@ -59,5 +61,6 @@ export function fluidCancelLast(sessionId: string): Promise<FluidCancelLastResul
   return invokeOrMock('fluid_cancel_last', { sessionId }, () => ({
     cancelled: false,
     assembled: null,
+    revision: 0,
   }));
 }

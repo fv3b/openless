@@ -4,12 +4,14 @@ use super::*;
 
 use openless_core::fluid::snippet_store::Snippet;
 
-/// fluid_cancel_last 的返回：是否撤销了命中＋撤销后的指令预览拼装文本。
+/// fluid_cancel_last 的返回：是否撤销了命中＋撤销后的指令预览（拼装文本＋
+/// 后端权威修订号，前端凭它丢弃撤销前在途的旧预览）。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FluidCancelLastResult {
     pub cancelled: bool,
     pub assembled: Option<String>,
+    pub revision: u64,
 }
 
 #[tauri::command]
@@ -49,13 +51,17 @@ pub fn fluid_cancel_last(
 ) -> Result<FluidCancelLastResult, String> {
     let parsed = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
     let session_id = openless_core::SessionId::from_uuid(parsed);
-    let cancelled = core
+    let (cancelled, revision) = match core
         .cancel_fluid_last_hit(session_id)
         .map_err(|e| e.to_string())?
-        .is_some();
+    {
+        Some((_, revision)) => (true, revision),
+        None => (false, 0),
+    };
     let assembled = core.fluid_assembled_text(session_id);
     Ok(FluidCancelLastResult {
         cancelled,
         assembled,
+        revision,
     })
 }

@@ -111,7 +111,11 @@ impl FluidPolishDispatcher {
                     }
                 }
             }
-            Err(error) => log::warn!("[fluid] tail polish failed: {error}"),
+            Err(error) => {
+                // 尾段失败不发布 FluidNotice：此刻 stop 正在收尾，浮框已收起，
+                // 没有可承接提示的面板；回落尾巴原文＋材料兜底追加即最终贴出。
+                log::warn!("[fluid] tail polish failed: {error}")
+            }
         }
     }
 
