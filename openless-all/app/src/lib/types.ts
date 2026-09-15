@@ -671,6 +671,19 @@ export type CapsuleState =
 /** 录音胶囊样式：'siri' = 流光 Siri 光效版（默认）；'classic' = Openless 经典药丸版。 */
 export type CapsuleStyle = 'siri' | 'classic' | 'typeless' | 'fluid';
 
+/** 常用语贴位模式：'inline' 进正文、'footnote' 附注。 */
+export type SnippetMode = 'inline' | 'footnote';
+
+/** 常用语：用户存下来的表述实体（触发词/别名 → 表述文本，命中后按贴位生效）。 */
+export interface Snippet {
+  id: string;
+  trigger: string;
+  aliases: string[];
+  text: string;
+  mode: SnippetMode;
+  enabled: boolean;
+}
+
 export interface CapsulePayload {
   state: CapsuleState;
   level: number; // 0..1 RMS

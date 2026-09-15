@@ -5,18 +5,27 @@ import {
   type BackendEvent,
   type TranscriptViewState,
 } from '../lib/backendEvent';
-import { completionMessage, fluidPanelActionFor, shouldUseFluidCapsule } from '../lib/fluidCapsule';
-import { getSettings } from '../lib/ipc';
+import {
+  completionMessage,
+  emptyFluidPreviewState,
+  fluidPanelActionFor,
+  fluidPreviewReducer,
+  shouldUseFluidCapsule,
+  type FluidPreviewState,
+} from '../lib/fluidCapsule';
+import { fluidCancelLast, getSettings } from '../lib/ipc';
 
 /**
- * fluid 浮框（M1）：说话时底部浮条实时转写，停止即收起、静默落字。
+ * fluid 浮框：说话时底部浮框实时转写，停止即收起、静默落字。
  *
  * 收放规则见 fluidCapsule.ts 的 fluidPanelActionFor：starting/recording 显示，
  * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
- * 布局为 M2-M4 预留：卡片是内容自适应的纵向 flex，后续动作 chips（M2）、
- * 注入徽标（M3）、主题建议（M4）作为新 slot 插在转写区下方即可，无需改窗口。
+ * 卡片内部三区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近命中）、中区指令预览
+ * （fluid_preview_changed，若此刻停下将贴给 AI 的完整结果）、底区转写流（小字
+ * 上下文参照）。命中/预览状态走 fluidCapsule.fluidPreviewReducer 纯状态机，
+ * 撤销结果经同一 reducer 回流，revision 单调。
  * 定位沿用当前显示器底部居中；跟随光标所在屏的 Rust 编排在 M2 接入。
  */
 
@@ -35,6 +44,7 @@ export function FluidPanel() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [text, setText] = useState('');
+  const [preview, setPreview] = useState<FluidPreviewState>(emptyFluidPreviewState());
   const [notice, setNotice] = useState<FallbackNotice | null>(null);
   const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
@@ -89,6 +99,26 @@ export function FluidPanel() {
     }
   };
 
+  const cancelLastHit = () => {
+    const sessionId = transcriptRef.current.sessionId;
+    if (!sessionId) return;
+    void (async () => {
+      try {
+        const result = await fluidCancelLast(sessionId);
+        // 后端撤销后不推新预览事件：拼装文本从这里回流，reducer 内前进一档
+        // 修订挡掉在途旧预览，同时移除最近一枚徽标。
+        setPreview(state =>
+          fluidPreviewReducer(state, {
+            type: 'fluid_cancel_done',
+            payload: { cancelled: result.cancelled, assembled: result.assembled },
+          }),
+        );
+      } catch (error) {
+        console.warn('[fluid] cancel last hit failed', error);
+      }
+    })();
+  };
+
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
@@ -101,13 +131,23 @@ export function FluidPanel() {
         transcriptRef.current = next;
         setText(next.text);
 
-        if (e.kind.type === 'dictation_state_changed') {
+        if (e.kind.type === 'fluid_preview_changed' || e.kind.type === 'fluid_snippets_hit') {
+          setPreview(state => fluidPreviewReducer(state, e.kind));
+        } else if (e.kind.type === 'fluid_notice') {
+          const payload = e.kind.payload as { message?: string; level?: string } | undefined;
+          if (payload?.level === 'error' && typeof payload.message === 'string' && payload.message) {
+            clearTimers();
+            setNotice({ text: payload.message });
+            later(() => setNotice(null), FALLBACK_TOAST_MS);
+          }
+        } else if (e.kind.type === 'dictation_state_changed') {
           const payload = e.kind.payload as
             | { phase?: string; level?: number }
             | undefined;
           const phase = payload?.phase;
           if (phase === 'starting') {
             setRecording(false);
+            setPreview(emptyFluidPreviewState());
           } else if (phase === 'recording') {
             setRecording(true);
             const raw = payload?.level;
@@ -171,7 +211,7 @@ export function FluidPanel() {
     };
   }, []);
 
-  // 新文本到达时贴底滚动；用户上翻查看时停在原位。
+  // 转写流新文本到达时贴底滚动；用户上翻查看时停在原位。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -283,13 +323,68 @@ export function FluidPanel() {
               })}
             </div>
           </div>
+          {preview.hits.length > 0 ? (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 6,
+                padding: '4px 16px 0',
+              }}
+            >
+              {preview.hits.map(hit => (
+                <span
+                  key={hit.snippetId}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: 999,
+                    background: 'rgba(52, 211, 153, 0.12)',
+                    border: '1px solid rgba(52, 211, 153, 0.32)',
+                    color: '#6ee7b7',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  ✓ {hit.title}
+                </span>
+              ))}
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                aria-label="撤销最近命中"
+                title="撤销最近命中"
+                onClick={cancelLastHit}
+                className="fluid-cancel-btn"
+                style={{
+                  width: 22,
+                  height: 22,
+                  padding: 0,
+                  borderRadius: 999,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  color: '#a1a1aa',
+                  fontSize: 11,
+                  lineHeight: 1,
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  pointerEvents: 'auto',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
           <div
-            ref={scrollRef}
             style={{
               flex: 1,
               minHeight: 0,
               overflowY: 'auto',
-              padding: '2px 16px 14px',
+              padding: '10px 16px 4px',
             }}
           >
             <p
@@ -297,9 +392,31 @@ export function FluidPanel() {
                 margin: 0,
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                fontSize: 15,
-                lineHeight: 1.7,
-                color: '#fafafa',
+                fontSize: 16,
+                lineHeight: 1.65,
+                color: preview.text ? '#fafafa' : 'rgba(250,250,250,0.35)',
+              }}
+            >
+              {preview.text || '指令预览将在说话后出现'}
+            </p>
+          </div>
+          <div
+            ref={scrollRef}
+            style={{
+              flexShrink: 0,
+              maxHeight: 64,
+              overflowY: 'auto',
+              padding: '2px 16px 12px',
+            }}
+          >
+            <p
+              style={{
+                margin: 0,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: 13,
+                lineHeight: 1.6,
+                color: 'rgba(250,250,250,0.55)',
               }}
             >
               {text}
@@ -308,7 +425,7 @@ export function FluidPanel() {
                   style={{
                     display: 'inline-block',
                     width: 2,
-                    height: 16,
+                    height: 14,
                     marginLeft: 2,
                     verticalAlign: '-2px',
                     background: '#60a5fa',
@@ -316,12 +433,8 @@ export function FluidPanel() {
                   }}
                 />
               ) : null}
+              {recording && !text ? '正在聆听…' : null}
             </p>
-            {recording && !text ? (
-              <p style={{ margin: 0, fontSize: 13, color: 'rgba(250,250,250,0.35)' }}>
-                正在聆听…
-              </p>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -333,6 +446,10 @@ export function FluidPanel() {
         @keyframes fluidCaret {
           0%, 100% { opacity: 1; }
           50% { opacity: 0; }
+        }
+        .fluid-cancel-btn:hover {
+          background: rgba(255, 255, 255, 0.16) !important;
+          color: #e4e4e7 !important;
         }
       `}</style>
     </div>

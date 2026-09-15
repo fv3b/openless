@@ -1,4 +1,10 @@
-import { completionMessage, fluidPanelActionFor, shouldUseFluidCapsule } from './fluidCapsule';
+import {
+  completionMessage,
+  emptyFluidPreviewState,
+  fluidPanelActionFor,
+  fluidPreviewReducer,
+  shouldUseFluidCapsule,
+} from './fluidCapsule';
 
 // Fluid 浮框纯逻辑测试。与 src/lib 其它测试同风格：自定义 assert + 顶层执行
 //（前端测试栈是 node+tsx，无 DOM；不用 node:test，避免 @types/node 依赖）。
@@ -54,5 +60,111 @@ assert(
   fluidPanelActionFor('completed', undefined) === 'hide',
   'completed 无 inserted 字段按已入光标处理',
 );
+
+// --- fluidPreviewReducer：浮框三区（命中徽标/指令预览）的纯状态机 ---
+
+const EMPTY = emptyFluidPreviewState();
+assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '空状态应为零值');
+
+// preview revision 丢弃旧值（乱序事件按修订号取舍）
+{
+  const s1 = fluidPreviewReducer(EMPTY, {
+    type: 'fluid_preview_changed',
+    payload: { text: 'A', revision: 2 },
+  });
+  assert(s1.text === 'A', '新修订应被接受');
+  assert(s1.revision === 2, '接受后修订号同步');
+  const s2 = fluidPreviewReducer(s1, {
+    type: 'fluid_preview_changed',
+    payload: { text: 'B', revision: 1 },
+  });
+  assert(s2.text === 'A', '旧修订应被丢弃');
+  assert(s2.revision === 2, '丢弃时不改修订号');
+  const s3 = fluidPreviewReducer(s2, {
+    type: 'fluid_preview_changed',
+    payload: { text: 'C', revision: 2 },
+  });
+  assert(s3.text === 'C', '同修订按后到覆盖（后端事件同会话严格递增）');
+  const s4 = fluidPreviewReducer(s2, { type: 'fluid_preview_changed' });
+  assert(s4 === s2, 'payload 缺失时原样返回');
+}
+
+// hit 徽标去重按 snippetId：同 id 两次 → 徽标数组长度 1
+{
+  const hit = { type: 'fluid_snippets_hit', payload: { snippetId: 's1', title: '翻译', mode: 'footnote' } };
+  const s1 = fluidPreviewReducer(EMPTY, hit);
+  assert(s1.hits.length === 1 && s1.hits[0].title === '翻译', '首次命中应入列');
+  const s2 = fluidPreviewReducer(s1, hit);
+  assert(s2.hits.length === 1, '同 snippetId 重复命中不重复入列');
+  const s3 = fluidPreviewReducer(s2, {
+    type: 'fluid_snippets_hit',
+    payload: { snippetId: 's2', title: '术语', mode: 'inline' },
+  });
+  assert(s3.hits.length === 2, '不同 snippetId 各占一枚');
+  const s4 = fluidPreviewReducer(s3, { type: 'fluid_snippets_hit', payload: { snippetId: 's3' } });
+  assert(s4.hits.length === 2, 'payload 缺字段时原样返回');
+}
+
+// 撤销命中（fluidCancelLast 结果回流）：文本替换 + 修订前进 + 最后一枚徽标移除
+{
+  const s1 = fluidPreviewReducer(EMPTY, {
+    type: 'fluid_preview_changed',
+    payload: { text: '第一句。请翻译', revision: 2 },
+  });
+  const s2 = fluidPreviewReducer(s1, {
+    type: 'fluid_snippets_hit',
+    payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
+  });
+  const s3 = fluidPreviewReducer(s2, {
+    type: 'fluid_snippets_hit',
+    payload: { snippetId: 's2', title: '术语', mode: 'inline' },
+  });
+  const s4 = fluidPreviewReducer(s3, {
+    type: 'fluid_cancel_done',
+    payload: { cancelled: true, assembled: '第一句。' },
+  });
+  assert(s4.text === '第一句。', '撤销后应显示后端拼装文本');
+  assert(s4.revision === 3, '本地修订前进一档（fresh revision）');
+  assert(s4.hits.length === 1 && s4.hits[0].snippetId === 's1', '撤销移除最后一枚徽标');
+
+  // 撤销前在途的旧 preview（revision 较小）仍被丢弃，预览不被旧文本打回
+  const s5 = fluidPreviewReducer(s4, {
+    type: 'fluid_preview_changed',
+    payload: { text: '撤销前的旧预览', revision: 2 },
+  });
+  assert(s5.text === '第一句。', '撤销后的旧预览事件应被丢弃');
+  // 后端下一次 apply 的 revision 从本地档位继续接受（≥ 本地即可）
+  const s6 = fluidPreviewReducer(s5, {
+    type: 'fluid_preview_changed',
+    payload: { text: '第一句。新话', revision: 3 },
+  });
+  assert(s6.text === '第一句。新话', '撤销后的新预览应被接受');
+}
+
+// 无可撤销：cancelled=false 或无 assembled → 状态原样
+{
+  const s1 = fluidPreviewReducer(EMPTY, {
+    type: 'fluid_cancel_done',
+    payload: { cancelled: false, assembled: 'x' },
+  });
+  assert(s1 === EMPTY, '无可撤销时原样返回');
+  const s2 = fluidPreviewReducer(EMPTY, { type: 'fluid_cancel_done' });
+  assert(s2 === EMPTY, 'payload 缺失时原样返回');
+  const base = fluidPreviewReducer(EMPTY, {
+    type: 'fluid_snippets_hit',
+    payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
+  });
+  const s3 = fluidPreviewReducer(base, {
+    type: 'fluid_cancel_done',
+    payload: { cancelled: true },
+  });
+  assert(s3.hits.length === 0 && s3.revision === base.revision, '无 assembled 只移除徽标');
+}
+
+// 未知事件原样返回
+{
+  const s1 = fluidPreviewReducer(EMPTY, { type: 'something_else', payload: {} });
+  assert(s1 === EMPTY, '未知事件原样返回');
+}
 
 console.log('fluidCapsule.test.ts: all assertions passed');

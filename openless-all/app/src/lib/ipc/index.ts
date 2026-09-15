@@ -271,6 +271,17 @@ export {
 // splash（2.0 开屏 PV 首启标记）
 export { takeSplashPlayback, SPLASH_MAJOR } from './splash';
 
+// fluid（常用语库与浮框撤销）
+export type { FluidCancelLastResult } from './fluid';
+export {
+  listFluidSnippets,
+  createFluidSnippet,
+  saveFluidSnippet,
+  deleteFluidSnippet,
+  setFluidSnippetEnabled,
+  fluidCancelLast,
+} from './fluid';
+
 // utils
 export { openExternal, exportErrorLog, logClientError, debugReadCursorContext } from './utils';
 

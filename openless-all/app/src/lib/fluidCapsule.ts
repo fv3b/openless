@@ -49,3 +49,83 @@ export function fluidPanelActionFor(
       return 'hide';
   }
 }
+
+// --- 指令预览状态机（纯函数，node 可测） ---
+
+/** 一枚已生效常用语的徽标（fluid_snippets_hit payload）。 */
+export interface FluidHitBadge {
+  snippetId: string;
+  title: string;
+  mode: string;
+}
+
+/** 浮框顶区（命中徽标）＋中区（指令预览）的共享状态。 */
+export interface FluidPreviewState {
+  text: string;
+  revision: number;
+  hits: FluidHitBadge[];
+}
+
+/** 后端事件（kind 同结构：snake_case type + camelCase payload）＋撤销回流。 */
+export interface FluidPreviewEvent {
+  type: string;
+  payload?: unknown;
+}
+
+export function emptyFluidPreviewState(): FluidPreviewState {
+  return { text: '', revision: 0, hits: [] };
+}
+
+/**
+ * 指令预览纯状态机：
+ * - fluid_preview_changed：revision 低于本地即丢弃（乱序/重复事件不留痕）；
+ * - fluid_snippets_hit：按 snippetId 去重入列；
+ * - fluid_cancel_done：后端 cancel 不推新预览事件也不增 revision，所以成功撤销时
+ *   本地换上后端拼装文本并前进一档修订（挡掉撤销前在途的旧预览），同时移除
+ *   最近一枚徽标；无可撤销（cancelled=false / payload 缺失）原样返回；
+ * - 未知事件原样返回。
+ */
+export function fluidPreviewReducer(
+  state: FluidPreviewState,
+  event: FluidPreviewEvent,
+): FluidPreviewState {
+  if (event.type === 'fluid_preview_changed') {
+    const payload = event.payload as { text?: unknown; revision?: unknown } | undefined;
+    if (
+      !payload ||
+      typeof payload.text !== 'string' ||
+      typeof payload.revision !== 'number' ||
+      !Number.isFinite(payload.revision)
+    ) {
+      return state;
+    }
+    if (payload.revision < state.revision) return state;
+    return { ...state, text: payload.text, revision: payload.revision };
+  }
+  if (event.type === 'fluid_snippets_hit') {
+    const payload = event.payload as
+      | { snippetId?: unknown; title?: unknown; mode?: unknown }
+      | undefined;
+    if (
+      !payload ||
+      typeof payload.snippetId !== 'string' ||
+      typeof payload.title !== 'string' ||
+      typeof payload.mode !== 'string'
+    ) {
+      return state;
+    }
+    if (state.hits.some((hit) => hit.snippetId === payload.snippetId)) return state;
+    return {
+      ...state,
+      hits: [...state.hits, { snippetId: payload.snippetId, title: payload.title, mode: payload.mode }],
+    };
+  }
+  if (event.type === 'fluid_cancel_done') {
+    const payload = event.payload as { cancelled?: unknown; assembled?: unknown } | undefined;
+    if (!payload || payload.cancelled !== true) return state;
+    const hits = state.hits.slice(0, -1);
+    if (typeof payload.assembled !== 'string') return { ...state, hits };
+    return { ...state, text: payload.assembled, revision: state.revision + 1, hits };
+  }
+  return state;
+}
