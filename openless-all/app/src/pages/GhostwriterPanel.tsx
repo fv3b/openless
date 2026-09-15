@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '../lib/ipc';
 import {
@@ -8,13 +8,25 @@ import {
 } from '../lib/backendEvent';
 import {
   completionNotice,
+  emptyGhostwriterAssistState,
   emptyGhostwriterPreviewState,
+  ghostwriterAssistReducer,
+  ghostwriterHasUndoAction,
   ghostwriterPanelActionFor,
   ghostwriterPreviewReducer,
   shouldUseGhostwriterCapsule,
   type GhostwriterPreviewState,
 } from '../lib/ghostwriterCapsule';
-import { ghostwriterCancelLast, getSettings } from '../lib/ipc';
+import {
+  createGhostwriterSnippet,
+  getSettings,
+  ghostwriterCancelLast,
+  ghostwriterDismissSuggestion,
+  ghostwriterSaveSuggestion,
+  ghostwriterToggleSelection,
+  type GhostwriterSelectionKind,
+} from '../lib/ipc';
+import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/types';
 
 /**
  * ghostwriter 浮框：说话时底部浮框实时转写，停止即收起、静默落字。
@@ -23,18 +35,117 @@ import { ghostwriterCancelLast, getSettings } from '../lib/ipc';
  * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
- * 卡片内部三区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近命中）、中区指令预览
- * （ghostwriter_preview_changed，若此刻停下将贴给 AI 的完整结果）、底区转写流（小字
- * 上下文参照）。命中/预览状态走 ghostwriterCapsule.ghostwriterPreviewReducer 纯状态机，
- * 撤销结果经同一 reducer 回流，revision 单调。
+ * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作）、候选区
+ * （沉淀提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换）、
+ * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
+ * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
+ * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
  * 定位固定当前显示器底部居中（Rust 侧未感知光标所在屏；跟随光标屏未实现）。
  */
 
 const WINDOW_WIDTH = 560;
 const CARD_WIDTH = 520;
 const CARD_GAP = 18;
+// 卡片竖向留白（420 − 2×12 = 396：候选区出现时向上长高的上限即卡片 maxHeight）。
+const CARD_VERTICAL_PADDING = 12;
+const CARD_MAX_HEIGHT = 420 - 2 * CARD_VERTICAL_PADDING;
+// 候选区收起时保留最后一帧渲染到 max-height 过渡结束（.2s），否则高度过渡看不见。
+const ASSIST_COLLAPSE_MS = 220;
 const FALLBACK_TOAST_MS = 2500;
 const LEVEL_BARS = [0.45, 0.7, 1, 0.7, 0.45];
+
+const CANDIDATE_KIND_LABEL_KEYS: Record<GhostwriterCandidateKind, string> = {
+  term: 'ghostwriter.panel.kindTerm',
+  phrase: 'ghostwriter.panel.kindPhrase',
+  naming: 'ghostwriter.panel.kindNaming',
+};
+
+const ASSIST_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: 6,
+  padding: '4px 16px 0',
+};
+
+const ASSIST_LABEL_STYLE: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#a1a1aa',
+  letterSpacing: '0.06em',
+  flexShrink: 0,
+};
+
+const ICON_BUTTON_STYLE: CSSProperties = {
+  width: 22,
+  height: 22,
+  padding: 0,
+  borderRadius: 999,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'rgba(255, 255, 255, 0.08)',
+  border: '1px solid rgba(255, 255, 255, 0.12)',
+  color: '#a1a1aa',
+  fontSize: 11,
+  lineHeight: 1,
+  cursor: 'pointer',
+  flexShrink: 0,
+  pointerEvents: 'auto',
+};
+
+const ACTION_BUTTON_STYLE: CSSProperties = {
+  padding: '2px 10px',
+  borderRadius: 999,
+  background: 'rgba(255, 255, 255, 0.08)',
+  border: '1px solid rgba(255, 255, 255, 0.12)',
+  color: '#e4e4e7',
+  fontSize: 12,
+  fontWeight: 500,
+  lineHeight: 1.5,
+  cursor: 'pointer',
+  flexShrink: 0,
+  pointerEvents: 'auto',
+};
+
+const CHIP_SAVE_BUTTON_STYLE: CSSProperties = {
+  padding: '0 6px',
+  borderRadius: 999,
+  background: 'rgba(52, 211, 153, 0.18)',
+  border: '1px solid rgba(52, 211, 153, 0.4)',
+  color: '#6ee7b7',
+  fontSize: 11,
+  lineHeight: '16px',
+  cursor: 'pointer',
+  flexShrink: 0,
+  pointerEvents: 'auto',
+};
+
+function chipStyle(selected: boolean): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: '100%',
+    padding: '3px 10px',
+    borderRadius: 999,
+    background: selected ? 'rgba(52, 211, 153, 0.12)' : 'rgba(255, 255, 255, 0.06)',
+    border: selected ? '1px solid rgba(52, 211, 153, 0.32)' : '1px solid rgba(255, 255, 255, 0.12)',
+    color: selected ? '#6ee7b7' : '#e4e4e7',
+    fontSize: 12,
+    fontWeight: 500,
+    letterSpacing: '0.02em',
+    lineHeight: 1.5,
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+  };
+}
+
+const CHIP_LABEL_STYLE: CSSProperties = {
+  whiteSpace: 'normal',
+  wordBreak: 'break-word',
+  minWidth: 0,
+};
 
 interface FallbackNotice {
   text: string;
@@ -52,6 +163,9 @@ export function GhostwriterPanel() {
   const [level, setLevel] = useState(0);
   const [text, setText] = useState('');
   const [preview, setPreview] = useState<GhostwriterPreviewState>(emptyGhostwriterPreviewState());
+  const [assist, setAssist] = useState<GhostwriterAssistState>(emptyGhostwriterAssistState());
+  // 候选区渲染快照：内容清空时保留最后一帧到收起动画结束（见下 effect）。
+  const [assistView, setAssistView] = useState<GhostwriterAssistState>(emptyGhostwriterAssistState());
   const [notice, setNotice] = useState<FallbackNotice | null>(null);
   const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
@@ -70,6 +184,12 @@ export function GhostwriterPanel() {
 
   const later = (fn: () => void, ms: number) => {
     timersRef.current.push(window.setTimeout(fn, ms));
+  };
+
+  const showNotice = (text: string) => {
+    clearTimers();
+    setNotice({ text });
+    later(() => setNotice(null), FALLBACK_TOAST_MS);
   };
 
   const hideNow = async () => {
@@ -106,28 +226,73 @@ export function GhostwriterPanel() {
     }
   };
 
-  const cancelLastHit = () => {
+  const cancelLastAction = () => {
     const sessionId = transcriptRef.current.sessionId;
     if (!sessionId) return;
     void (async () => {
       try {
         const result = await ghostwriterCancelLast(sessionId);
         // 后端撤销即推进修订号并发布撤销后的预览事件：响应里的修订号是
-        // 后端权威值，凭它挡掉撤销前在途的旧预览，同时移除最近一枚徽标。
+        // 后端权威值，凭它挡掉撤销前在途的旧预览；action 决定徽标是否落一枚
+        // （选中撤销只换文本）；选中态由后端候选区事件回流。
         setPreview(state =>
           ghostwriterPreviewReducer(state, {
             type: 'ghostwriter_cancel_done',
             payload: {
               cancelled: result.cancelled,
+              action: result.action,
               assembled: result.assembled,
               revision: result.revision,
             },
           }),
         );
       } catch (error) {
-        console.warn('[ghostwriter] cancel last hit failed', error);
+        console.warn('[ghostwriter] cancel last action failed', error);
       }
     })();
+  };
+
+  // 点选失败（会话已停等）静默：选中态以后端候选区事件为权威，刷新即归位。
+  const toggleSelection = (kind: GhostwriterSelectionKind, index: number) => {
+    const sessionId = transcriptRef.current.sessionId;
+    if (!sessionId) return;
+    void ghostwriterToggleSelection(sessionId, kind, index).catch(error => {
+      console.warn('[ghostwriter] toggle selection failed', error);
+    });
+  };
+
+  // 沉淀建议存为常用语：成功后后端刷新候选区事件（提醒条随消失）；
+  // 失败（触发词重复等）走现有 notice 药丸。
+  const saveSuggestion = () => {
+    const sessionId = transcriptRef.current.sessionId;
+    if (!sessionId) return;
+    void ghostwriterSaveSuggestion(sessionId).catch(error => {
+      console.warn('[ghostwriter] save suggestion failed', error);
+      showNotice(tRef.current('ghostwriter.panel.saveFailedDuplicate'));
+    });
+  };
+
+  const dismissSuggestion = () => {
+    const sessionId = transcriptRef.current.sessionId;
+    if (!sessionId) return;
+    void ghostwriterDismissSuggestion(sessionId).catch(error => {
+      console.warn('[ghostwriter] dismiss suggestion failed', error);
+    });
+  };
+
+  // 选中候选 chip 的 [存]：把这条说法收成常用语（触发词＝候选文本、贴进正文、启用）。
+  const saveCandidateSnippet = (text: string) => {
+    void createGhostwriterSnippet({
+      id: '',
+      trigger: text,
+      aliases: [],
+      text,
+      mode: 'inline',
+      enabled: true,
+    }).catch(error => {
+      console.warn('[ghostwriter] save candidate snippet failed', error);
+      showNotice(tRef.current('ghostwriter.panel.saveFailedDuplicate'));
+    });
   };
 
   useEffect(() => {
@@ -144,12 +309,12 @@ export function GhostwriterPanel() {
 
         if (e.kind.type === 'ghostwriter_preview_changed' || e.kind.type === 'ghostwriter_snippets_hit') {
           setPreview(state => ghostwriterPreviewReducer(state, e.kind));
+        } else if (e.kind.type === 'ghostwriter_assist_changed') {
+          setAssist(state => ghostwriterAssistReducer(state, e.kind));
         } else if (e.kind.type === 'ghostwriter_notice') {
           const payload = e.kind.payload as { message?: string; level?: string } | undefined;
           if (payload?.level === 'error' && typeof payload.message === 'string' && payload.message) {
-            clearTimers();
-            setNotice({ text: payload.message });
-            later(() => setNotice(null), FALLBACK_TOAST_MS);
+            showNotice(payload.message);
           }
         } else if (e.kind.type === 'dictation_state_changed') {
           const payload = e.kind.payload as
@@ -159,6 +324,7 @@ export function GhostwriterPanel() {
           if (phase === 'starting') {
             setRecording(false);
             setPreview(emptyGhostwriterPreviewState());
+            setAssist(emptyGhostwriterAssistState());
           } else if (phase === 'recording') {
             setRecording(true);
             const raw = payload?.level;
@@ -189,10 +355,8 @@ export function GhostwriterPanel() {
           const action = ghostwriterPanelActionFor('completed', payload?.inserted);
           if (action === 'show-fallback-toast') {
             setRecording(false);
-            clearTimers();
             const notice = completionNotice(payload?.inserted, (payload?.polishedText ?? '').length);
-            setNotice({ text: tRef.current(notice.key, { count: notice.count ?? 0 }) });
-            later(() => setNotice(null), FALLBACK_TOAST_MS);
+            showNotice(tRef.current(notice.key, { count: notice.count ?? 0 }));
             // 停止阶段窗口可能已被 hideNow 真隐藏；兜底提示是修订版决策 1 里唯一
             // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。
             void (async () => {
@@ -229,6 +393,28 @@ export function GhostwriterPanel() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [text]);
 
+  // 候选区三行（沉淀条／候选组／推荐行）任一为空整行不渲染，全空整区收起。
+  const assistHasContent =
+    assist.sediment !== null ||
+    assist.candidateGroups.some(group => group.items.length > 0) ||
+    assist.recommendations.length > 0;
+
+  // 收起时保留最后一帧到 max-height 过渡结束，否则内容先没了、高度过渡看不见。
+  useEffect(() => {
+    if (assistHasContent) {
+      setAssistView(assist);
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setAssistView(emptyGhostwriterAssistState()),
+      ASSIST_COLLAPSE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [assist, assistHasContent]);
+
+  const undoable = ghostwriterHasUndoAction(preview, assist);
+  const kindLabel = (kind: GhostwriterCandidateKind) => t(CANDIDATE_KIND_LABEL_KEYS[kind] ?? kind);
+
   return (
     <div
       style={{
@@ -238,7 +424,7 @@ export function GhostwriterPanel() {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-end',
-        padding: CARD_GAP,
+        padding: `${CARD_VERTICAL_PADDING}px ${CARD_GAP}px`,
         pointerEvents: 'none',
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif',
@@ -266,7 +452,7 @@ export function GhostwriterPanel() {
         <div
           style={{
             width: CARD_WIDTH,
-            maxHeight: 340,
+            maxHeight: CARD_MAX_HEIGHT,
             display: 'flex',
             flexDirection: 'column',
             borderRadius: 20,
@@ -333,16 +519,8 @@ export function GhostwriterPanel() {
               })}
             </div>
           </div>
-          {preview.hits.length > 0 ? (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 6,
-                padding: '4px 16px 0',
-              }}
-            >
+          {preview.hits.length > 0 || undoable ? (
+            <div style={ASSIST_ROW_STYLE}>
               {preview.hits.map(hit => (
                 <span
                   key={hit.snippetId}
@@ -365,30 +543,110 @@ export function GhostwriterPanel() {
                 type="button"
                 aria-label={t('ghostwriter.panel.cancelLast')}
                 title={t('ghostwriter.panel.cancelLast')}
-                onClick={cancelLastHit}
+                onClick={cancelLastAction}
                 className="ghostwriter-cancel-btn"
-                style={{
-                  width: 22,
-                  height: 22,
-                  padding: 0,
-                  borderRadius: 999,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'rgba(255, 255, 255, 0.08)',
-                  border: '1px solid rgba(255, 255, 255, 0.12)',
-                  color: '#a1a1aa',
-                  fontSize: 11,
-                  lineHeight: 1,
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  pointerEvents: 'auto',
-                }}
+                style={ICON_BUTTON_STYLE}
               >
                 ✕
               </button>
             </div>
           ) : null}
+          <div
+            className="ghostwriter-assist"
+            aria-hidden={!assistHasContent}
+            style={{
+              maxHeight: assistHasContent ? CARD_MAX_HEIGHT : 0,
+              opacity: assistHasContent ? 1 : 0,
+            }}
+          >
+            {assistView.sediment ? (
+              <div style={ASSIST_ROW_STYLE}>
+                <span
+                  style={{
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    color: '#e4e4e7',
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  {t('ghostwriter.panel.sedimentSuggest', {
+                    phrase: assistView.sediment.phrase,
+                    count: assistView.sediment.count,
+                  })}
+                </span>
+                <div style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  onClick={saveSuggestion}
+                  className="ghostwriter-chip-action"
+                  style={ACTION_BUTTON_STYLE}
+                >
+                  {t('ghostwriter.panel.saveSuggestion')}
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('ghostwriter.panel.dismiss')}
+                  title={t('ghostwriter.panel.dismiss')}
+                  onClick={dismissSuggestion}
+                  className="ghostwriter-cancel-btn"
+                  style={ICON_BUTTON_STYLE}
+                >
+                  ✕
+                </button>
+              </div>
+            ) : null}
+            {assistView.candidateGroups.map((group, groupIndex) =>
+              group.items.length > 0 ? (
+                <div key={`${group.kind}-${groupIndex}`} style={ASSIST_ROW_STYLE}>
+                  <span style={ASSIST_LABEL_STYLE}>{kindLabel(group.kind)}</span>
+                  {group.items.map(item => (
+                    <span
+                      key={item.index}
+                      role="button"
+                      onClick={() => toggleSelection('candidate', item.index)}
+                      style={chipStyle(item.selected)}
+                    >
+                      <span style={CHIP_LABEL_STYLE}>
+                        {item.selected ? '✓ ' : ''}
+                        {item.index}·{item.text}
+                      </span>
+                      {item.selected ? (
+                        <button
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            saveCandidateSnippet(item.text);
+                          }}
+                          className="ghostwriter-chip-action"
+                          style={CHIP_SAVE_BUTTON_STYLE}
+                        >
+                          {t('ghostwriter.snippets.save')}
+                        </button>
+                      ) : null}
+                    </span>
+                  ))}
+                </div>
+              ) : null,
+            )}
+            {assistView.recommendations.length > 0 ? (
+              <div style={ASSIST_ROW_STYLE}>
+                <span style={ASSIST_LABEL_STYLE}>{t('ghostwriter.panel.recommendLabel')}</span>
+                {assistView.recommendations.map((recommendation, index) => (
+                  <span
+                    key={recommendation.snippetId}
+                    role="button"
+                    onClick={() => toggleSelection('recommendation', index + 1)}
+                    style={chipStyle(recommendation.selected)}
+                  >
+                    <span style={CHIP_LABEL_STYLE}>
+                      {recommendation.selected ? '✓ ' : ''}
+                      {index + 1}·{recommendation.title}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div
             style={{
               flex: 1,
@@ -457,9 +715,19 @@ export function GhostwriterPanel() {
           0%, 100% { opacity: 1; }
           50% { opacity: 0; }
         }
+        .ghostwriter-assist {
+          overflow: hidden;
+          transition: opacity .15s ease, max-height .2s ease;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ghostwriter-assist { transition: none; }
+        }
         .ghostwriter-cancel-btn:hover {
           background: rgba(255, 255, 255, 0.16) !important;
           color: #e4e4e7 !important;
+        }
+        .ghostwriter-chip-action:hover {
+          filter: brightness(1.3);
         }
       `}</style>
     </div>

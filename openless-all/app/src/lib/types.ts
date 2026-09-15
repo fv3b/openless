@@ -699,6 +699,44 @@ export interface Snippet {
   enabled: boolean;
 }
 
+// --- Ghostwriter M3 候选区（ghostwriter_assist_changed 事件载荷，camelCase） ---
+
+/** 候选组类型：精准词 / 表述 / 命名。 */
+export type GhostwriterCandidateKind = 'term' | 'phrase' | 'naming';
+
+/** 事件里的一条候选：index 为批次内跨组全局 1-based 序号（点选/口头命令同源）。 */
+export interface GhostwriterCandidateItem {
+  index: number;
+  text: string;
+  selected: boolean;
+}
+
+export interface GhostwriterCandidateGroup {
+  kind: GhostwriterCandidateKind;
+  items: GhostwriterCandidateItem[];
+}
+
+/** 事件里的一条推荐常用语（snippetId 指向库内条目，selected 由后端权威）。 */
+export interface GhostwriterRecommendationItem {
+  snippetId: string;
+  title: string;
+  selected: boolean;
+}
+
+/** 沉淀提醒：说话中重复到的可复用说法，可一键存为常用语或忽略。 */
+export interface GhostwriterSedimentSuggestion {
+  phrase: string;
+  count: number;
+  suggestedTrigger: string;
+}
+
+/** 浮框候选区共享状态：事件到达即整体替换（批次无修订号，事件总线保序）。 */
+export interface GhostwriterAssistState {
+  candidateGroups: GhostwriterCandidateGroup[];
+  recommendations: GhostwriterRecommendationItem[];
+  sediment: GhostwriterSedimentSuggestion | null;
+}
+
 export interface CapsulePayload {
   state: CapsuleState;
   level: number; // 0..1 RMS

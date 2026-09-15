@@ -5911,21 +5911,37 @@ impl OpenLessBackend {
 
     /// 点选/取消一条批次内选择（1-based 全局序号，kind 由命令层字符串解析）：
     /// 无批次/序号越界/缓存推荐引用的条目已删都不 panic（batch_text 越界即 None，
-    /// 只刷新不生效）。会话在即按最新快照重发候选区事件（选中态由后端权威）。
+    /// 只刷新不生效）。会话在即按最新快照重发候选区事件（选中态由后端权威）；
+    /// 选中态变化同样改变拼装文本，故同一锁窗取出预览（拼装文本＋修订号），
+    /// 锁外与候选区刷新一并发布——停顿中点选后不再说话，大预览也不滞后一拍。
     pub fn toggle_ghostwriter_selection(
         &self,
         session_id: SessionId,
         kind: crate::ghostwriter::types::SelectionKind,
         index: usize,
     ) -> Result<(), BackendError> {
-        let dispatcher = {
+        let (dispatcher, preview) = {
             let mut state = self.state.write().expect("backend state lock poisoned");
             ensure_active_session(&state, session_id)?;
-            if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
-                session.toggle_selection(kind, index);
-            }
-            state.ghostwriter_dispatcher.clone()
+            let preview = state
+                .ghostwriter_sessions
+                .get_mut(&session_id)
+                .and_then(|session| {
+                    session.toggle_selection(kind, index).map(|_| {
+                        crate::ghostwriter::types::GhostwriterPreviewChanged {
+                            text: session.assembled_text(),
+                            revision: session.revision(),
+                        }
+                    })
+                });
+            (state.ghostwriter_dispatcher.clone(), preview)
         };
+        if let Some(preview) = preview {
+            self.events.publish(
+                Some(session_id),
+                BackendEventKind::GhostwriterPreviewChanged(preview),
+            );
+        }
         if let Some(dispatcher) = dispatcher {
             dispatcher.refresh_assist_event(&session_id);
         }
@@ -10245,6 +10261,14 @@ mod tests {
         events: &mut EventSubscription,
         needle: &str,
     ) -> crate::ghostwriter::types::GhostwriterPreviewChanged {
+        wait_for_ghostwriter_preview_matching(events, |preview| preview.text.contains(needle)).await
+    }
+
+    /// 按谓词等待一条 `GhostwriterPreviewChanged`（点选后拼装变化等断言用）。
+    async fn wait_for_ghostwriter_preview_matching(
+        events: &mut EventSubscription,
+        predicate: impl Fn(&crate::ghostwriter::types::GhostwriterPreviewChanged) -> bool,
+    ) -> crate::ghostwriter::types::GhostwriterPreviewChanged {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let event = tokio::time::timeout_at(deadline, events.recv())
@@ -10252,7 +10276,7 @@ mod tests {
                 .expect("GhostwriterPreviewChanged did not arrive in time")
                 .expect("event stream closed");
             if let BackendEventKind::GhostwriterPreviewChanged(payload) = event.kind {
-                if payload.text.contains(needle) {
+                if predicate(&payload) {
                     return payload;
                 }
             }
@@ -10602,6 +10626,12 @@ mod tests {
                 1,
             )
             .unwrap();
+        // 点选即推进拼装：后端在同一动作里发布预览事件——停顿中点选后不再说话，
+        // 大预览也不滞后一拍（只等下一次 delta/润色才迭代是旧行为）。
+        let preview =
+            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("精准词甲"))
+                .await;
+        assert!(preview.revision >= 1);
         let selected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
                 .candidate_groups

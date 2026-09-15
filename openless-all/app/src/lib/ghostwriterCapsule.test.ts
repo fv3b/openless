@@ -1,6 +1,9 @@
 import {
   completionNotice,
+  emptyGhostwriterAssistState,
   emptyGhostwriterPreviewState,
+  ghostwriterAssistReducer,
+  ghostwriterHasUndoAction,
   ghostwriterPanelActionFor,
   ghostwriterPreviewReducer,
   shouldUseGhostwriterCapsule,
@@ -186,6 +189,127 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
 {
   const s1 = ghostwriterPreviewReducer(EMPTY, { type: 'something_else', payload: {} });
   assert(s1 === EMPTY, '未知事件原样返回');
+}
+
+// 撤销语义分流：action 由后端权威（命中/选中统一撤销）——只有命中撤销落徽标
+{
+  const base = ghostwriterPreviewReducer(EMPTY, {
+    type: 'ghostwriter_snippets_hit',
+    payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
+  });
+  const s1 = ghostwriterPreviewReducer(base, {
+    type: 'ghostwriter_cancel_done',
+    payload: { cancelled: true, action: 'selection', assembled: '甲', revision: 5 },
+  });
+  assert(s1.hits.length === 1 && s1.text === '甲', '撤销选中：换拼装文本、命中徽标原样');
+  const s2 = ghostwriterPreviewReducer(s1, {
+    type: 'ghostwriter_cancel_done',
+    payload: { cancelled: true, action: 'hit', assembled: '乙', revision: 6 },
+  });
+  assert(s2.hits.length === 0 && s2.text === '乙', '撤销命中：移除最后一枚徽标');
+  const withHit = ghostwriterPreviewReducer(EMPTY, {
+    type: 'ghostwriter_snippets_hit',
+    payload: { snippetId: 's2', title: '术语', mode: 'inline' },
+  });
+  const s3 = ghostwriterPreviewReducer(withHit, {
+    type: 'ghostwriter_cancel_done',
+    payload: { cancelled: true, assembled: '丙', revision: 7 },
+  });
+  assert(s3.hits.length === 0, '旧响应缺 action 时按命中撤销兜底（与历史行为一致）');
+}
+
+// --- ghostwriterAssistReducer：候选区（候选组/推荐/沉淀）的纯状态机 ---
+
+const EMPTY_ASSIST = emptyGhostwriterAssistState();
+assert(
+  EMPTY_ASSIST.candidateGroups.length === 0 &&
+    EMPTY_ASSIST.recommendations.length === 0 &&
+    EMPTY_ASSIST.sediment === null,
+  'assist 空状态应为零值',
+);
+
+// assist_event_replaces_state：整体替换（无修订号比较，事件总线保序）
+{
+  const s1 = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [
+        { kind: 'term', items: [{ index: 1, text: '灰度发布', selected: false }] },
+        { kind: 'phrase', items: [{ index: 2, text: '先在小范围试运行', selected: true }] },
+      ],
+      recommendations: [{ snippetId: 's1', title: '项目背景', selected: false }],
+      sediment: { phrase: '风险控制', count: 3, suggestedTrigger: '风控' },
+    },
+  });
+  assert(s1.candidateGroups.length === 2, 'assist_event_replaces_state: 候选组应整体换上');
+  assert(
+    s1.candidateGroups[1].items[0].index === 2 && s1.candidateGroups[1].items[0].selected === true,
+    '候选序号（跨组全局）与选中态应原样保留',
+  );
+  assert(
+    s1.recommendations.length === 1 && s1.recommendations[0].snippetId === 's1',
+    'assist_event_replaces_state: 推荐应整体换上',
+  );
+  assert(
+    s1.sediment?.phrase === '风险控制' && s1.sediment?.count === 3,
+    'assist_event_replaces_state: 沉淀建议应整体换上',
+  );
+
+  // 新批次整体覆盖旧批次（沉淀 null 清掉旧建议）
+  const s2 = ghostwriterAssistReducer(s1, {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [], sediment: null },
+  });
+  assert(
+    s2.candidateGroups.length === 0 && s2.recommendations.length === 0 && s2.sediment === null,
+    '新批次应整体替换旧批次',
+  );
+}
+
+// assist_unknown_event_noop：未知事件／坏 payload 原样返回
+{
+  const base = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [], sediment: null },
+  });
+  const s1 = ghostwriterAssistReducer(base, {
+    type: 'ghostwriter_preview_changed',
+    payload: { text: 'x', revision: 9 },
+  });
+  assert(s1 === base, 'assist_unknown_event_noop: 未知事件原样返回');
+  const s2 = ghostwriterAssistReducer(base, { type: 'ghostwriter_assist_changed' });
+  assert(s2 === base, 'payload 缺失时原样返回');
+}
+
+// ghostwriterHasUndoAction：✕ 显隐规则（命中／任一选中）
+{
+  const preview = emptyGhostwriterPreviewState();
+  assert(!ghostwriterHasUndoAction(preview, EMPTY_ASSIST), '全空时无可撤销');
+  const hit = ghostwriterPreviewReducer(preview, {
+    type: 'ghostwriter_snippets_hit',
+    payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
+  });
+  assert(ghostwriterHasUndoAction(hit, EMPTY_ASSIST), '有命中即可撤销');
+  const selectedCandidate = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [
+        { kind: 'term', items: [{ index: 1, text: '灰度发布', selected: true }] },
+      ],
+      recommendations: [],
+      sediment: null,
+    },
+  });
+  assert(ghostwriterHasUndoAction(preview, selectedCandidate), '候选选中即可撤销');
+  const selectedRecommendation = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [],
+      recommendations: [{ snippetId: 's1', title: '项目背景', selected: true }],
+      sediment: null,
+    },
+  });
+  assert(ghostwriterHasUndoAction(preview, selectedRecommendation), '推荐选中即可撤销');
 }
 
 console.log('ghostwriterCapsule.test.ts: all assertions passed');
