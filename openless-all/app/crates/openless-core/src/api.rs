@@ -1370,10 +1370,14 @@ pub(crate) struct MutableState {
     transcripts: HashMap<SessionId, crate::types::TranscriptAccumulator>,
     /// 活跃会话的 Ghostwriter 层缓冲（仅 ghostwriter 激活时创建；生命周期同 transcripts）。
     pub(crate) ghostwriter_sessions: HashMap<SessionId, crate::ghostwriter::session::GhostwriterSession>,
-    /// 常用语存储（ghostwriter-snippets.json；feed 时按启用项做命中扫描）。
-    ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore,
+    /// 常用语存储（ghostwriter-snippets.json；feed 时按启用项做命中扫描，
+    /// dispatcher 组装助手输入时也读启用项）。
+    pub(crate) ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore,
     /// 段润色调度器（selection_polisher 配置了才有；段/尾润色的合回与预览发布）。
     ghostwriter_dispatcher: Option<Arc<crate::ghostwriter::dispatcher::GhostwriterPolishDispatcher>>,
+    /// 每会话最近一次转写增量到达时刻：静默触发实时助手的计时锚点
+    /// （间隔 ≥ ASSIST_PAUSE_MS 视为停顿，feed 点消费；随会话增删）。
+    ghostwriter_last_delta: HashMap<SessionId, std::time::Instant>,
     silence_monitor: Option<SilenceMonitor>,
 }
 
@@ -1783,7 +1787,21 @@ impl EngineProgressSink for BackendEngineProgress {
                     .apply(&delta)?;
                 let mut ghostwriter_dispatch = None;
                 let mut ghostwriter_preview = None;
+                let mut ghostwriter_pause_assist = None;
                 if state.ghostwriter_sessions.contains_key(&session_id) {
+                    // 静默计时：本次增量距上次增量的间隔 ≥ ASSIST_PAUSE_MS 视为
+                    // 一次停顿（实时助手 Pause 触发；锚点随每次增量刷新，随会话清理）。
+                    let now = std::time::Instant::now();
+                    let paused = state
+                        .ghostwriter_last_delta
+                        .get(&session_id)
+                        .is_some_and(|previous| {
+                            now.duration_since(*previous)
+                                >= std::time::Duration::from_millis(
+                                    crate::ghostwriter::dispatcher::ASSIST_PAUSE_MS,
+                                )
+                        });
+                    state.ghostwriter_last_delta.insert(session_id, now);
                     let snippets = state.ghostwriter_snippets.enabled();
                     match state.ghostwriter_sessions.get_mut(&session_id).map(|ghostwriter| {
                         let outcome = ghostwriter.feed(&delta, &snippets);
@@ -1811,6 +1829,9 @@ impl EngineProgressSink for BackendEngineProgress {
                                     .clone()
                                     .map(|dispatcher| (dispatcher, outcome.new_segments));
                             }
+                            if paused {
+                                ghostwriter_pause_assist = state.ghostwriter_dispatcher.clone();
+                            }
                             ghostwriter_preview = Some(preview);
                         }
                         Some(Err(error)) => log::debug!("[ghostwriter] feed failed: {error}"),
@@ -1824,8 +1845,18 @@ impl EngineProgressSink for BackendEngineProgress {
                         BackendEventKind::GhostwriterPreviewChanged(preview),
                     );
                 }
+                if let Some(dispatcher) = ghostwriter_pause_assist {
+                    dispatcher.maybe_trigger_assist(
+                        &session_id,
+                        crate::ghostwriter::dispatcher::AssistTrigger::Pause,
+                    );
+                }
                 if let Some((dispatcher, segments)) = ghostwriter_dispatch {
                     dispatcher.dispatch_segments(session_id, segments);
+                    dispatcher.maybe_trigger_assist(
+                        &session_id,
+                        crate::ghostwriter::dispatcher::AssistTrigger::SegmentEnd,
+                    );
                 }
                 self.events
                     .publish(Some(session_id), BackendEventKind::TranscriptDelta(delta));
@@ -2285,6 +2316,7 @@ impl OpenLessBackend {
             ghostwriter_sessions: HashMap::new(),
             ghostwriter_snippets: crate::ghostwriter::snippet_store::SnippetStore::at_data_dir(&config.data_dir),
             ghostwriter_dispatcher: None,
+            ghostwriter_last_delta: HashMap::new(),
             silence_monitor: None,
         }));
         let ghostwriter_dispatcher = ghostwriter_polisher.map(|polisher| {
@@ -2294,6 +2326,13 @@ impl OpenLessBackend {
                 polisher,
                 Arc::clone(&deps.credential_store),
                 Arc::clone(&repositories.preferences),
+                Arc::new(crate::ghostwriter::task_brief_store::TaskBriefStore::at_data_dir(
+                    &config.data_dir,
+                )),
+                Arc::new(crate::ghostwriter::recurrence_store::RecurrenceStore::at_data_dir(
+                    &config.data_dir,
+                )),
+                Arc::clone(&clock),
             ))
         });
         if let Some(dispatcher) = ghostwriter_dispatcher.as_ref() {
@@ -3178,6 +3217,7 @@ impl OpenLessBackend {
             state.silence_monitor = None;
             state.transcripts.clear();
             state.ghostwriter_sessions.clear();
+            state.ghostwriter_last_delta.clear();
             self.phase_changed.notify_waiters();
             active_session
         };
@@ -5600,6 +5640,7 @@ impl OpenLessBackend {
         state.silence_monitor = None;
         state.transcripts.remove(&session_id);
         state.ghostwriter_sessions.remove(&session_id);
+        state.ghostwriter_last_delta.remove(&session_id);
         hotkey.terminal(std::time::Instant::now());
         self.phase_changed.notify_waiters();
         drop(state);
@@ -5762,6 +5803,7 @@ impl OpenLessBackend {
             state.silence_monitor = None;
             state.transcripts.remove(&active);
             state.ghostwriter_sessions.remove(&active);
+            state.ghostwriter_last_delta.remove(&active);
             self.phase_changed.notify_waiters();
             active
         };
@@ -10036,6 +10078,21 @@ mod tests {
         state.ghostwriter_sessions[&session_id].assembled_text()
     }
 
+    async fn wait_for_ghostwriter_assist(
+        events: &mut EventSubscription,
+    ) -> crate::ghostwriter::types::GhostwriterAssistChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("GhostwriterAssistChanged did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::GhostwriterAssistChanged(payload) = event.kind {
+                return payload;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn ghostwriter_segments_get_polished_and_preview_event_fires() {
         let data_dir = std::env::temp_dir().join(format!(
@@ -10125,6 +10182,129 @@ mod tests {
         // 撤销本身不再生成命中事件。
         assert!(collect_ghostwriter_snippet_hits(&mut events).is_empty());
 
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 实时助手端到端：句毕触发 assist（精确 uuid5 助手会话 id 路由 canned JSON），
+    /// 候选组/推荐/沉淀提醒整体出现在 `ghostwriter_assist_changed` 事件里。
+    #[tokio::test]
+    async fn ghostwriter_assist_fires_on_segment_end() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-assist-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本")
+                .with_assist_json(
+                    r#"{"candidateGroups":[{"kind":"term","items":["精准词甲","精准词乙"]},{"kind":"phrase","items":["候选表述丙"]}],"recommendations":["s-rec"],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+                ),
+        );
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。继续说", "第一句。继续说第二句。还在说"],
+            "第一句。继续说第二句。还在说",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(
+            data_dir.clone(),
+            Arc::new(engine),
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet(
+                "s-rec",
+                "推荐触发词",
+                "推荐常用语的完整表述文本",
+                crate::ghostwriter::snippet_store::SnippetMode::Inline,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 句毕（段完成）触发实时助手：候选区整体变化事件，候选组非空。
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert_eq!(assist.candidate_groups.len(), 2);
+        assert_eq!(assist.candidate_groups[0].kind, "term");
+        assert_eq!(assist.candidate_groups[0].items.len(), 2);
+        assert_eq!(assist.candidate_groups[0].items[0].index, 1);
+        assert_eq!(assist.candidate_groups[0].items[0].text, "精准词甲");
+        assert!(!assist.candidate_groups[0].items[0].selected);
+        assert_eq!(assist.candidate_groups[1].kind, "phrase");
+        // 推荐条目映射自常用语库：title＝触发词（会话批次无标题字段）。
+        assert_eq!(assist.recommendations.len(), 1);
+        assert_eq!(assist.recommendations[0].snippet_id, "s-rec");
+        assert_eq!(assist.recommendations[0].title, "推荐触发词");
+        // 沉淀提醒随同批次发布。
+        let sediment = assist.sediment.expect("sediment suggestion");
+        assert_eq!(sediment.phrase, "把日志清一下");
+        assert_eq!(sediment.count, 2);
+        assert_eq!(sediment.suggested_trigger, "清日志");
+
+        // 段润色流不受影响：已润段照常合回并出预览。
+        let preview = wait_for_ghostwriter_preview(&mut events, "润后文本").await;
+        assert!(preview.revision >= 1);
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 两个开关全关：prefs 门直接返回——无 assist 调用（fixture 无助手会话 id）、
+    /// 无 `ghostwriter_assist_changed` 事件；段润色流照常。
+    #[tokio::test]
+    async fn ghostwriter_assist_skips_when_both_switches_off() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-assist-off-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。继续说", "第一句。继续说第二句。还在说"],
+            "第一句。继续说第二句。还在说",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(
+            data_dir.clone(),
+            Arc::new(engine),
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        preferences.ghostwriter.candidates_enabled = false;
+        preferences.ghostwriter.recommendations_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 润色流常开：段润色照常合回（证明两段都完成、触发点已到达）。
+        let preview = wait_for_ghostwriter_preview(&mut events, "润后文本").await;
+        assert!(preview.revision >= 1);
+        // 无 assist 调用：fixture 的调用记录里没有固定助手会话 id。
+        assert!(!polisher
+            .session_ids()
+            .contains(&crate::ghostwriter::assist::assist_session_id()));
+        // 排空事件流：没有任何 GhostwriterAssistChanged。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+        while let Ok(event) = tokio::time::timeout_at(deadline, events.recv()).await {
+            assert!(!matches!(
+                event.expect("event stream closed").kind,
+                BackendEventKind::GhostwriterAssistChanged(_)
+            ));
+        }
+
+        backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

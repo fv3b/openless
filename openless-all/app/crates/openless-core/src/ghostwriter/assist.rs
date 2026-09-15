@@ -25,6 +25,17 @@ use crate::types::{PolishMode, SessionId};
 
 use super::snippet_store::Snippet;
 
+/// 助手调用的固定会话 id（uuid5 确定性）：SessionId 是 UUID 新型别、无法携带
+/// 字符串前缀，fixture 按「精确等于此 id」路由 canned 输出；dispatcher 调
+/// [`run_assist`] 时也传它（生产与测试共享一个 id，照
+/// [`crate::ghostwriter::sediment_extractor::extraction_session_id`] 的裁决机制）。
+pub fn assist_session_id() -> SessionId {
+    SessionId::from_uuid(uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_DNS,
+        b"openless.ghostwriter.assist",
+    ))
+}
+
 /// 解析侧裁剪上限：候选组数。
 const MAX_CANDIDATE_GROUPS: usize = 2;
 /// 解析侧裁剪上限：每组候选条数。

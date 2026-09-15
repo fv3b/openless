@@ -126,6 +126,51 @@ pub struct GhostwriterNotice {
     pub level: String,
 }
 
+/// 实时助手批次变化事件：候选组＋推荐＋沉淀提醒，浮框候选区整体替换渲染。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterAssistChanged {
+    pub candidate_groups: Vec<GhostwriterCandidateGroup>,
+    pub recommendations: Vec<GhostwriterRecommendationItem>,
+    pub sediment: Option<GhostwriterSedimentSuggestion>,
+}
+
+/// 事件载荷里的一组同类候选。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterCandidateGroup {
+    /// 组别："term"|"phrase"|"naming"。
+    pub kind: String,
+    pub items: Vec<GhostwriterCandidateItem>,
+}
+
+/// 事件载荷里的一条候选：批次内 1-based 全局序号＋文本＋选中态。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterCandidateItem {
+    pub index: u32,
+    pub text: String,
+    pub selected: bool,
+}
+
+/// 事件载荷里的一条推荐常用语。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterRecommendationItem {
+    pub snippet_id: String,
+    pub title: String,
+    pub selected: bool,
+}
+
+/// 沉淀提醒：说话人正在重复某条值得收进常用语的说法。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterSedimentSuggestion {
+    pub phrase: String,
+    pub count: u32,
+    pub suggested_trigger: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +183,25 @@ mod tests {
         let h = GhostwriterSnippetHit { snippet_id: "s1".into(), title: "翻译".into(), mode: "footnote".into() };
         let v: serde_json::Value = serde_json::to_value(&h).unwrap();
         assert_eq!(v["snippetId"], "s1");
+        let a = GhostwriterAssistChanged {
+            candidate_groups: vec![GhostwriterCandidateGroup {
+                kind: "term".into(),
+                items: vec![GhostwriterCandidateItem { index: 1, text: "精准词".into(), selected: true }],
+            }],
+            recommendations: vec![GhostwriterRecommendationItem {
+                snippet_id: "s2".into(),
+                title: "触发词".into(),
+                selected: false,
+            }],
+            sediment: Some(GhostwriterSedimentSuggestion {
+                phrase: "说法".into(),
+                count: 3,
+                suggested_trigger: "触发".into(),
+            }),
+        };
+        let v: serde_json::Value = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["candidateGroups"][0]["items"][0]["index"], 1);
+        assert_eq!(v["recommendations"][0]["snippetId"], "s2");
+        assert_eq!(v["sediment"]["suggestedTrigger"], "触发");
     }
 }

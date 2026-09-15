@@ -3,9 +3,10 @@
 //! 每个完成的段独立一次润色调用：provider 照 selection-voice 的既有
 //! 解析路径（[`crate::provider_resolution::resolve_session_provider`]）
 //! 解析 LLM 通道，context 用 [`DictationContext::capture`] 现场捕获后
-//! 逐项覆写（mode=Light、指令化 prompt、清空热词/前文轮次/光标上下文、
-//! 关翻译）。user 输入＝已润前文（若有）＋本段生转写＋本段常用语材料，
-//! 材料逐条前缀「参考材料：」交给 LLM 融合进指令。
+//! 逐项覆写（mode=Light、指令化任务书正文（随请求携带，dispatcher 从
+//! 任务书存储取）、清空热词/前文轮次/光标上下文、关翻译）。user 输入＝
+//! 已润前文（若有）＋本段生转写＋本段常用语材料，材料逐条前缀
+//! 「参考材料：」交给 LLM 融合进指令。
 
 use std::sync::Arc;
 
@@ -34,6 +35,8 @@ pub struct SegmentPolishRequest {
     pub segment: String,
     /// 本段挂着的 inline 常用语材料。
     pub materials: Vec<String>,
+    /// 指令化任务书正文（dispatcher 从任务书存储取，保存即生效）。
+    pub instruction: String,
 }
 
 struct DiscardTextStream;
@@ -73,7 +76,7 @@ pub async fn polish_segment(
     );
     context.asr.prompt = None;
     context.polish.mode = PolishMode::Light;
-    context.polish.style_system_prompt = GHOSTWRITER_INSTRUCTION_PROMPT.to_string();
+    context.polish.style_system_prompt = request.instruction.clone();
     context.polish.hotwords.clear();
     context.polish.translation_active = false;
     context.polish.cursor_context = None;
@@ -178,6 +181,7 @@ mod tests {
                 "/tmp/cache 目录".to_string(),
                 "ls -la 输出贴进去".to_string(),
             ],
+            instruction: "任务书覆写后的指令化正文".to_string(),
         }
     }
 
@@ -201,11 +205,8 @@ mod tests {
         assert_eq!(calls[0].session_id, request.session_id);
         let context = &calls[0].context;
         assert_eq!(context.llm.provider_id, "test-llm");
-        assert_eq!(context.polish.style_system_prompt, GHOSTWRITER_INSTRUCTION_PROMPT);
-        assert!(context
-            .polish
-            .style_system_prompt
-            .contains("语音指令整理器"));
+        // system prompt＝随请求携带的任务书正文（dispatcher 侧覆写即生效）。
+        assert_eq!(context.polish.style_system_prompt, request.instruction);
         assert_eq!(context.polish.mode, PolishMode::Light);
         assert!(!context.polish.translation_active);
         assert!(context.polish.hotwords.is_empty());

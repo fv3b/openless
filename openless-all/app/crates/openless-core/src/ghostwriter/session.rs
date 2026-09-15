@@ -64,15 +64,12 @@ enum ActiveAction {
     Selection(ActiveSelection),
 }
 
-/// 当前 live assist 批次：现场候选（按组）与推荐常用语。
+/// 当前 live assist 批次：现场候选（按组，组别随批次携带）与推荐常用语。
 #[derive(Debug, Clone)]
 struct LiveBatch {
-    candidates: Vec<Vec<String>>,
+    candidates: Vec<(String, Vec<String>)>,
     recommendations: Vec<LiveRecommendation>,
 }
-
-/// 批次视图的组别标签（按组序固定映射，与 assist 解析侧组序对齐）。
-const CANDIDATE_GROUP_KINDS: [&str; 3] = ["term", "phrase", "naming"];
 
 pub struct GhostwriterSession {
     /// 说话中的完整累计文本（自适应缓冲）。
@@ -416,11 +413,12 @@ impl GhostwriterSession {
         }
     }
 
-    /// 换上新的 live assist 批次（替换式）：新批次到达即清 active
+    /// 换上新的 live assist 批次（替换式）：候选组带各自组别（kind 随
+    /// assist 产出直达视图，无按位置的固定映射）；新批次到达即清 active
     /// selections（已入待融的材料不受影响，随段/尾巴润色照常转移）。
     pub fn set_live_batch(
         &mut self,
-        candidates: Vec<Vec<String>>,
+        candidates: Vec<(String, Vec<String>)>,
         recommendations: Vec<LiveRecommendation>,
     ) {
         self.live_batch = Some(LiveBatch {
@@ -441,13 +439,8 @@ impl GhostwriterSession {
         let candidate_groups = batch
             .candidates
             .iter()
-            .enumerate()
-            .map(|(group_index, items)| CandidateGroupView {
-                kind: CANDIDATE_GROUP_KINDS
-                    .get(group_index)
-                    .copied()
-                    .unwrap_or("phrase")
-                    .to_string(),
+            .map(|(kind, items)| CandidateGroupView {
+                kind: kind.clone(),
                 items: items
                     .iter()
                     .map(|text| {
@@ -538,7 +531,11 @@ impl GhostwriterSession {
     fn batch_text(&self, kind: SelectionKind, index: usize) -> Option<String> {
         let batch = self.live_batch.as_ref()?;
         let item = match kind {
-            SelectionKind::Candidate => batch.candidates.iter().flatten().nth(index.checked_sub(1)?),
+            SelectionKind::Candidate => batch
+                .candidates
+                .iter()
+                .flat_map(|(_, items)| items.iter())
+                .nth(index.checked_sub(1)?),
             SelectionKind::Recommendation => batch
                 .recommendations
                 .get(index.checked_sub(1)?)
@@ -1097,10 +1094,13 @@ mod tests {
         let mut s = GhostwriterSession::new();
         assert!(s.assist_snapshot().is_none());
         s.set_live_batch(
-            vec![vec![
-                "第一个候选的完整文本".into(),
-                "第二个候选的完整文本".into(),
-            ]],
+            vec![(
+                "term".to_string(),
+                vec![
+                    "第一个候选的完整文本".into(),
+                    "第二个候选的完整文本".into(),
+                ],
+            )],
             vec![],
         );
         let outcome = s.feed(&delta("帮我看看用候选2", 0, false), &[]).unwrap();
@@ -1124,11 +1124,10 @@ mod tests {
     fn voice_command_in_segment_strips_before_polish() {
         let mut s = GhostwriterSession::new();
         s.set_live_batch(
-            vec![vec![
-                "甲候选".into(),
-                "乙候选".into(),
-                "丙候选".into(),
-            ]],
+            vec![(
+                "term".to_string(),
+                vec!["甲候选".into(), "乙候选".into(), "丙候选".into()],
+            )],
             vec![],
         );
         let outcome = s
@@ -1152,7 +1151,7 @@ mod tests {
     #[test]
     fn out_of_range_command_keeps_text() {
         let mut s = GhostwriterSession::new();
-        s.set_live_batch(vec![vec!["甲".into(), "乙".into()]], vec![]);
+        s.set_live_batch(vec![("term".to_string(), vec!["甲".into(), "乙".into()])], vec![]);
         let outcome = s.feed(&delta("用候选五看看", 0, false), &[]).unwrap();
         assert_eq!(s.debug_buffer(), "用候选五看看");
         assert!(outcome.new_selections.is_empty());
@@ -1167,7 +1166,7 @@ mod tests {
         let mut s = GhostwriterSession::new();
         assert!(s.toggle_selection(SelectionKind::Candidate, 1).is_none());
         s.set_live_batch(
-            vec![vec!["甲候选文本".into()]],
+            vec![("term".to_string(), vec!["甲候选文本".into()])],
             vec![LiveRecommendation {
                 snippet_id: "r1".into(),
                 title: "推荐标题".into(),
@@ -1193,24 +1192,35 @@ mod tests {
     #[test]
     fn new_batch_clears_selections_but_keeps_materials() {
         let mut s = GhostwriterSession::new();
-        s.set_live_batch(vec![vec!["甲候选文本".into(), "乙候选文本".into()]], vec![]);
+        s.set_live_batch(
+            vec![(
+                "term".to_string(),
+                vec!["甲候选文本".into(), "乙候选文本".into()],
+            )],
+            vec![],
+        );
         s.toggle_selection(SelectionKind::Candidate, 1).unwrap();
         let snapshot = s.assist_snapshot().unwrap();
         assert!(snapshot.candidate_groups[0].items[0].selected);
         assert_eq!(snapshot.candidate_groups[0].items[0].index, 1);
         // 新批次替换：选中态清空，已入待融的材料不受影响
-        s.set_live_batch(vec![vec!["丙候选文本".into()]], vec![]);
+        s.set_live_batch(vec![("naming".to_string(), vec!["丙候选文本".into()])], vec![]);
         let snapshot = s.assist_snapshot().unwrap();
-        assert_eq!(snapshot.candidate_groups[0].kind, "term");
+        // 组别随批次携带直达视图（无按位置的固定映射）
+        assert_eq!(snapshot.candidate_groups[0].kind, "naming");
         assert_eq!(snapshot.candidate_groups[0].items[0].text, "丙候选文本");
         assert!(!snapshot.candidate_groups[0].items[0].selected);
         assert!(s.assembled_text().ends_with("甲候选文本"));
         // 清空后同序号按新批次文本重新选中
         let selection = s.toggle_selection(SelectionKind::Candidate, 1).unwrap();
         assert_eq!(selection.text, "丙候选文本");
-        // 组别标签固定序＋候选全局 1-based 连续计数
+        // 各组组别原样透传＋候选全局 1-based 连续计数
         s.set_live_batch(
-            vec![vec!["甲".into()], vec!["乙".into()], vec!["丙".into()]],
+            vec![
+                ("term".to_string(), vec!["甲".into()]),
+                ("phrase".to_string(), vec!["乙".into()]),
+                ("naming".to_string(), vec!["丙".into()]),
+            ],
             vec![],
         );
         let snapshot = s.assist_snapshot().unwrap();
@@ -1234,7 +1244,7 @@ mod tests {
         let snippet = snip("f1", "附注", SnippetMode::Footnote);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("加个附注", 0, false), &snippets).unwrap();
-        s.set_live_batch(vec![vec!["甲候选文本".into()]], vec![]);
+        s.set_live_batch(vec![("term".to_string(), vec!["甲候选文本".into()])], vec![]);
         s.toggle_selection(SelectionKind::Candidate, 1).unwrap();
         // 最新生效的是选中 → 先撤销选中，材料出待融
         match s.cancel_last_action().unwrap() {
@@ -1254,7 +1264,13 @@ mod tests {
     #[test]
     fn cancelled_selection_not_resurrected_by_resend() {
         let mut s = GhostwriterSession::new();
-        s.set_live_batch(vec![vec!["甲候选文本".into(), "乙候选文本".into()]], vec![]);
+        s.set_live_batch(
+            vec![(
+                "term".to_string(),
+                vec!["甲候选文本".into(), "乙候选文本".into()],
+            )],
+            vec![],
+        );
         let outcome = s.feed(&delta("帮我看看用候选2", 0, false), &[]).unwrap();
         assert_eq!(outcome.new_selections.len(), 1);
         assert!(s.cancel_last_action().is_some());
@@ -1265,7 +1281,10 @@ mod tests {
         assert_eq!(s.debug_buffer(), "帮我看看用候选2。");
         assert!(!s.assembled_text().contains("乙候选文本"));
         // 新批次到达：抑制随批次清空，同序号命令重新可选中
-        s.set_live_batch(vec![vec!["新甲".into(), "新乙".into()]], vec![]);
+        s.set_live_batch(
+            vec![("term".to_string(), vec!["新甲".into(), "新乙".into()])],
+            vec![],
+        );
         let outcome = s.feed(&delta("再用候选2，好", 0, false), &[]).unwrap();
         assert_eq!(outcome.new_selections.len(), 1);
         assert_eq!(outcome.new_selections[0].text, "新乙");
@@ -1275,7 +1294,13 @@ mod tests {
     #[test]
     fn cancelled_selection_not_resurrected_by_rewrite() {
         let mut s = GhostwriterSession::new();
-        s.set_live_batch(vec![vec!["甲候选文本".into(), "乙候选文本".into()]], vec![]);
+        s.set_live_batch(
+            vec![(
+                "term".to_string(),
+                vec!["甲候选文本".into(), "乙候选文本".into()],
+            )],
+            vec![],
+        );
         let outcome = s.feed(&delta("帮我看看用候选2", 0, false), &[]).unwrap();
         assert_eq!(outcome.new_selections.len(), 1);
         assert!(s.cancel_last_action().is_some());

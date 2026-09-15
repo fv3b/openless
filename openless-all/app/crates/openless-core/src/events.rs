@@ -395,6 +395,7 @@ pub enum BackendEventKind {
     GhostwriterPreviewChanged(crate::ghostwriter::types::GhostwriterPreviewChanged),
     GhostwriterSnippetsHit(crate::ghostwriter::types::GhostwriterSnippetHit),
     GhostwriterNotice(crate::ghostwriter::types::GhostwriterNotice),
+    GhostwriterAssistChanged(crate::ghostwriter::types::GhostwriterAssistChanged),
 }
 
 /// Bounded, instance-local replay result used when a host mounts after events

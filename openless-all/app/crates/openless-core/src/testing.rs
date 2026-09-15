@@ -636,9 +636,12 @@ impl FixtureTextPolisher {
 
     /// 助手调用（实时助手）返回预置 JSON，其余调用（段润色等）仍返回 result——
     /// 同一 fixture 兼供段润色与助手调用的集成测试，按调用特征路由：
-    /// 助手调用的 system prompt 以 [`crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT`]
-    /// 结尾（代码固定拼接），以此识别。SessionId 是 UUID 新型别、无法携带
-    /// 字符串前缀，计划里的「按 session_id 前缀路由」落成此调用特征路由。
+    /// 助手调用的 session_id 精确等于 [`crate::ghostwriter::assist::assist_session_id()`]
+    /// （uuid5 确定性 id，dispatcher 传同一 helper 的值；控制器裁决的精确 id 路由），
+    /// 或 system prompt 以 [`crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT`]
+    /// 结尾（代码固定拼接，兼容直调 [`crate::ghostwriter::assist::run_assist`] 的
+    /// 单测——SessionId 是 UUID 新型别、单测里用随机 id）。SessionId 无法携带
+    /// 字符串前缀，计划里的「按 session_id 前缀路由」落成此精确 id/调用特征路由。
     pub fn with_assist_json(mut self, json: impl Into<String>) -> Self {
         self.assist_json = Some(json.into());
         self
@@ -696,10 +699,11 @@ impl TextPolisher for FixtureTextPolisher {
                 None => self.result.clone(),
             }
         } else {
-            let is_assist = context
-                .polish
-                .style_system_prompt
-                .ends_with(crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT);
+            let is_assist = session_id == crate::ghostwriter::assist::assist_session_id()
+                || context
+                    .polish
+                    .style_system_prompt
+                    .ends_with(crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT);
             match (&self.assist_json, is_assist) {
                 (Some(assist_json), true) => Ok(crate::ports::PolishOutput::text(assist_json.clone())),
                 _ => self.result.clone(),
