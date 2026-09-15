@@ -4,8 +4,8 @@
 //! mutable preferences while recording, transcribing, polishing or inserting.
 
 use crate::shared_types::{
-    AndroidInsertStrategy, ChineseScriptPreference, MacosNewlineMode, OutputLanguagePreference,
-    PasteShortcut, PipelineMode, UserPreferences, WindowsInsertionMode,
+    AndroidInsertStrategy, CapsuleStyle, ChineseScriptPreference, MacosNewlineMode,
+    OutputLanguagePreference, PasteShortcut, PipelineMode, UserPreferences, WindowsInsertionMode,
     WindowsSendInputNewlineMode,
 };
 use crate::style_packs::{translation_effective, StylePack};
@@ -157,6 +157,8 @@ pub struct DictationContext {
     pub omni: ProviderInvocation,
     pub polish: DictationPolishContext,
     pub insertion: DictationInsertionContext,
+    /// capture 时从 preferences 冻结的 Fluid 开关快照。
+    pub fluid: crate::fluid::types::FluidSnapshot,
 }
 
 impl Default for DictationContext {
@@ -296,6 +298,10 @@ impl DictationContext {
                 ),
                 allow_non_tsf_fallback: preferences.allow_non_tsf_insertion_fallback,
                 android_insert_strategy: preferences.android_insert_strategy,
+            },
+            fluid: crate::fluid::types::FluidSnapshot {
+                polish_enabled: preferences.fluid.polish_enabled,
+                active: preferences.capsule_style == CapsuleStyle::Fluid,
             },
         }
     }

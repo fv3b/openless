@@ -318,6 +318,35 @@ fn resolve_windows_sendinput_insertion_only_legacy(
     resolve_windows_insertion_mode(mode, legacy_sendinput_only) == WindowsInsertionMode::SendInput
 }
 
+/// Fluid 层（Ghostwriter 流式浮框）的用户偏好：三流开关＋节流参数。
+/// 全部默认开启；旧配置缺整个 `fluid` 对象或对象内缺键时按默认值兜底。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FluidPreferences {
+    /// 润色流开关（指令化）。
+    pub polish_enabled: bool,
+    /// 候选流开关（M3 消费）。
+    pub candidates_enabled: bool,
+    /// 推荐流开关（M3 消费）。
+    pub recommendations_enabled: bool,
+    /// 候选流节流间隔毫秒（M3 消费）。
+    pub candidate_throttle_ms: u64,
+    /// 推荐流节流间隔毫秒（M3 消费）。
+    pub recommendation_throttle_ms: u64,
+}
+
+impl Default for FluidPreferences {
+    fn default() -> Self {
+        Self {
+            polish_enabled: true,
+            candidates_enabled: true,
+            recommendations_enabled: true,
+            candidate_throttle_ms: 2000,
+            recommendation_throttle_ms: 2000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UserPreferences {
@@ -336,6 +365,9 @@ pub struct UserPreferences {
     /// 录音胶囊外观。偏好事件同步到各窗口，录音状态同时携带当前样式。
     #[serde(default)]
     pub capsule_style: CapsuleStyle,
+    /// Fluid 层三流开关＋节流参数；旧配置缺字段时整体回落默认（全开＋2000ms）。
+    #[serde(default)]
+    pub fluid: FluidPreferences,
     /// 录音期间临时静音系统输出，停止/取消/出错后恢复原静音状态。
     #[serde(default)]
     pub mute_during_recording: bool,
@@ -774,6 +806,8 @@ struct UserPreferencesWire {
     #[serde(default)]
     capsule_style: CapsuleStyle,
     #[serde(default)]
+    fluid: FluidPreferences,
+    #[serde(default)]
     mute_during_recording: bool,
     #[serde(default = "default_true")]
     audio_cue_on_record: bool,
@@ -1004,6 +1038,7 @@ impl Default for UserPreferencesWire {
             launch_at_login: prefs.launch_at_login,
             show_capsule: prefs.show_capsule,
             capsule_style: prefs.capsule_style,
+            fluid: prefs.fluid,
             mute_during_recording: prefs.mute_during_recording,
             audio_cue_on_record: prefs.audio_cue_on_record,
             silence_auto_stop_enabled: prefs.silence_auto_stop_enabled,
@@ -1160,6 +1195,7 @@ impl<'de> Deserialize<'de> for UserPreferences {
             launch_at_login: wire.launch_at_login,
             show_capsule: wire.show_capsule,
             capsule_style: wire.capsule_style,
+            fluid: wire.fluid,
             mute_during_recording: wire.mute_during_recording,
             audio_cue_on_record: wire.audio_cue_on_record,
             silence_auto_stop_enabled: wire.silence_auto_stop_enabled,
@@ -1516,6 +1552,7 @@ impl Default for UserPreferences {
             launch_at_login: false,
             show_capsule: true,
             capsule_style: CapsuleStyle::Siri,
+            fluid: FluidPreferences::default(),
             mute_during_recording: false,
             audio_cue_on_record: true,
             silence_auto_stop_enabled: false,
@@ -3357,5 +3394,27 @@ mod tests {
         assert_eq!(json["llmModel"], "deepseek-v3-2");
         assert_eq!(json["asrMs"], 230);
         assert_eq!(json["polishMs"], 1450);
+    }
+
+    #[test]
+    fn fluid_preferences_default_all_enabled() {
+        let p = FluidPreferences::default();
+        assert!(p.polish_enabled && p.candidates_enabled && p.recommendations_enabled);
+        assert_eq!(p.candidate_throttle_ms, 2000);
+    }
+
+    #[test]
+    fn fluid_preferences_missing_in_old_config_falls_back_to_default() {
+        let json = r#"{}"#;
+        let p: FluidPreferences = serde_json::from_str(json).unwrap();
+        assert!(p.polish_enabled);
+    }
+
+    #[test]
+    fn user_preferences_fluid_roundtrips_camel_case() {
+        let json = r#"{"capsuleStyle":"fluid","fluid":{"polishEnabled":false}}"#;
+        let prefs: UserPreferences = serde_json::from_str(json).unwrap();
+        assert!(!prefs.fluid.polish_enabled);
+        assert!(prefs.fluid.candidates_enabled); // 未写回落默认
     }
 }
