@@ -193,6 +193,7 @@ export const es: typeof zhCN & {
       kindPhrase: 'Expresión',
       kindNaming: 'Nombre',
       recommendLabel: 'Frases',
+      candidateLabel: 'Candidato',
       saveFailedDuplicate: 'El disparador ya existe; cámbialo en la página de Ghostwriter',
     },
     snippets: {

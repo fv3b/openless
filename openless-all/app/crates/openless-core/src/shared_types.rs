@@ -3388,6 +3388,42 @@ mod tests {
         assert_eq!(session.polish_ms, None);
     }
 
+    /// M4 历史扩展：ghostwriter 明细字段缺席照读（旧 history.json 兼容，
+    /// 默认 None）；在场时按 camelCase 往返不丢。
+    #[test]
+    fn dictation_session_ghostwriter_fields_default_none() {
+        let legacy = r#"{
+            "id": "abc",
+            "createdAt": "2026-07-01T00:00:00Z",
+            "rawTranscript": "你好",
+            "finalText": "你好。",
+            "mode": "light",
+            "appBundleId": null,
+            "appName": null,
+            "insertStatus": "inserted",
+            "errorCode": null,
+            "durationMs": 1200,
+            "dictionaryEntryCount": null
+        }"#;
+        let session: DictationSession = serde_json::from_str(legacy).expect("legacy json");
+        assert_eq!(session.ghostwriter_hits, None);
+        assert_eq!(session.ghostwriter_selections, None);
+
+        let mut with_detail = session;
+        with_detail.ghostwriter_hits = Some(vec![crate::types::GhostwriterHistoryHit {
+            title: "翻译".into(),
+            mode: "inline".into(),
+        }]);
+        with_detail.ghostwriter_selections =
+            Some(vec![crate::types::GhostwriterHistorySelection {
+                kind: "recommendation".into(),
+                text: "项目背景的完整表述文本".into(),
+            }]);
+        let round_trip: DictationSession =
+            serde_json::from_str(&serde_json::to_string(&with_detail).unwrap()).unwrap();
+        assert_eq!(round_trip, with_detail);
+    }
+
     /// 新字段序列化必须是 camelCase（前端 types.ts 镜像按 camelCase 读）。
     #[test]
     fn dictation_session_serializes_model_fields_as_camel_case() {
@@ -3416,6 +3452,8 @@ mod tests {
             pipeline_mode: None,
             asr_ms: Some(230),
             polish_ms: Some(1450),
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
         };
         let json = serde_json::to_value(&session).expect("serialize");
         assert_eq!(json["source"], "selection_polish");

@@ -70,6 +70,22 @@ pub enum HistoryInsertStatus {
     NotRequested,
 }
 
+/// 历史明细里的一次常用语命中：触发词标题＋贴位（"inline"|"footnote"）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterHistoryHit {
+    pub title: String,
+    pub mode: String,
+}
+
+/// 历史明细里的一次选中：类别（"candidate"|"recommendation"）＋材料文本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterHistorySelection {
+    pub kind: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSession {
@@ -110,6 +126,14 @@ pub struct DictationSession {
     pub asr_ms: Option<u64>,
     #[serde(default)]
     pub polish_ms: Option<u64>,
+    /// Ghostwriter 历史明细：stop 时仍生效的常用语命中（标题＋贴位）。
+    /// 仅 Ghostwriter 会话且非空才写；旧 JSON 无字段照读。
+    #[serde(default)]
+    pub ghostwriter_hits: Option<Vec<GhostwriterHistoryHit>>,
+    /// Ghostwriter 历史明细：stop 时仍选中的候选/推荐（kind＋文本）。
+    /// 仅 Ghostwriter 会话且非空才写；旧 JSON 无字段照读。
+    #[serde(default)]
+    pub ghostwriter_selections: Option<Vec<GhostwriterHistorySelection>>,
 }
 
 /// Origin of a deterministic correction rule.

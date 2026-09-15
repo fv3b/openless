@@ -180,6 +180,7 @@ export const zhTW: typeof zhCN = {
       kindPhrase: '表述',
       kindNaming: '命名',
       recommendLabel: '常用語',
+      candidateLabel: '候選',
       saveFailedDuplicate: '觸發詞已存在，去 Ghostwriter 頁改一個',
     },
     snippets: {

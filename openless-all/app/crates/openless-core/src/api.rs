@@ -5485,6 +5485,11 @@ impl OpenLessBackend {
             BackendEventKind::DictationStateChanged(state.dictation.clone()),
         );
         self.phase_changed.notify_waiters();
+        // 历史明细在 reset 前取走：reset 会移除 ghostwriter 会话。
+        let ghostwriter_history = state
+            .ghostwriter_sessions
+            .get(&session_id)
+            .map(Self::ghostwriter_history_detail);
         drop(state);
         self.arm_edit_observation(
             session_id,
@@ -5497,9 +5502,49 @@ impl OpenLessBackend {
         // delayed successful completion must not clear its successor's state,
         // transcript, silence detector or physical-hotkey generation.
         self.reset_dictation_session(session_id);
-        self.persist_completed_dictation(&context, &result, insert_outcome, &engine_result);
+        self.persist_completed_dictation(
+            &context,
+            &result,
+            insert_outcome,
+            &engine_result,
+            ghostwriter_history,
+        );
         host_result?;
         Ok(result)
+    }
+
+    /// Ghostwriter 会话的历史明细快照：仍生效的命中（标题＋贴位）与仍选中的
+    /// 选中原（kind 字符串＋文本），按生效顺序；任一为空即不进历史（None）。
+    fn ghostwriter_history_detail(
+        session: &crate::ghostwriter::session::GhostwriterSession,
+    ) -> (
+        Option<Vec<crate::types::GhostwriterHistoryHit>>,
+        Option<Vec<crate::types::GhostwriterHistorySelection>>,
+    ) {
+        let hits: Vec<crate::types::GhostwriterHistoryHit> = session
+            .history_hits()
+            .into_iter()
+            .map(|hit| crate::types::GhostwriterHistoryHit {
+                title: hit.title,
+                mode: hit.mode,
+            })
+            .collect();
+        let selections: Vec<crate::types::GhostwriterHistorySelection> = session
+            .selected_history_items()
+            .into_iter()
+            .map(|(kind, text)| crate::types::GhostwriterHistorySelection {
+                kind: match kind {
+                    crate::ghostwriter::types::SelectionKind::Candidate => "candidate",
+                    crate::ghostwriter::types::SelectionKind::Recommendation => "recommendation",
+                }
+                .to_string(),
+                text,
+            })
+            .collect();
+        (
+            (!hits.is_empty()).then_some(hits),
+            (!selections.is_empty()).then_some(selections),
+        )
     }
 
     fn persist_completed_dictation(
@@ -5508,6 +5553,10 @@ impl OpenLessBackend {
         result: &DictationResult,
         insert_outcome: Option<InsertOutcome>,
         engine_result: &crate::ports::EngineResult,
+        ghostwriter_history: Option<(
+            Option<Vec<crate::types::GhostwriterHistoryHit>>,
+            Option<Vec<crate::types::GhostwriterHistorySelection>>,
+        )>,
     ) {
         let preferences = self.get_preferences();
         let dictionary_entry_count = match self.record_vocabulary_hits(&result.polished_text) {
@@ -5538,6 +5587,8 @@ impl OpenLessBackend {
             engine_result.asr_call_label.as_ref(),
             engine_result.llm_call_label.as_ref(),
         );
+        let (ghostwriter_hits, ghostwriter_selections) =
+            ghostwriter_history.unwrap_or((None, None));
         let session = DictationSession {
             id: result.session_id.to_string(),
             created_at: self.clock.now_utc().to_rfc3339(),
@@ -5565,6 +5616,8 @@ impl OpenLessBackend {
             pipeline_mode: Some(pipeline_mode.to_string()),
             asr_ms: attribution.asr_ms,
             polish_ms: attribution.polish_ms,
+            ghostwriter_hits,
+            ghostwriter_selections,
         };
         if let Err(error) = self.append_history(
             session,
@@ -5639,6 +5692,8 @@ impl OpenLessBackend {
             pipeline_mode: Some(pipeline_mode.to_string()),
             asr_ms: attribution.asr_ms,
             polish_ms: attribution.polish_ms,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
         };
         if let Err(error) = self.append_history(
             session,
@@ -7903,6 +7958,8 @@ mod tests {
             pipeline_mode: None,
             asr_ms: None,
             polish_ms: None,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
         }
     }
 
@@ -10590,8 +10647,104 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// 点选命令往返：选中 → 事件 selected=true 且材料进拼装；再 toggle → 取消并
-    /// 材料出拼装。命令即 api 方法（Tauri 层只做参数解析）。
+    /// M4 历史扩展：stop 时仍生效的命中（标题＋贴位）与仍选中的选中原
+    /// （kind 字符串＋文本）按生效顺序进历史条目；list_history 读回一致。
+    #[tokio::test]
+    async fn ghostwriter_stop_records_hits_and_selections() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-history-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。用候选一"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet(
+                "f-note",
+                "附注",
+                "这里是附注的完整说明文本",
+                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
+            ),
+        );
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet(
+                "s-rec",
+                "推荐触发词",
+                "推荐常用语的完整表述文本",
+                crate::ghostwriter::snippet_store::SnippetMode::Inline,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let _ = wait_for_ghostwriter_assist(&mut events).await;
+
+        // 命中（footnote）＋口头选候选：同一 feed 内命中扫描与命令剔除并行。
+        transcription.pump("加个附注，用候选一");
+        let _ = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .candidate_groups
+                .first()
+                .and_then(|group| group.items.first())
+                .is_some_and(|item| item.selected)
+        })
+        .await;
+        // 口头选推荐常用语。
+        transcription.pump("用常用语一");
+        let _ = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .recommendations
+                .first()
+                .is_some_and(|item| item.selected)
+        })
+        .await;
+
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        let entry = backend
+            .list_history()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == result.session_id.to_string())
+            .expect("history entry for the stopped session");
+        assert_eq!(
+            entry.ghostwriter_hits,
+            Some(vec![crate::types::GhostwriterHistoryHit {
+                title: "附注".into(),
+                mode: "footnote".into(),
+            }])
+        );
+        assert_eq!(
+            entry.ghostwriter_selections,
+            Some(vec![
+                crate::types::GhostwriterHistorySelection {
+                    kind: "candidate".into(),
+                    text: "精准词甲".into(),
+                },
+                crate::types::GhostwriterHistorySelection {
+                    kind: "recommendation".into(),
+                    text: "推荐常用语的完整表述文本".into(),
+                },
+            ])
+        );
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
     #[tokio::test]
     async fn ghostwriter_toggle_selection_command_roundtrip() {
         let data_dir = std::env::temp_dir().join(format!(

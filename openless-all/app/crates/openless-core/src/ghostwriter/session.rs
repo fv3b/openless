@@ -690,6 +690,31 @@ impl GhostwriterSession {
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
+
+    /// 历史归档用：仍生效（未撤销）的命中快照，按生效顺序（标题＋贴位）。
+    pub fn history_hits(&self) -> Vec<GhostwriterSnippetHit> {
+        self.active_actions
+            .iter()
+            .filter_map(|action| match action {
+                ActiveAction::Hit(active) => Some(active.hit.clone()),
+                ActiveAction::Selection(_) => None,
+            })
+            .collect()
+    }
+
+    /// 历史归档用：仍选中（未取消、批次未换）的选中原，按生效顺序
+    /// （类别＋材料文本）。
+    pub fn selected_history_items(&self) -> Vec<(SelectionKind, String)> {
+        self.active_actions
+            .iter()
+            .filter_map(|action| match action {
+                ActiveAction::Selection(active) => {
+                    Some((active.selection.kind, active.selection.text.clone()))
+                }
+                ActiveAction::Hit(_) => None,
+            })
+            .collect()
+    }
 }
 
 /// contains 命中：trigger 与 aliases 逐个大小写折叠匹配，命中返回常用语全量文本。

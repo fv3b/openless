@@ -529,6 +529,8 @@ impl QaService {
             pipeline_mode: None,
             asr_ms: None,
             polish_ms: None,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
         };
         match persistence.history.append_with_retention(
             session,

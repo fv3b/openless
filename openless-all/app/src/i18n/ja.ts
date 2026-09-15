@@ -178,6 +178,7 @@ export const ja: typeof zhCN = {
       kindPhrase: '表現',
       kindNaming: '命名',
       recommendLabel: '定型句',
+      candidateLabel: '候補',
       saveFailedDuplicate: 'トリガーが既に存在します。Ghostwriter ページで変更してください',
     },
     snippets: {

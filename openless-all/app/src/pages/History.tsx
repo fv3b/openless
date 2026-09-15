@@ -51,6 +51,18 @@ const TRUNCATED_PILL_STYLE = {
   flexShrink: 1,
 } as const;
 
+// Ghostwriter 历史明细的贴位/类别文案：后端存的是字符串（"inline"/"footnote"、
+// "candidate"/"recommendation"），映射回现有 i18n key（与浮框/常用语页同一套文案）。
+const GHOSTWRITER_MODE_LABEL: Record<string, string> = {
+  inline: 'ghostwriter.snippets.modeInline',
+  footnote: 'ghostwriter.snippets.modeFootnote',
+};
+
+const GHOSTWRITER_KIND_LABEL: Record<string, string> = {
+  candidate: 'ghostwriter.panel.candidateLabel',
+  recommendation: 'ghostwriter.panel.recommendLabel',
+};
+
 // 历史条目上显示「哪个风格包产出的这段文本」。session.mode 只是风格包的 baseMode
 // （四个内置分类之一），自建包全都会落进这四个桶，光看 mode 分不出是哪个包——
 // 所以优先用 stylePackId 查真实包名，跟本页「重新润色」面板里的风格命名对齐。
@@ -83,6 +95,11 @@ export function History() {
   const [justCopiedRaw, setJustCopiedRaw] = useState(false);
   // 「重新转录」进行中：禁用按钮 + 显示「转录中…」，避免重复点击发起多次 ASR。
   const [retranscribing, setRetranscribing] = useState(false);
+  // Ghostwriter 明细面板的就地展开态：默认收起，切换条目即收起。
+  const [ghostwriterDetailOpen, setGhostwriterDetailOpen] = useState(false);
+  useEffect(() => {
+    setGhostwriterDetailOpen(false);
+  }, [selectedId]);
   // 录音文件 lazily-detected missing 状态：retention / 条数 cap 清理后磁盘上 wav
   // 可能已被删，但 history 条目 hasAudioRecording 仍写 true。任一组件
   // （播放 / 导出）首次 IPC 拿到 'recording not found' 时把 id 加进来，
@@ -594,6 +611,17 @@ export function History() {
                     </span>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
+                    {((item.ghostwriterHits?.length ?? 0) > 0 ||
+                      (item.ghostwriterSelections?.length ?? 0) > 0) && (
+                      <Btn
+                        icon="ghostwriter"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setGhostwriterDetailOpen((open) => !open)}
+                      >
+                        {t('history.ghostwriterDetail')}
+                      </Btn>
+                    )}
                     {item.hasAudioRecording && !audioMissingIds.has(item.id) && (
                       <Btn
                         icon="download"
@@ -624,6 +652,12 @@ export function History() {
                     </Btn>
                   </div>
                 </div>
+                {/* Ghostwriter 明细：stop 时仍生效的命中与仍选中的候选/推荐，就地展开。
+                  老记录无数据＝无按钮（整块不渲染）。key 让切换条目时面板状态一起重置
+                  （前缀约定见上方播放器注释）。 */}
+                {ghostwriterDetailOpen && (
+                  <GhostwriterDetailPanel item={item} key={`ghostwriter-${item.id}`} />
+                )}
                 {/* key 必须带组件前缀：下面的 RepolishPanel 是同一层的兄弟节点，两个都写
                   裸 `item.id` 会让同层出现重复 key，React 只警告不报错，但 reconcile 匹配
                   不上旧 fiber —— 每切换一次历史条目就在 DOM 里残留一个「播放录音」按钮，
@@ -882,6 +916,84 @@ export function History() {
 
 /** 后端超时错误在 IPC 边界退化成裸字符串（LLMError::Timeout → "timeout"）。
  *  只匹配整串的常见超时形态，避免其它含 "timeout" 字样的错误被误判成超时。 */
+/** Ghostwriter 历史明细面板：stop 时仍生效的常用语命中（✓ 标题·贴位）与仍选中的
+ *  候选/推荐（类型标签＋文本）。两个明细字段都为空（或旧记录无字段）不渲染；
+ *  展开态由父级持有（按钮在上方按钮组里），这里只管内容。 */
+function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
+  const { t } = useTranslation();
+  const hits = item.ghostwriterHits ?? [];
+  const selections = item.ghostwriterSelections ?? [];
+  if (hits.length === 0 && selections.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginBottom: 16,
+        padding: 12,
+        border: '0.5px solid var(--ol-line)',
+        borderRadius: 10,
+        background: 'var(--ol-surface-2)',
+        fontSize: 12,
+      }}
+    >
+      {hits.length > 0 && (
+        <div style={selections.length > 0 ? { marginBottom: 10 } : undefined}>
+          <div style={{ color: 'var(--ol-ink-4)', marginBottom: 6 }}>
+            {t('history.ghostwriterHits')}
+          </div>
+          {hits.map((hit, index) => {
+            const modeKey = GHOSTWRITER_MODE_LABEL[hit.mode];
+            return (
+              <div
+                key={`hit-${index}`}
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'baseline',
+                  color: 'var(--ol-ink-2)',
+                }}
+              >
+                <span style={{ color: 'var(--ol-ok)', flexShrink: 0 }}>✓</span>
+                <span style={{ overflowWrap: 'anywhere' }}>{hit.title}</span>
+                {modeKey && <span style={{ color: 'var(--ol-ink-3)' }}>· {t(modeKey)}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {selections.length > 0 && (
+        <div>
+          <div style={{ color: 'var(--ol-ink-4)', marginBottom: 6 }}>
+            {t('history.ghostwriterSelections')}
+          </div>
+          {selections.map((selection, index) => {
+            const kindKey = GHOSTWRITER_KIND_LABEL[selection.kind];
+            return (
+              <div
+                key={`selection-${index}`}
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'baseline',
+                  color: 'var(--ol-ink-2)',
+                }}
+              >
+                {kindKey && (
+                  <span style={{ flexShrink: 0 }}>
+                    <Pill size="sm" tone="outline">
+                      {t(kindKey)}
+                    </Pill>
+                  </span>
+                )}
+                <span style={{ overflowWrap: 'anywhere' }}>{selection.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function isTimeout(message: string): boolean {
   const trimmed = message.trim();
   return /^(timeout|timed out|request timed out)$/i.test(trimmed) || trimmed.includes('超时');

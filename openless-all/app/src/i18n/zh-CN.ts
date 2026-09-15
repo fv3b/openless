@@ -178,6 +178,7 @@ export const zhCN = {
       kindPhrase: '表述',
       kindNaming: '命名',
       recommendLabel: '常用语',
+      candidateLabel: '候选',
       saveFailedDuplicate: '触发词已存在，去 Ghostwriter 页改一个',
     },
     snippets: {

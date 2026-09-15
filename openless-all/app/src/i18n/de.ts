@@ -187,6 +187,7 @@ export const de: typeof zhCN = {
       kindPhrase: 'Formulierung',
       kindNaming: 'Benennung',
       recommendLabel: 'Formulierungen',
+      candidateLabel: 'Kandidat',
       saveFailedDuplicate: 'Auslöser existiert bereits – ändere ihn auf der Ghostwriter-Seite',
     },
     snippets: {

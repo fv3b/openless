@@ -205,6 +205,7 @@ export const en: typeof zhCN & {
       kindPhrase: 'Phrasing',
       kindNaming: 'Name',
       recommendLabel: 'Snippets',
+      candidateLabel: 'Candidate',
       saveFailedDuplicate: 'Trigger already exists — edit it on the Ghostwriter page',
     },
     snippets: {

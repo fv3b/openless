@@ -41,6 +41,20 @@ export interface ActivityDay {
   durationMs?: number;
 }
 
+/** 历史明细里的一次常用语命中：触发词标题＋贴位（"inline" / "footnote"）。
+ *  仅 Ghostwriter 会话且 stop 时仍有生效命中才写；旧记录无此字段。 */
+export interface GhostwriterHistoryHit {
+  title: string;
+  mode: string;
+}
+
+/** 历史明细里的一次选中：类别（"candidate" / "recommendation"）＋文本。
+ *  仅 Ghostwriter 会话且 stop 时仍有选中才写；旧记录无此字段。 */
+export interface GhostwriterHistorySelection {
+  kind: string;
+  text: string;
+}
+
 export interface DictationSession {
   id: string;
   createdAt: string; // ISO-8601
@@ -77,6 +91,10 @@ export interface DictationSession {
   asrMs: number | null;
   /** LLM 润色/翻译调用的实测耗时（毫秒）。未调用 LLM 时为 null。 */
   polishMs: number | null;
+  /** stop 时仍生效的常用语命中（Ghostwriter 会话才有；旧记录无此字段）。 */
+  ghostwriterHits?: GhostwriterHistoryHit[] | null;
+  /** stop 时仍选中的候选/推荐（Ghostwriter 会话才有；旧记录无此字段）。 */
+  ghostwriterSelections?: GhostwriterHistorySelection[] | null;
 }
 
 export interface DictionaryEntry {

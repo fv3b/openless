@@ -567,6 +567,8 @@ impl SelectionVoicePersistence {
             pipeline_mode: None,
             asr_ms: None,
             polish_ms: None,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
         };
         let mut changed = false;
         match self.history.append_with_retention(
