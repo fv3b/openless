@@ -1,5 +1,5 @@
 import {
-  completionMessage,
+  completionNotice,
   emptyFluidPreviewState,
   fluidPanelActionFor,
   fluidPreviewReducer,
@@ -13,14 +13,14 @@ function assert(condition: boolean, message: string) {
   if (!condition) throw new Error(message);
 }
 
-// --- completionMessage：dictation_completed 的 inserted → 收尾文案 ---
+// --- completionNotice：dictation_completed 的 inserted → 收尾文案 i18n key ---
 
-assert(completionMessage('pasteSent', 12) === '已发送粘贴，请确认', 'pasteSent 应映射为已发送粘贴');
-assert(completionMessage('copiedFallback', 3) === '已复制，请手动粘贴', 'copiedFallback 应映射为已复制手动粘贴');
-assert(completionMessage('notRequested', 8) === '处理完成', 'notRequested 应映射为处理完成');
-assert(completionMessage('inserted', 42) === '已输入 42 字', 'inserted 应显示字数');
-assert(completionMessage('some-future-status', 7) === '已输入 7 字', '未知状态回退到字数');
-assert(completionMessage('inserted', undefined) === '已输入 0 字', '无字数时以 0 兜底');
+assert(completionNotice('pasteSent', 12).key === 'fluid.panel.noticePastedConfirm', 'pasteSent 应映射为粘贴确认 key');
+assert(completionNotice('copiedFallback', 3).key === 'fluid.panel.noticeCopiedFallback', 'copiedFallback 应映射为复制兜底 key');
+assert(completionNotice('notRequested', 8).key === 'fluid.panel.noticeNotRequested', 'notRequested 应映射为处理完成 key');
+assert(completionNotice('inserted', 42).count === 42, 'inserted 应携带字数');
+assert(completionNotice('some-future-status', 7).count === 7, '未知状态回退到字数');
+assert(completionNotice('inserted', undefined).count === 0, '无字数时以 0 兜底');
 
 // --- shouldUseFluidCapsule：只有 capsuleStyle === fluid 才接管浮框 ---
 

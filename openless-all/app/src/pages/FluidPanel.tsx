@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { isTauri } from '../lib/ipc';
 import {
   applyTranscriptEvent,
@@ -6,7 +7,7 @@ import {
   type TranscriptViewState,
 } from '../lib/backendEvent';
 import {
-  completionMessage,
+  completionNotice,
   emptyFluidPreviewState,
   fluidPanelActionFor,
   fluidPreviewReducer,
@@ -40,6 +41,7 @@ interface FallbackNotice {
 }
 
 export function FluidPanel() {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
@@ -179,9 +181,8 @@ export function FluidPanel() {
           if (action === 'show-fallback-toast') {
             setRecording(false);
             clearTimers();
-            setNotice({
-              text: completionMessage(payload?.inserted, (payload?.polishedText ?? '').length),
-            });
+            const notice = completionNotice(payload?.inserted, (payload?.polishedText ?? '').length);
+            setNotice({ text: t(notice.key, { count: notice.count ?? 0 }) });
             later(() => setNotice(null), FALLBACK_TOAST_MS);
             // 停止阶段窗口可能已被 hideNow 真隐藏；兜底提示是修订版决策 1 里唯一
             // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。
@@ -295,7 +296,7 @@ export function FluidPanel() {
                 letterSpacing: '0.04em',
               }}
             >
-              {recording ? '语音输入中' : '正在准备'}
+              {recording ? t('fluid.panel.recording') : t('fluid.panel.preparing')}
             </span>
             <div style={{ flex: 1 }} />
             <div
@@ -353,8 +354,8 @@ export function FluidPanel() {
               <div style={{ flex: 1 }} />
               <button
                 type="button"
-                aria-label="撤销最近命中"
-                title="撤销最近命中"
+                aria-label={t('fluid.panel.cancelLast')}
+                title={t('fluid.panel.cancelLast')}
                 onClick={cancelLastHit}
                 className="fluid-cancel-btn"
                 style={{
@@ -397,7 +398,7 @@ export function FluidPanel() {
                 color: preview.text ? '#fafafa' : 'rgba(250,250,250,0.35)',
               }}
             >
-              {preview.text || '指令预览将在说话后出现'}
+              {preview.text || t('fluid.panel.previewPlaceholder')}
             </p>
           </div>
           <div
@@ -433,7 +434,7 @@ export function FluidPanel() {
                   }}
                 />
               ) : null}
-              {recording && !text ? '正在聆听…' : null}
+              {recording && !text ? t('fluid.panel.listening') : null}
             </p>
           </div>
         </div>

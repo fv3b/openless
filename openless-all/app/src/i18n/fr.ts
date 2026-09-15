@@ -163,6 +163,61 @@ export const fr: typeof zhCN = {
     approved: 'Approuvé',
     denied: 'Refusé',
   },
+  fluid: {
+    panel: {
+      listening: 'Écoute en cours…',
+      recording: 'Saisie vocale',
+      preparing: 'Préparation',
+      previewPlaceholder: 'L’aperçu de l’instruction apparaît dès que vous commencez à parler',
+      cancelLast: 'Annuler le dernier hit',
+      noticePastedConfirm: 'Collage envoyé : confirmez l’emplacement',
+      noticeCopiedFallback: 'Copié — collez manuellement',
+      noticeNotRequested: 'Terminé',
+      noticeInserted: '{{count}} caractères insérés',
+    },
+    snippets: {
+      title: 'Formules',
+      kicker: 'Console d’instructions',
+      desc: 'Gardez vos formulations peaufinées : quand le mot-clé arrive en parlant, la formule associée se fond dans le texte destiné à l’IA selon son emplacement.',
+      listTitle: 'Toutes les formules',
+      listCount: '{{count}} éléments',
+      loading: 'Chargement…',
+      emptyTitle: 'Gardez vos formulations peaufinées, prêtes au mot-clé',
+      modeInline: 'Dans le texte',
+      modeFootnote: 'Note en fin',
+      modeHint: 'Dans le texte＝fusionné à sa position d’origine ; note en fin＝bloc annexe en fin de texte.',
+      disabledBadge: 'Désactivée',
+      unsavedBadge: 'Non enregistré',
+      trigger: 'Mot déclencheur',
+      triggerPlaceholder: 'Se déclenche à l’oral, p. ex. Traduire',
+      triggerHint: 'Obligatoire ; un même mot déclencheur ne peut pas se répéter.',
+      aliases: 'Alias',
+      aliasesPlaceholder: 'Séparez les alias par des virgules',
+      aliasesHint: 'Les alias se déclenchent comme le mot déclencheur.',
+      text: 'Texte de la formule',
+      textPlaceholder: 'Se fond dans le texte destiné à l’IA selon l’emplacement ci-dessous',
+      modeLabel: 'Emplacement',
+      enabled: 'Activée',
+      edit: 'Modifier',
+      editTitle: 'Modifier la formule',
+      createTitle: 'Nouvelle formule',
+      delete: 'Supprimer',
+      close: 'Fermer',
+      refresh: 'Actualiser',
+      create: 'Nouvelle formule',
+      cancelChanges: 'Annuler les modifications',
+      save: 'Enregistrer',
+      saving: 'Enregistrement…',
+      saved: 'Enregistré',
+      deleted: 'Supprimé',
+      discardConfirm: 'Des modifications ne sont pas enregistrées. Les abandonner ?',
+      deleteConfirm: 'Supprimer « {{name}} » ? Action irréversible.',
+      loadFailed: 'Échec du chargement : {{error}}',
+      saveFailed: 'Échec de l’enregistrement : {{error}}',
+      updateFailed: 'Échec de la mise à jour : {{error}}',
+      deleteFailed: 'Échec de la suppression : {{error}}',
+    },
+  },
   nav: {
     overview: 'Vue d’ensemble',
     history: 'Historique',
@@ -179,6 +234,7 @@ export const fr: typeof zhCN = {
     },
     localAsr: 'Modèles',
     more: 'Plus',
+    fluidSnippets: 'Formules',
   },
   marketplace: {
     kicker: 'CATALOGUE',
@@ -305,6 +361,8 @@ export const fr: typeof zhCN = {
       selectionAsk:
         'Questions sur la sélection : sélectionnez du texte, puis posez une question à voix haute',
       settings: 'Préférences : raccourcis, fournisseurs, confidentialité et mises à jour',
+      fluidSnippets:
+        'Formules : des formulations peaufinées se déclenchent sur leur mot-clé pendant que vous parlez',
     },
     footer: {
       account: 'Compte',
@@ -920,6 +978,19 @@ export const fr: typeof zhCN = {
       editKeywords: 'Indices de question supplémentaires',
       editKeywordsDesc:
         'Uniquement lorsque la détection automatique est désactivée. Un indice par ligne force le mode Question ; sinon, « ? » et les mots interrogatifs servent d’indices.',
+    },
+    fluid: {
+      fluidPolishEnabled: 'Polissage des instructions',
+      fluidPolishEnabledDesc:
+        'Transforme les instructions dictées en formulations précises pendant que vous parlez ; désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
+      fluidCandidate: 'Suggestions de candidates',
+      fluidCandidateDesc:
+        'Options proposées en direct par le modèle pendant que vous parlez ; choisissez-en une pour l’intégrer à l’aperçu de l’instruction.',
+      fluidRecommendation: 'Formules recommandées',
+      fluidRecommendationDesc:
+        'Formules activées pertinentes, suggérées à partir de ce que vous êtes en train de dire.',
+      fluidMechanicalHint:
+        'Avec le polissage des instructions désactivé, le panneau insère la transcription brute avec le matériel détecté en annexe.',
     },
     selectionPolish: {
       title: 'Amélioration de la sélection',

@@ -33,7 +33,7 @@ import {
 import { type SettingsSectionId } from './SettingsModal';
 import { MobileMoreSheet } from './MobileMoreSheet';
 import { MobileStyleSheet } from './MobileStyleSheet';
-import { subItemLabelKey, PENDING_I18N_NAV_LABELS } from '../lib/navLabels';
+import { subItemLabelKey } from '../lib/navLabels';
 import { applyStackedLayoutFromPrefs } from '../lib/stackedLayout';
 import { applyConservativeLayout } from '../lib/conservativeLayout';
 import { useMobileLayout, useConservativeLayout } from '../lib/useMobileLayout';
@@ -261,9 +261,7 @@ function FloatingShellBody({
     openSettings('general');
   };
 
-  const mobileTitle = settingsOpen
-    ? t('shell.footer.settings')
-    : (PENDING_I18N_NAV_LABELS[currentTab] ?? t(subItemLabelKey(currentTab)));
+  const mobileTitle = settingsOpen ? t('shell.footer.settings') : t(subItemLabelKey(currentTab));
   const moreTabActive = MORE_TAB_IDS.includes(currentTab);
   const styleTabActive = STYLE_TAB_IDS.includes(currentTab);
 
@@ -374,7 +372,7 @@ function FloatingShellBody({
                   return (
                     <Tooltip
                       key={node.id}
-                      content={PENDING_I18N_NAV_LABELS[node.id] ?? t(`shell.navHint.${node.id}`)}
+                      content={t(`shell.navHint.${node.id}`)}
                       placement="right"
                     >
                       <button
@@ -383,9 +381,7 @@ function FloatingShellBody({
                         style={navBtnStyle}
                       >
                         <Icon name={node.icon} size={16} />
-                        <span style={{ flex: 1 }}>
-                          {PENDING_I18N_NAV_LABELS[node.id] ?? t(`nav.${node.id}`)}
-                        </span>
+                        <span style={{ flex: 1 }}>{t(`nav.${node.id}`)}</span>
                       </button>
                     </Tooltip>
                   );

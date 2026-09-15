@@ -1,19 +1,23 @@
 /**
- * Fluid 浮框（capsule 流体样式）的纯逻辑：把 dictation_completed 的 inserted 字段
- * 映射成用户可见的收尾文案。独立成 lib 以便单测（前端测试栈是 node+tsx，无 DOM）。
+ * Fluid 浮框（capsule 流体样式）的纯逻辑：dictation_completed 的 inserted →
+ * 收尾文案的 i18n key 映射与浮框收放规则。独立成 lib 以便单测（前端测试栈是
+ * node+tsx，无 DOM）；具体译文在 i18n 的 fluid.panel.notice* key。
  */
 
-const DONE_MESSAGES: Record<string, string> = {
-  pasteSent: '已发送粘贴，请确认',
-  copiedFallback: '已复制，请手动粘贴',
-  notRequested: '处理完成',
+const DONE_NOTICE_KEYS: Record<string, string> = {
+  pasteSent: 'fluid.panel.noticePastedConfirm',
+  copiedFallback: 'fluid.panel.noticeCopiedFallback',
+  notRequested: 'fluid.panel.noticeNotRequested',
 };
 
-export function completionMessage(inserted?: string | null, chars?: number | null): string {
-  if (inserted && DONE_MESSAGES[inserted]) {
-    return DONE_MESSAGES[inserted];
+export function completionNotice(inserted?: string | null, chars?: number | null): {
+  key: string;
+  count?: number;
+} {
+  if (inserted && DONE_NOTICE_KEYS[inserted]) {
+    return { key: DONE_NOTICE_KEYS[inserted] };
   }
-  return `已输入 ${chars ?? 0} 字`;
+  return { key: 'fluid.panel.noticeInserted', count: chars ?? 0 };
 }
 
 /** 是否启用 Fluid 浮框胶囊样式（prefs.capsuleStyle === 'fluid'）。 */

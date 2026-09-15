@@ -1,9 +1,9 @@
 // FluidSnippets.tsx — 「常用语」管理页。
 // 触发词/别名 → 表述文本的库：说话中说到触发词即按贴位生效（inline 进正文 / footnote 附在文末）。
-// 骨架照 Style.tsx 简化：PageHeader + Card 列表 + 右侧编辑抽屉 + dirty 确认保护；
-// 文案暂硬编码中文，Task 11 收编为 fluid.* i18n key。
+// 骨架照 Style.tsx 简化：PageHeader + Card 列表 + 右侧编辑抽屉 + dirty 确认保护。
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   createFluidSnippet,
@@ -30,9 +30,9 @@ const BLANK_SNIPPET: Snippet = {
   enabled: true,
 };
 
-const MODE_LABELS: Record<SnippetMode, string> = {
-  inline: '贴进正文',
-  footnote: '附在文末',
+const MODE_LABEL_KEYS: Record<SnippetMode, string> = {
+  inline: 'fluid.snippets.modeInline',
+  footnote: 'fluid.snippets.modeFootnote',
 };
 
 function cloneSnippet(snippet: Snippet): Snippet {
@@ -59,6 +59,7 @@ function parseAliases(raw: string): string[] {
 }
 
 export function FluidSnippets() {
+  const { t } = useTranslation();
   const mobile = useMobileLayout();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [busy, setBusy] = useState<BusyAction>('loading');
@@ -100,7 +101,7 @@ export function FluidSnippets() {
       const list = await listFluidSnippets();
       setSnippets(list);
     } catch (loadError) {
-      showSaveStatus('failed', `加载失败：${String(loadError)}`);
+      showSaveStatus('failed', t('fluid.snippets.loadFailed', { error: String(loadError) }));
     } finally {
       setBusy(null);
     }
@@ -130,7 +131,7 @@ export function FluidSnippets() {
 
   // dirty 保护照 Style.tsx：关闭抽屉前若未保存，弹确认丢弃。
   const closeEditor = () => {
-    if (dirty && !window.confirm('改动还没保存，确定丢弃吗？')) return;
+    if (dirty && !window.confirm(t('fluid.snippets.discardConfirm'))) return;
     setDraft(null);
     setBaseline(null);
   };
@@ -158,7 +159,7 @@ export function FluidSnippets() {
     const trigger = draft.trigger.trim();
     if (!trigger) return;
     setBusy('saving');
-    showSaveStatus('saving', '保存中…');
+    showSaveStatus('saving', t('fluid.snippets.saving'));
     try {
       const saved = draftIsNew
         ? await createFluidSnippet({ ...draft, id: '', trigger })
@@ -171,9 +172,9 @@ export function FluidSnippets() {
         current && current.id === draft.id ? cloneSnippet(saved) : current,
       );
       setDraftIsNew(false);
-      showSaveStatus('saved', '已保存', true);
+      showSaveStatus('saved', t('fluid.snippets.saved'), true);
     } catch (saveError) {
-      showSaveStatus('failed', `保存失败：${String(saveError)}`);
+      showSaveStatus('failed', t('fluid.snippets.saveFailed', { error: String(saveError) }));
     } finally {
       setBusy(null);
     }
@@ -191,12 +192,12 @@ export function FluidSnippets() {
       setSnippets((prev) =>
         prev.map((item) => (item.id === snippet.id ? { ...item, enabled: snippet.enabled } : item)),
       );
-      showSaveStatus('failed', `更新失败：${String(toggleError)}`);
+      showSaveStatus('failed', t('fluid.snippets.updateFailed', { error: String(toggleError) }));
     }
   };
 
   const handleDelete = async (snippet: Snippet) => {
-    if (!window.confirm(`删除「${snippet.trigger}」？删除后不可恢复。`)) return;
+    if (!window.confirm(t('fluid.snippets.deleteConfirm', { name: snippet.trigger }))) return;
     setBusy('deleting');
     try {
       await deleteFluidSnippet(snippet.id);
@@ -205,9 +206,9 @@ export function FluidSnippets() {
         setDraft(null);
         setBaseline(null);
       }
-      showSaveStatus('saved', '已删除', true);
+      showSaveStatus('saved', t('fluid.snippets.deleted'), true);
     } catch (deleteError) {
-      showSaveStatus('failed', `删除失败：${String(deleteError)}`);
+      showSaveStatus('failed', t('fluid.snippets.deleteFailed', { error: String(deleteError) }));
     } finally {
       setBusy(null);
     }
@@ -218,9 +219,9 @@ export function FluidSnippets() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <PageHeader
-        kicker="指令台"
-        title="常用语"
-        desc="存下你调优过的说法：说话中说到触发词，对应表述就按贴位融进贴给 AI 的文本。"
+        kicker={t('fluid.snippets.kicker')}
+        title={t('fluid.snippets.title')}
+        desc={t('fluid.snippets.desc')}
         right={
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Btn
@@ -229,10 +230,10 @@ export function FluidSnippets() {
               onClick={() => void loadSnippets()}
               disabled={busy === 'loading'}
             >
-              刷新
+              {t('fluid.snippets.refresh')}
             </Btn>
             <Btn variant="primary" icon="plus" onClick={startCreate} disabled={busy === 'loading'}>
-              新建常用语
+              {t('fluid.snippets.create')}
             </Btn>
           </div>
         }
@@ -261,13 +262,17 @@ export function FluidSnippets() {
             gap: 12,
           }}
         >
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>全部常用语</div>
-          <Pill tone="outline">{snippets.length} 条</Pill>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
+            {t('fluid.snippets.listTitle')}
+          </div>
+          <Pill tone="outline">{t('fluid.snippets.listCount', { count: snippets.length })}</Pill>
         </div>
 
         <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>
           {busy === 'loading' && snippets.length === 0 ? (
-            <div style={{ padding: 24, fontSize: 12, color: 'var(--ol-ink-4)' }}>加载中…</div>
+            <div style={{ padding: 24, fontSize: 12, color: 'var(--ol-ink-4)' }}>
+              {t('fluid.snippets.loading')}
+            </div>
           ) : snippets.length === 0 ? (
             <div
               style={{
@@ -294,10 +299,10 @@ export function FluidSnippets() {
                 <Icon name="tag" size={24} />
               </div>
               <div style={{ fontSize: 13, color: 'var(--ol-ink-3)', lineHeight: 1.6 }}>
-                存下你调优过的说法，用触发词随叫随到
+                {t('fluid.snippets.emptyTitle')}
               </div>
               <Btn variant="primary" icon="plus" onClick={startCreate}>
-                新建常用语
+                {t('fluid.snippets.create')}
               </Btn>
             </div>
           ) : (
@@ -335,11 +340,11 @@ export function FluidSnippets() {
                       {snippet.trigger}
                     </span>
                     <Pill tone={snippet.mode === 'inline' ? 'blue' : 'default'} size="sm">
-                      {MODE_LABELS[snippet.mode]}
+                      {t(MODE_LABEL_KEYS[snippet.mode])}
                     </Pill>
                     {!snippet.enabled && (
                       <Pill tone="outline" size="sm">
-                        已停用
+                        {t('fluid.snippets.disabledBadge')}
                       </Pill>
                     )}
                   </div>
@@ -363,8 +368,8 @@ export function FluidSnippets() {
                     event.stopPropagation();
                     openEditor(snippet);
                   }}
-                  aria-label="编辑"
-                  title="编辑"
+                  aria-label={t('fluid.snippets.edit')}
+                  title={t('fluid.snippets.edit')}
                   style={{
                     width: 30,
                     height: 30,
@@ -388,8 +393,8 @@ export function FluidSnippets() {
                     void handleDelete(snippet);
                   }}
                   disabled={busy === 'deleting'}
-                  aria-label="删除"
-                  title="删除"
+                  aria-label={t('fluid.snippets.delete')}
+                  title={t('fluid.snippets.delete')}
                   style={{
                     width: 30,
                     height: 30,
@@ -440,7 +445,7 @@ export function FluidSnippets() {
             <motion.div
               role="dialog"
               aria-modal="true"
-              aria-label={draftIsNew ? '新建常用语' : '编辑常用语'}
+              aria-label={draftIsNew ? t('fluid.snippets.createTitle') : t('fluid.snippets.editTitle')}
               initial={{ x: '100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: '100%', opacity: 0 }}
@@ -487,14 +492,14 @@ export function FluidSnippets() {
                       style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
                     >
                       <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                        {draftIsNew ? '新建常用语' : '编辑常用语'}
+                        {draftIsNew ? t('fluid.snippets.createTitle') : t('fluid.snippets.editTitle')}
                       </div>
-                      {dirty && <Pill tone="outline">未保存</Pill>}
+                      {dirty && <Pill tone="outline">{t('fluid.snippets.unsavedBadge')}</Pill>}
                     </div>
                     <button
                       type="button"
                       onClick={closeEditor}
-                      aria-label="关闭"
+                      aria-label={t('fluid.snippets.close')}
                       style={{
                         width: 28,
                         height: 28,
@@ -525,22 +530,22 @@ export function FluidSnippets() {
                 >
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      触发词
+                      {t('fluid.snippets.trigger')}
                     </span>
                     <input
                       value={draft.trigger}
                       onChange={(event) => patchDraft({ trigger: event.target.value })}
                       style={inputStyle}
-                      placeholder="说话中说到就生效，例如：翻译"
+                      placeholder={t('fluid.snippets.triggerPlaceholder')}
                     />
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      必填；同一触发词不可重复。
+                      {t('fluid.snippets.triggerHint')}
                     </span>
                   </label>
 
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      别名
+                      {t('fluid.snippets.aliases')}
                     </span>
                     <input
                       value={draft.aliases.join(', ')}
@@ -548,28 +553,28 @@ export function FluidSnippets() {
                         patchDraft({ aliases: parseAliases(event.target.value) })
                       }
                       style={inputStyle}
-                      placeholder="多个别名用逗号分隔"
+                      placeholder={t('fluid.snippets.aliasesPlaceholder')}
                     />
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      别名和触发词一样都能命中。
+                      {t('fluid.snippets.aliasesHint')}
                     </span>
                   </label>
 
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      表述文本
+                      {t('fluid.snippets.text')}
                     </span>
                     <textarea
                       value={draft.text}
                       onChange={(event) => patchDraft({ text: event.target.value })}
                       style={{ ...textareaStyle, minHeight: 110 }}
-                      placeholder="命中后按下方贴位融进贴给 AI 的文本"
+                      placeholder={t('fluid.snippets.textPlaceholder')}
                     />
                   </label>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      贴位
+                      {t('fluid.snippets.modeLabel')}
                     </span>
                     <div
                       style={{
@@ -583,8 +588,8 @@ export function FluidSnippets() {
                     >
                       {(
                         [
-                          ['inline', MODE_LABELS.inline],
-                          ['footnote', MODE_LABELS.footnote],
+                          ['inline', t('fluid.snippets.modeInline')],
+                          ['footnote', t('fluid.snippets.modeFootnote')],
                         ] as const
                       ).map(([value, label]) => {
                         const active = draft.mode === value;
@@ -612,7 +617,7 @@ export function FluidSnippets() {
                       })}
                     </div>
                     <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      贴进正文＝融进正文原位；附在文末＝文末附注块。
+                      {t('fluid.snippets.modeHint')}
                     </span>
                   </div>
 
@@ -625,7 +630,7 @@ export function FluidSnippets() {
                     }}
                   >
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      启用
+                      {t('fluid.snippets.enabled')}
                     </span>
                     <Toggle on={draft.enabled} onToggle={(next) => patchDraft({ enabled: next })} />
                   </div>
@@ -645,7 +650,7 @@ export function FluidSnippets() {
                       onClick={discardDraftChanges}
                       disabled={!dirty}
                     >
-                      撤销改动
+                      {t('fluid.snippets.cancelChanges')}
                     </Btn>
                     <Btn
                       variant="blue"
@@ -653,7 +658,7 @@ export function FluidSnippets() {
                       onClick={() => void handleSave()}
                       disabled={!dirty || triggerMissing || busy === 'saving'}
                     >
-                      {busy === 'saving' ? '保存中…' : '保存'}
+                      {busy === 'saving' ? t('fluid.snippets.saving') : t('fluid.snippets.save')}
                     </Btn>
                   </div>
                 </div>
