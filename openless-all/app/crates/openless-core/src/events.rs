@@ -392,6 +392,9 @@ pub enum BackendEventKind {
     RemoteInputStatusChanged(RemoteInputRuntimeEvent),
     RemoteInputFailed(RemoteInputErrorEvent),
     VocabularySuggestionsChanged(Vec<PendingCorrection>),
+    FluidPreviewChanged(crate::fluid::types::FluidPreviewChanged),
+    FluidSnippetsHit(crate::fluid::types::FluidSnippetHit),
+    FluidNotice(crate::fluid::types::FluidNotice),
 }
 
 /// Bounded, instance-local replay result used when a host mounts after events
