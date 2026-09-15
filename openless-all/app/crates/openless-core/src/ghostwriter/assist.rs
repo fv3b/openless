@@ -8,7 +8,9 @@
 //! ＋推荐任务书（按开关）＋沉淀提醒任务书＋输出契约（逐字）；user 输入＝当前
 //! 内容＋常用语库＋重复档。输出按契约解析为 JSON：失败/空 → 空 outcome（合法
 //! 返回，表示「没什么可给」，不报错）；解析侧强制裁剪候选 ≤2 组、每组 ≤5 条、
-//! 总 ≤8 条、推荐 ≤3 个。
+//! 总 ≤8 条、推荐 ≤3 个，候选组 kind 白名单外的归一为 "phrase"（保内容不丢组）；
+//! 解析后按输入开关机制级清零候选/推荐产出（不依赖模型自觉遵守输出契约，
+//! 沉淀不受这两个开关控制）。
 
 use std::sync::Arc;
 
@@ -44,6 +46,10 @@ const MAX_ITEMS_PER_GROUP: usize = 5;
 const MAX_CANDIDATE_ITEMS: usize = 8;
 /// 解析侧裁剪上限：推荐条数。
 const MAX_RECOMMENDATIONS: usize = 3;
+
+/// 候选组 kind 白名单：输出契约约定的三类；白名单外的 kind 归一为
+/// "phrase"（保内容，不丢组）。
+const CANDIDATE_KINDS: [&str; 3] = ["term", "phrase", "naming"];
 
 /// 重复档里一条未提示过的说法摘要（调用方从重复档 store 取，≤20 条，仅未 prompted）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,7 +150,16 @@ pub async fn run_assist(
             Arc::new(DiscardTextStream),
         )
         .await?;
-    Ok(parse_outcome(&output.text))
+    let mut outcome = parse_outcome(&output.text);
+    // 机制级强制：开关关闭时清零对应产出（不依赖模型自觉遵守输出契约；
+    // 沉淀不受这两个开关控制——无独立开关，保持现状）。
+    if !input.include_candidates {
+        outcome.candidate_groups.clear();
+    }
+    if !input.include_recommendations {
+        outcome.recommendation_ids.clear();
+    }
+    Ok(outcome)
 }
 
 /// system prompt 拼装：候选任务书（include_candidates 时）＋推荐任务书
@@ -227,7 +242,8 @@ pub(crate) fn strip_json_fence(text: &str) -> &str {
 }
 
 /// 解析 LLM 输出为产出：`serde_json::from_str`；失败/空 → 空 outcome（合法返回，
-/// log::warn）。解析侧强制裁剪：候选 ≤2 组、每组 ≤5 条、总 ≤8 条、推荐 ≤3 个。
+/// log::warn）。解析侧强制裁剪：候选 ≤2 组、每组 ≤5 条、总 ≤8 条、推荐 ≤3 个；
+/// kind 白名单外的组归一为 "phrase"。
 fn parse_outcome(text: &str) -> AssistOutcome {
     let parsed: AssistJson = match serde_json::from_str(strip_json_fence(text)) {
         Ok(parsed) => parsed,
@@ -248,7 +264,12 @@ fn parse_outcome(text: &str) -> AssistOutcome {
             .take(MAX_ITEMS_PER_GROUP.min(MAX_CANDIDATE_ITEMS - total))
             .collect();
         total += items.len();
-        candidate_groups.push((group.kind, items));
+        let kind = if CANDIDATE_KINDS.contains(&group.kind.as_str()) {
+            group.kind
+        } else {
+            "phrase".to_string()
+        };
+        candidate_groups.push((kind, items));
     }
     AssistOutcome {
         candidate_groups,
@@ -465,5 +486,45 @@ mod tests {
         assert!(raw.contains("s1|触发词甲|表述甲"));
         assert!(raw.contains("重复档："));
         assert!(raw.contains("重复说法丁×4"));
+    }
+
+    #[tokio::test]
+    async fn assist_zeroes_outputs_for_disabled_switches() {
+        // 机制级强制：开关关闭时解析后清零对应产出（模型仍可能按契约结构
+        // 回填候选/推荐，不允许漏进结果）；沉淀不受这两个开关控制。
+        let fixture =
+            FixtureTextPolisher::successful("unused").with_assist_json(CANNED_JSON);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let mut request = default_bodies_input();
+        request.include_candidates = false;
+        request.include_recommendations = false;
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+
+        assert!(outcome.candidate_groups.is_empty());
+        assert!(outcome.recommendation_ids.is_empty());
+        assert!(outcome.sediment.is_some());
+    }
+
+    #[tokio::test]
+    async fn assist_normalizes_unknown_candidate_kind_to_phrase() {
+        // 解析侧 kind 白名单：白名单外的组归一为 phrase（保内容，不丢组）。
+        let json = r#"{"candidateGroups":[{"kind":"whatever","items":["候选甲","候选乙"]}],"recommendations":[],"sediment":null}"#;
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(json);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &default_bodies_input())
+            .await
+            .expect("assist should succeed");
+
+        assert_eq!(
+            outcome.candidate_groups,
+            vec![(
+                "phrase".to_string(),
+                vec!["候选甲".to_string(), "候选乙".to_string()]
+            )]
+        );
     }
 }

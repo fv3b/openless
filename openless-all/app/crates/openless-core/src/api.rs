@@ -5930,9 +5930,10 @@ impl OpenLessBackend {
     /// 撤销本会话最近一次生效的动作（命中与选中统一；浮框 ✕ 的底层入口）：
     /// 命中撤销后同 snippet 在本会话再次说到可重新生效，选中撤销后同批次可再选。
     /// 成功撤销推进会话修订号（后端权威：润色结果迟迟未应用时，撤销后预览靠它
-    /// 继续流动）——命中撤销发布撤销后的指令预览事件（拼装文本与修订号在撤销的
-    /// 同一锁窗内读取、锁外发布，同 feed 臂模式）；选中撤销刷新候选区事件（选中
-    /// 态变化）。返回被撤销者与撤销后的修订号；无可撤销动作返回 Ok(None)。
+    /// 继续流动）——命中撤销与选中撤销都发布撤销后的指令预览事件（拼装文本与
+    /// 修订号在撤销的同一锁窗内读取、锁外发布，同 feed 臂模式）；选中撤销另
+    /// 刷新候选区事件（选中态变化）。返回被撤销者与撤销后的修订号；无可撤销
+    /// 动作返回 Ok(None)。
     pub fn cancel_ghostwriter_last_action(
         &self,
         session_id: SessionId,
@@ -5965,6 +5966,12 @@ impl OpenLessBackend {
                 );
             }
             crate::ghostwriter::types::LastAction::Selection(_) => {
+                // 与 toggle 路径对称：选中撤销同样改变拼装文本，预览事件一并
+                // 补发（停顿中撤销后不再说话，大预览也不滞后一拍）。
+                self.events.publish(
+                    Some(session_id),
+                    BackendEventKind::GhostwriterPreviewChanged(preview),
+                );
                 if let Some(dispatcher) = self.ghostwriter_dispatcher_handle() {
                     dispatcher.refresh_assist_event(&session_id);
                 }
@@ -6014,7 +6021,8 @@ impl OpenLessBackend {
 
     /// 沉淀建议存为常用语（trigger＝建议触发词、贴位 inline、启用）：取走建议 →
     /// 建条目（触发词重复 → Err 原样返回前端提示，建议放回可重试）→ 重复档移除
-    /// 该说法 → 刷新候选区事件。无建议/无 dispatcher 返回 Ok(None)。
+    /// 该说法（mark 沿用建议槽里的库内规范原文，dispatcher 侧解析后写入）→
+    /// 刷新候选区事件。无建议/无 dispatcher 返回 Ok(None)。
     pub fn save_ghostwriter_suggestion(
         &self,
         session_id: SessionId,
@@ -6050,7 +6058,8 @@ impl OpenLessBackend {
         Ok(Some(snippet))
     }
 
-    /// 忽略沉淀建议：取走建议（清槽）→ 重复档标记已提示（本次会话不再提）→
+    /// 忽略沉淀建议：取走建议（清槽）→ 重复档标记已提示（本次会话不再提；
+    /// mark 沿用建议槽里的库内规范原文，与 mark_prompted 的标记键对得上）→
     /// 刷新候选区事件。无建议/无 dispatcher 也刷新（状态即空）。
     pub fn dismiss_ghostwriter_suggestion(&self, session_id: SessionId) -> Result<(), BackendError> {
         let Some(dispatcher) = self.ghostwriter_dispatcher_handle() else {
@@ -10505,6 +10514,17 @@ mod tests {
                 crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
+        // 重复档先有该说法：沉淀回填按注入集解析规范键，命中才进建议槽。
+        let dispatcher = backend
+            .state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_dispatcher
+            .clone()
+            .expect("ghostwriter dispatcher");
+        dispatcher
+            .recurrence_store()
+            .apply_extraction(vec![("把日志清一下".to_string(), "例句".to_string())]);
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
@@ -10582,6 +10602,104 @@ mod tests {
                 BackendEventKind::GhostwriterAssistChanged(_)
             ));
         }
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 单开关混合状态（推荐关、候选开）：assist 照常触发，事件里候选组非空、
+    /// 推荐为空——推荐任务书不注入、推荐行不发布（库内条目也不回填缓存）。
+    #[tokio::test]
+    async fn ghostwriter_assist_recommendations_off_hides_recommendations() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-assist-rec-off-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        preferences.ghostwriter.recommendations_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        // 库里留这条：若推荐未按开关清零，映射会捞到它（断言才有力）。
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet(
+                "s-rec",
+                "推荐触发词",
+                "推荐常用语的完整表述文本",
+                crate::ghostwriter::snippet_store::SnippetMode::Inline,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert!(!assist.candidate_groups.is_empty());
+        assert_eq!(assist.candidate_groups[0].kind, "term");
+        assert_eq!(assist.candidate_groups[0].items[0].text, "精准词甲");
+        assert!(assist.recommendations.is_empty());
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 单开关混合状态（候选关、推荐开）：assist 照常触发，事件里推荐非空、
+    /// 候选组为空——候选任务书不注入、候选组不发布（模型照契约结构回填也
+    /// 不允许漏进结果）。
+    #[tokio::test]
+    async fn ghostwriter_assist_candidates_off_hides_candidates() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-assist-cand-off-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        preferences.ghostwriter.candidates_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet(
+                "s-rec",
+                "推荐触发词",
+                "推荐常用语的完整表述文本",
+                crate::ghostwriter::snippet_store::SnippetMode::Inline,
+            ),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        assert!(assist.candidate_groups.is_empty());
+        assert_eq!(assist.recommendations.len(), 1);
+        assert_eq!(assist.recommendations[0].snippet_id, "s-rec");
+        assert_eq!(assist.recommendations[0].title, "推荐触发词");
 
         backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();
@@ -10880,6 +10998,77 @@ mod tests {
         .await;
         assert!(!unselected.candidate_groups[0].items[0].selected);
         assert!(!ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+
+        backend.stop_dictation_session(session_id).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 撤销选中（cancel 命令 Selection 臂）与 toggle 路径对称：除刷新候选区
+    /// 事件外，补发撤销后的指令预览事件（拼装回退、修订号推进）。
+    #[tokio::test]
+    async fn ghostwriter_cancel_selection_publishes_preview_and_assist_refresh() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-cancel-select-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":[],"sediment":null}"#,
+            ),
+        );
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
+        let engine = ghostwriter_engine_with(
+            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        transcription.pump("第一句。继续");
+        let _ = wait_for_ghostwriter_assist(&mut events).await;
+
+        backend
+            .toggle_ghostwriter_selection(
+                session_id,
+                crate::ghostwriter::types::SelectionKind::Candidate,
+                1,
+            )
+            .unwrap();
+        let selected_preview =
+            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("精准词甲"))
+                .await;
+
+        let cancelled = backend
+            .cancel_ghostwriter_last_action(session_id)
+            .unwrap()
+            .expect("selection cancel should succeed");
+        assert!(matches!(
+            cancelled.0,
+            crate::ghostwriter::types::LastAction::Selection(_)
+        ));
+        // Selection 臂补发预览事件：拼装回退（不再含选中文本）、修订号推进。
+        let reverted = wait_for_ghostwriter_preview_matching(&mut events, |p| {
+            p.revision > selected_preview.revision && !p.text.contains("精准词甲")
+        })
+        .await;
+        assert!(reverted.revision > selected_preview.revision);
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+        // 候选区事件同步刷新：选中态回退。
+        let assist = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
+            assist
+                .candidate_groups
+                .first()
+                .and_then(|group| group.items.first())
+                .is_some_and(|item| !item.selected)
+        })
+        .await;
+        assert!(!assist.candidate_groups[0].items[0].selected);
 
         backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();

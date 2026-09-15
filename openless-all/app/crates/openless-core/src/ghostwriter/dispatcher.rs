@@ -11,10 +11,12 @@
 //! 候选节流（两次 assist 间隔 ≥ candidate_throttle_ms）→ 在飞防叠（AtomicBool）→
 //! spawn 组装输入（缓冲尾部 [`ASSIST_CONTEXT_CHARS`]、启用常用语、重复档摘要、
 //! 任务书正文）并调 [`crate::ghostwriter::assist::run_assist`]。推荐节流独立
-//! （recommendation_throttle_ms）：未到点复用上次推荐填批次（推荐行不闪失），
-//! 到点则现取并更新缓存（单槽即可——assist 天然单飞）。沉淀命中进建议槽并
-//! 标记重复档已提示；批次与建议整体随 [`GhostwriterAssistChanged`] 发布，
-//! 失败发 [`GhostwriterNotice`]（error）轻提示。节流计时一律走注入的
+//! （recommendation_throttle_ms）且受推荐开关门控：开关关着不现取也不写锚点，
+//! 未到点复用上次推荐填批次（推荐行不闪失），到点则现取并更新缓存（单槽即可
+//! ——assist 天然单飞）。沉淀命中按本次注入的重复档摘要集解析规范原文（复述
+//! 走样按归一化/包含匹配兜底，注入集外视为幻觉整条丢弃），用库内规范原文进
+//! 建议槽并标记重复档已提示；批次与建议整体随 [`GhostwriterAssistChanged`]
+//! 发布，失败发 [`GhostwriterNotice`]（error）轻提示。节流计时一律走注入的
 //! [`Clock`]（不读墙钟）；候选节流锚点在调用收尾写入，推荐节流锚点在现取时写入。
 //!
 //! 会话后沉淀抽取（[`Self::trigger_extraction`]）：fire-and-forget，抽取出的
@@ -368,9 +370,11 @@ impl GhostwriterPolishDispatcher {
                 state.ghostwriter_snippets.enabled(),
             )
         };
-        // 推荐节流独立计时：首次或距上次现取 ≥ recommendation_throttle_ms 才现取；
-        // 现取即写锚点（窗口自本次重算起计），否则 last_rec 恒为 None、节流失效。
-        let include_recommendations = {
+        // 推荐节流独立计时＋推荐开关门（控制器裁决）：推荐开关开着且（首次
+        // 或距上次现取 ≥ recommendation_throttle_ms）才现取；现取即写锚点
+        // （窗口自本次重算起计），否则 last_rec 恒为 None、节流失效。开关关闭
+        // 时不现取也不写锚点（重新打开后按窗口语义自然现取）。
+        let include_recommendations = prefs.recommendations_enabled && {
             let mut previous = self
                 .last_rec
                 .lock()
@@ -387,11 +391,24 @@ impl GhostwriterPolishDispatcher {
             }
             recompute
         };
+        let recurrence = self.recurrence.summary(ASSIST_RECURRENCE_LIMIT);
+        // 沉淀回填解析集：本次注入的重复档摘要（归一化键 → 库内规范原文）。
+        // LLM 复述可能走样，回填按归一化键对注入集解析，命中才认（控制器裁决，
+        // 防 mark_prompted/mark_saved 落空）。
+        let injected_recurrence: Vec<(String, String)> = recurrence
+            .iter()
+            .map(|entry| {
+                (
+                    condensed_phrase(&entry.phrase),
+                    entry.phrase.clone(),
+                )
+            })
+            .collect();
         let input = AssistInput {
             session_id: super::assist::assist_session_id(),
             context_text,
             snippets: snippets.clone(),
-            recurrence: self.recurrence.summary(ASSIST_RECURRENCE_LIMIT),
+            recurrence,
             include_candidates: prefs.candidates_enabled,
             include_recommendations,
             instruction_candidates: self.task_briefs.body(TaskBriefId::Candidates),
@@ -416,7 +433,10 @@ impl GhostwriterPolishDispatcher {
                     })
             })
             .collect();
-        let batch_recommendations = if !include_recommendations {
+        let batch_recommendations = if !prefs.recommendations_enabled {
+            // 推荐开关关闭：批次不带推荐（缓存也不回填——关了就展示为空）。
+            Vec::new()
+        } else if !include_recommendations {
             // 推荐节流未到点：用缓存的上次推荐填批次（推荐行不闪失）。
             self.last_recommendations
                 .lock()
@@ -438,17 +458,29 @@ impl GhostwriterPolishDispatcher {
                 .expect("recommendation cache lock poisoned") = Some(recommendations.clone());
             recommendations
         };
-        // 沉淀命中：重复档标记已提示（本次会话不再提醒）＋建议槽写入。
+        // 沉淀命中：回填 phrase 对注入集解析规范键（控制器裁决）——命中用库内
+        // 规范原文写建议槽并标记重复档已提示；未命中视为幻觉，整条丢弃
+        // （不写建议、不标记）。
         if let Some(sediment) = &outcome.sediment {
-            self.recurrence.mark_prompted(&sediment.phrase);
-            *self.suggestion.lock().expect("suggestion lock poisoned") = Some((
-                *session_id,
-                GhostwriterSedimentSuggestion {
-                    phrase: sediment.phrase.clone(),
-                    count: sediment.count,
-                    suggested_trigger: sediment.suggested_trigger.clone(),
-                },
-            ));
+            match resolve_sediment_canonical(&sediment.phrase, &injected_recurrence) {
+                Some(phrase) => {
+                    self.recurrence.mark_prompted(&phrase);
+                    *self.suggestion.lock().expect("suggestion lock poisoned") = Some((
+                        *session_id,
+                        GhostwriterSedimentSuggestion {
+                            phrase,
+                            count: sediment.count,
+                            suggested_trigger: sediment.suggested_trigger.clone(),
+                        },
+                    ));
+                }
+                None => {
+                    log::debug!(
+                        "[ghostwriter] assist sediment phrase not in injected recurrence set, dropped: {:?}",
+                        sediment.phrase
+                    );
+                }
+            }
         }
         // 批次合回：新批次即清上一批的选中（会话内语义）；会话可能已被移除。
         {
@@ -512,6 +544,37 @@ fn dedup_extracted_phrases(
             !existing.contains(&super::recurrence_store::normalize_phrase(phrase))
         })
         .collect()
+}
+
+/// 沉淀回填解析键的形态：归一化后再去全部空白（重复档说法可能带空格——
+/// ASR 原样入库，LLM 复述常把空格吞掉或改位置；包含匹配在无空白形态上做）。
+fn condensed_phrase(phrase: &str) -> String {
+    super::recurrence_store::normalize_phrase(phrase)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+/// 沉淀回填的规范解析（控制器裁决）：回填先在无空白形态上对注入集精确匹配；
+/// 未中再包含兜底（复述走样＝前后多口头语或去字——回填包含库内说法，或
+/// 库内说法包含回填），取最长命中（最具体）；都未中 → None（视为幻觉，
+/// 调用方整条丢弃）。返回库内规范原文。
+fn resolve_sediment_canonical(backfill: &str, injected: &[(String, String)]) -> Option<String> {
+    let condensed = condensed_phrase(backfill);
+    if condensed.is_empty() {
+        return None;
+    }
+    if let Some((_, phrase)) = injected.iter().find(|(key, _)| *key == condensed) {
+        return Some(phrase.clone());
+    }
+    injected
+        .iter()
+        .filter(|(key, _)| {
+            !key.is_empty()
+                && (condensed.contains(key.as_str()) || key.contains(&condensed))
+        })
+        .max_by_key(|(key, _)| key.chars().count())
+        .map(|(_, phrase)| phrase.clone())
 }
 
 /// 会话批次视图＋建议 → 事件载荷；无批次 → 空数组＋建议（推荐行不闪失由
@@ -864,5 +927,88 @@ mod tests {
             .await
             .expect("extraction did not complete in time");
         }
+    }
+
+    /// 沉淀回填以注入集解析规范键（控制器裁决）：LLM 复述走样（加「那个」
+    /// 前缀 / 去尾字）仍命中库内条目——建议槽写库内规范原文、重复档标记
+    /// 已提示（prompted=true，mark 不再落空）。
+    #[tokio::test]
+    async fn assist_sediment_drifted_backfill_resolves_to_canonical_phrase() {
+        let harness = harness(
+            (0, 0),
+            vec![
+                r#"{"candidateGroups":[],"recommendations":[],"sediment":{"phrase":"那个把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+                r#"{"candidateGroups":[],"recommendations":[],"sediment":{"phrase":"以后都用测试环境","count":1,"suggestedTrigger":"测试环境"}}"#,
+            ],
+        );
+        // 重复档先有这两条（注入集来源；第二条供第二轮解析——第一条已被
+        // 第一轮标记 prompted，不再注入）。
+        harness
+            .dispatcher
+            .recurrence_store()
+            .apply_extraction(vec![
+                ("把日志清一下".to_string(), "例句一".to_string()),
+                ("以后都用测试环境跑".to_string(), "例句二".to_string()),
+            ]);
+        let mut events = harness.events.subscribe();
+
+        // 第一轮：复述加「那个」前缀（回填包含库内说法）。
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let first = next_assist_changed(&mut events).await;
+        // 建议槽写的是库内规范原文，不是 LLM 复述。
+        assert_eq!(
+            first.sediment.as_ref().map(|sediment| sediment.phrase.as_str()),
+            Some("把日志清一下")
+        );
+        assert_eq!(
+            first.sediment.as_ref().map(|sediment| sediment.suggested_trigger.as_str()),
+            Some("清日志")
+        );
+        let entries = harness.dispatcher.recurrence_store().pending_matches();
+        assert!(entries.iter().find(|entry| entry.phrase == "把日志清一下").unwrap().prompted);
+
+        // 第二轮：复述去尾字（库内说法包含回填）。
+        harness.clock.advance_ms(1);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let second = next_assist_changed(&mut events).await;
+        assert_eq!(
+            second.sediment.as_ref().map(|sediment| sediment.phrase.as_str()),
+            Some("以后都用测试环境跑")
+        );
+        let entries = harness.dispatcher.recurrence_store().pending_matches();
+        assert!(entries
+            .iter()
+            .find(|entry| entry.phrase == "以后都用测试环境跑")
+            .unwrap()
+            .prompted);
+    }
+
+    /// 沉淀回填注入集外（幻觉）：整条丢弃——建议槽不写（事件 sediment 为
+    /// 空）、重复档不标记（prompted 仍为 false）。
+    #[tokio::test]
+    async fn assist_sediment_outside_injected_set_is_dropped() {
+        let harness = harness(
+            (0, 0),
+            vec![r#"{"candidateGroups":[],"recommendations":[],"sediment":{"phrase":"库外幻觉说法","count":3,"suggestedTrigger":"幻觉"}}"#],
+        );
+        harness
+            .dispatcher
+            .recurrence_store()
+            .apply_extraction(vec![("把日志清一下".to_string(), "例句".to_string())]);
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let assist = next_assist_changed(&mut events).await;
+
+        assert!(assist.sediment.is_none());
+        let entries = harness.dispatcher.recurrence_store().pending_matches();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].prompted);
     }
 }
