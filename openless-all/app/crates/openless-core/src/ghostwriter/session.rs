@@ -99,6 +99,11 @@ pub struct GhostwriterSession {
     /// 撤销过且尚未被新话再触发的 snippet：旧文领地（重扫）保持死亡，
     /// 新话增量仍可再触发（触发即出集，规则 6 的撤销-再生效交互）。
     cancelled_once: HashSet<String>,
+    /// 被撤销的选中（kind+序号）：重发/改写重提同一命令不复活（与命中
+    /// 的 cancelled_once 同理——传输层 artifact 不得请回用户明说撤销的
+    /// 材料）；随 set_live_batch 清空（新批次＝新命令），显式重新选中
+    /// 即出集。
+    cancelled_selections: HashSet<(SelectionKind, usize)>,
     /// 最近一次尾巴补润成功时覆盖的尾巴字符长度；尾巴长度一变即失配，
     /// 旧润色结果对不上新尾巴，作废回落原文。
     tail_polished_covered: usize,
@@ -125,6 +130,7 @@ impl GhostwriterSession {
             inline_pending: Vec::new(),
             scanned_chars: 0,
             cancelled_once: HashSet::new(),
+            cancelled_selections: HashSet::new(),
             tail_polished_covered: 0,
         }
     }
@@ -401,6 +407,9 @@ impl GhostwriterSession {
                         self.inline_pending.remove(position);
                     }
                 }
+                // 撤销即入抑制集：重发/改写重提同一命令不复活
+                self.cancelled_selections
+                    .insert((active.selection.kind, active.selection.index));
                 self.revision += 1;
                 Some(LastAction::Selection(active.selection))
             }
@@ -420,6 +429,8 @@ impl GhostwriterSession {
         });
         self.active_actions
             .retain(|action| matches!(action, ActiveAction::Hit(_)));
+        // 新批次＝新命令：旧批次的撤销抑制不再适用
+        self.cancelled_selections.clear();
     }
 
     /// 当前批次视图（浮框候选区渲染依据）；无批次 → None。
@@ -489,6 +500,9 @@ impl GhostwriterSession {
                     self.inline_pending.remove(pending);
                 }
             }
+            // 撤销即入抑制集：重发/改写重提同一命令不复活
+            self.cancelled_selections
+                .insert((kind, index));
             self.revision += 1;
             return Some(active.selection);
         }
@@ -506,6 +520,8 @@ impl GhostwriterSession {
             snippet_id,
             text,
         };
+        // 显式重新选中即出集（与命中「触发即出集」同理）
+        self.cancelled_selections.remove(&(kind, index));
         self.inline_pending.push(selection.text.clone());
         self.active_actions.push(ActiveAction::Selection(
             ActiveSelection {
@@ -542,7 +558,9 @@ impl GhostwriterSession {
     /// 扫一段新话增量里的口头命令「用候选N」「用常用语N」：有 live 批次且
     /// 序号可解析且未越界 → 调 toggle_selection 生效并返回选中，同时把
     /// 命令短语连同紧邻的一个标点（，。、）从文本剔除；已选中的同一条
-    /// 只剔除不重复生效（ASR 快照重发的幂等）；其余情形原样保留（当普通话）。
+    /// 只剔除不重复生效（ASR 快照重发的幂等）；被撤销过的选中在重发/
+    /// 改写重提时不复活（抑制集，随新批次清空）——命令当普通话保留；
+    /// 其余情形原样保留（当普通话）。
     /// 返回剔除后的文本与本次新生效的选中。
     fn scan_commands(&mut self, increment: &str) -> (String, Vec<Selection>) {
         let mut selections = Vec::new();
@@ -570,6 +588,12 @@ impl GhostwriterSession {
             };
             if self.batch_text(kind, number).is_none() {
                 // 序号越界：不剔除、当普通话
+                kept.extend_from_slice(&chars[i..i + head_len + 1]);
+                i += head_len + 1;
+                continue;
+            }
+            if self.cancelled_selections.contains(&(kind, number)) {
+                // 被撤销的选中：重发/改写重提不复活，不剔除、当普通话
                 kept.extend_from_slice(&chars[i..i + head_len + 1]);
                 i += head_len + 1;
                 continue;
@@ -1225,5 +1249,40 @@ mod tests {
         }
         assert!(!s.assembled_text().contains("[附注]"));
         assert!(s.cancel_last_action().is_none());
+    }
+
+    #[test]
+    fn cancelled_selection_not_resurrected_by_resend() {
+        let mut s = GhostwriterSession::new();
+        s.set_live_batch(vec![vec!["甲候选文本".into(), "乙候选文本".into()]], vec![]);
+        let outcome = s.feed(&delta("帮我看看用候选2", 0, false), &[]).unwrap();
+        assert_eq!(outcome.new_selections.len(), 1);
+        assert!(s.cancel_last_action().is_some());
+        assert!(!s.assembled_text().contains("乙候选文本"));
+        // ASR final 全量重发重提同一命令：被撤销的选中不复活，命令当普通话保留
+        let outcome = s.feed(&delta("帮我看看用候选2。", 0, true), &[]).unwrap();
+        assert!(outcome.new_selections.is_empty());
+        assert_eq!(s.debug_buffer(), "帮我看看用候选2。");
+        assert!(!s.assembled_text().contains("乙候选文本"));
+        // 新批次到达：抑制随批次清空，同序号命令重新可选中
+        s.set_live_batch(vec![vec!["新甲".into(), "新乙".into()]], vec![]);
+        let outcome = s.feed(&delta("再用候选2，好", 0, false), &[]).unwrap();
+        assert_eq!(outcome.new_selections.len(), 1);
+        assert_eq!(outcome.new_selections[0].text, "新乙");
+        assert_eq!(s.debug_buffer(), "帮我看看用候选2。再好");
+    }
+
+    #[test]
+    fn cancelled_selection_not_resurrected_by_rewrite() {
+        let mut s = GhostwriterSession::new();
+        s.set_live_batch(vec![vec!["甲候选文本".into(), "乙候选文本".into()]], vec![]);
+        let outcome = s.feed(&delta("帮我看看用候选2", 0, false), &[]).unwrap();
+        assert_eq!(outcome.new_selections.len(), 1);
+        assert!(s.cancel_last_action().is_some());
+        // offset>0 修订重发改写旧文重提同一命令：同样不复活、原文保留
+        let outcome = s.feed(&delta("大家看看用候选2", 2, false), &[]).unwrap();
+        assert!(outcome.new_selections.is_empty());
+        assert_eq!(s.debug_buffer(), "帮我大家看看用候选2");
+        assert!(!s.assembled_text().contains("乙候选文本"));
     }
 }

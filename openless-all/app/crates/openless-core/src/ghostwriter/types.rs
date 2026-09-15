@@ -35,7 +35,7 @@ pub struct FeedOutcome {
 }
 
 /// 口头/点选原的类别：现场候选或推荐常用语。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelectionKind {
     /// 现场候选（LLM 说话中现场生成的表述选项）。
     Candidate,
