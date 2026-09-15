@@ -5,6 +5,7 @@
 //! `events.rs` 的事件登记、`dictation_context.rs` 的 ghostwriter 偏好携带）随 M1/M2
 //! 一并落地，上游 merge 时以这些小 diff 为冲突面。
 
+pub mod assist;
 pub mod dispatcher;
 pub mod prompts;
 pub mod segment_polisher;

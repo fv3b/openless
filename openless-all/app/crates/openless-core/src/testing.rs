@@ -603,6 +603,9 @@ pub struct FixtureTextPolisher {
     result: Result<crate::ports::PolishOutput, BackendError>,
     cancels: Arc<std::sync::atomic::AtomicUsize>,
     inputs: Arc<Mutex<Vec<String>>>,
+    session_ids: Arc<Mutex<Vec<SessionId>>>,
+    contexts: Arc<Mutex<Vec<Arc<DictationContext>>>>,
+    assist_json: Option<String>,
 }
 
 impl FixtureTextPolisher {
@@ -611,6 +614,9 @@ impl FixtureTextPolisher {
             result: Ok(crate::ports::PolishOutput::text(text)),
             cancels: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inputs: Arc::new(Mutex::new(Vec::new())),
+            session_ids: Arc::new(Mutex::new(Vec::new())),
+            contexts: Arc::new(Mutex::new(Vec::new())),
+            assist_json: None,
         }
     }
 
@@ -619,7 +625,20 @@ impl FixtureTextPolisher {
             result: Err(error),
             cancels: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inputs: Arc::new(Mutex::new(Vec::new())),
+            session_ids: Arc::new(Mutex::new(Vec::new())),
+            contexts: Arc::new(Mutex::new(Vec::new())),
+            assist_json: None,
         }
+    }
+
+    /// 助手调用（实时助手）返回预置 JSON，其余调用（段润色等）仍返回 result——
+    /// 同一 fixture 兼供段润色与助手调用的集成测试，按调用特征路由：
+    /// 助手调用的 system prompt 以 [`crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT`]
+    /// 结尾（代码固定拼接），以此识别。SessionId 是 UUID 新型别、无法携带
+    /// 字符串前缀，计划里的「按 session_id 前缀路由」落成此调用特征路由。
+    pub fn with_assist_json(mut self, json: impl Into<String>) -> Self {
+        self.assist_json = Some(json.into());
+        self
     }
 
     pub fn cancel_count(&self) -> usize {
@@ -632,17 +651,46 @@ impl FixtureTextPolisher {
             .expect("fixture polisher input lock poisoned")
             .clone()
     }
+
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.session_ids
+            .lock()
+            .expect("fixture polisher session id lock poisoned")
+            .clone()
+    }
+
+    pub fn contexts(&self) -> Vec<Arc<DictationContext>> {
+        self.contexts
+            .lock()
+            .expect("fixture polisher context lock poisoned")
+            .clone()
+    }
 }
 
 impl TextPolisher for FixtureTextPolisher {
     fn polish(
         &self,
-        _session_id: SessionId,
-        _context: Arc<DictationContext>,
+        session_id: SessionId,
+        context: Arc<DictationContext>,
         raw_text: String,
         partials: Arc<dyn TextStreamSink>,
     ) -> BoxFuture<'static, Result<crate::ports::PolishOutput, BackendError>> {
-        let result = self.result.clone();
+        let is_assist = context
+            .polish
+            .style_system_prompt
+            .ends_with(crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT);
+        let result = match (&self.assist_json, is_assist) {
+            (Some(assist_json), true) => Ok(crate::ports::PolishOutput::text(assist_json.clone())),
+            _ => self.result.clone(),
+        };
+        self.session_ids
+            .lock()
+            .expect("fixture polisher session id lock poisoned")
+            .push(session_id);
+        self.contexts
+            .lock()
+            .expect("fixture polisher context lock poisoned")
+            .push(Arc::clone(&context));
         self.inputs
             .lock()
             .expect("fixture polisher input lock poisoned")
