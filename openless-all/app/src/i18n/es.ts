@@ -1,6 +1,10 @@
 import type { zhCN } from './zh-CN';
 
-export const es: typeof zhCN = {
+// es needs plural variants (_one/_other) for the count-bearing panel strings;
+// zh-CN and the other non-Latin locales keep the flat {{count}} key.
+export const es: typeof zhCN & {
+  ghostwriter: { panel: { sedimentSuggest_one: string; sedimentSuggest_other: string } };
+} = {
   cloudSync: {
     title: 'Sincronización en la nube',
     description:
@@ -175,12 +179,14 @@ export const es: typeof zhCN = {
       recording: 'Entrada de voz',
       preparing: 'Preparando',
       previewPlaceholder: 'La vista previa de la instrucción aparece al empezar a hablar',
-      cancelLast: 'Deshacer el último acierto',
+      cancelLast: 'Deshacer la última acción',
       noticePastedConfirm: 'Pegado enviado: confirma el destino',
       noticeCopiedFallback: 'Copiado: pega manualmente',
       noticeNotRequested: 'Terminado',
       noticeInserted: '{{count}} caracteres insertados',
       sedimentSuggest: 'Has dicho «{{phrase}}» {{count}} veces últimamente',
+      sedimentSuggest_one: 'Has dicho «{{phrase}}» {{count}} vez últimamente',
+      sedimentSuggest_other: 'Has dicho «{{phrase}}» {{count}} veces últimamente',
       saveSuggestion: 'Guardar como frase',
       dismiss: 'Ignorar',
       kindTerm: 'Término exacto',
@@ -199,7 +205,7 @@ export const es: typeof zhCN = {
       emptyTitle: 'Guarda tus frases afinadas, listas con solo decir la palabra clave',
       modeInline: 'En el texto',
       modeFootnote: 'Nota al final',
-      modeHint: 'En el texto se fusiona en su posición original; nota al final se añade como bloque final.',
+      modeHint: '«En el texto» se fusiona en su posición original; «Nota al final» se añade como bloque final.',
       disabledBadge: 'Desactivada',
       unsavedBadge: 'Sin guardar',
       trigger: 'Palabra clave',
@@ -616,6 +622,9 @@ export const es: typeof zhCN = {
     stepInsert: 'Inserción',
     chars: '{{count}} caracteres',
     vocabHits: '{{count}} coincidencias del diccionario',
+    ghostwriterDetail: 'Detalles de Ghostwriter',
+    ghostwriterHits: 'Aciertos de esta entrada',
+    ghostwriterSelections: 'Candidatas seleccionadas',
     inserted: 'Insertado',
     pasteSent: 'Pegado enviado',
     copiedFallback: 'Copiado (usa {{shortcut}})',

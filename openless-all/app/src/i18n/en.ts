@@ -1,12 +1,20 @@
 // English resources — translated from zh-CN.ts. Keep keys in sync.
-// Exception: `noticeInserted` splits into i18next plural keys (_one/_other) here;
-// zh-CN and the other locales have no plural forms and keep the flat {{count}} key.
+// Exception: `noticeInserted` and `sedimentSuggest` split into i18next plural
+// keys (_one/_other) here; zh-CN and the other locales have no plural forms and
+// keep the flat {{count}} key.
 
 import type { zhCN } from './zh-CN';
 
 // Type-level guarantee that en mirrors the zh-CN shape.
 export const en: typeof zhCN & {
-  ghostwriter: { panel: { noticeInserted_one: string; noticeInserted_other: string } };
+  ghostwriter: {
+    panel: {
+      noticeInserted_one: string;
+      noticeInserted_other: string;
+      sedimentSuggest_one: string;
+      sedimentSuggest_other: string;
+    };
+  };
 } = {
   cloudSync: {
     title: 'Cloud sync',
@@ -179,7 +187,7 @@ export const en: typeof zhCN & {
       recording: 'Voice input',
       preparing: 'Getting ready',
       previewPlaceholder: 'The instruction preview appears once you start speaking',
-      cancelLast: 'Undo last hit',
+      cancelLast: 'Undo last action',
       noticePastedConfirm: 'Paste sent — confirm the destination',
       noticeCopiedFallback: 'Copied — paste manually',
       noticeNotRequested: 'Done',
@@ -189,6 +197,8 @@ export const en: typeof zhCN & {
       noticeInserted_one: 'Inserted {{count}} character',
       noticeInserted_other: 'Inserted {{count}} characters',
       sedimentSuggest: 'You said “{{phrase}}” {{count}} times recently',
+      sedimentSuggest_one: 'You said “{{phrase}}” {{count}} time recently',
+      sedimentSuggest_other: 'You said “{{phrase}}” {{count}} times recently',
       saveSuggestion: 'Save as snippet',
       dismiss: 'Ignore',
       kindTerm: 'Exact term',
@@ -616,6 +626,9 @@ export const en: typeof zhCN & {
     stepInsert: 'Insert',
     chars: '{{count}} chars',
     vocabHits: '{{count}} vocab hits',
+    ghostwriterDetail: 'Ghostwriter details',
+    ghostwriterHits: 'Hits in this entry',
+    ghostwriterSelections: 'Selected candidates',
     inserted: 'Inserted',
     pasteSent: 'Paste sent',
     copiedFallback: 'Copied (use {{shortcut}})',
