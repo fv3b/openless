@@ -11,6 +11,7 @@ import { SettingsModal } from './SettingsModal';
 import { Overview } from '../pages/Overview';
 import { History } from '../pages/History';
 import { Vocab } from '../pages/Vocab';
+import { FluidSnippets } from '../pages/FluidSnippets';
 import { Style } from '../pages/Style';
 import { Marketplace } from '../pages/Marketplace';
 import { Translation } from '../pages/Translation';
@@ -32,14 +33,20 @@ import {
 import { type SettingsSectionId } from './SettingsModal';
 import { MobileMoreSheet } from './MobileMoreSheet';
 import { MobileStyleSheet } from './MobileStyleSheet';
-import { subItemLabelKey } from '../lib/navLabels';
+import { subItemLabelKey, PENDING_I18N_NAV_LABELS } from '../lib/navLabels';
 import { applyStackedLayoutFromPrefs } from '../lib/stackedLayout';
 import { applyConservativeLayout } from '../lib/conservativeLayout';
 import { useMobileLayout, useConservativeLayout } from '../lib/useMobileLayout';
 import { useHotkeySettings } from '../state/HotkeySettingsContext';
 import { useAppState, type AppTab } from '../state/useAppState';
 
-const MORE_TAB_IDS: AppTab[] = ['vocab', 'translation', 'selectionAsk', 'corrections'];
+const MORE_TAB_IDS: AppTab[] = [
+  'vocab',
+  'fluidSnippets',
+  'translation',
+  'selectionAsk',
+  'corrections',
+];
 const STYLE_TAB_IDS: AppTab[] = ['style', 'marketplace'];
 
 /** Reserve the native traffic-light strip before the sidebar's version row. */
@@ -51,6 +58,7 @@ const PAGE_CMP: Record<Exclude<AppTab, 'localAsr'>, ComponentType> = {
   overview: Overview,
   history: History,
   vocab: Vocab,
+  fluidSnippets: FluidSnippets,
   style: Style,
   marketplace: Marketplace,
   translation: Translation,
@@ -67,6 +75,7 @@ const NAV_TREE: NavNode[] = [
   { kind: 'item', id: 'overview', icon: 'overview' },
   { kind: 'item', id: 'history', icon: 'history' },
   { kind: 'item', id: 'vocab', icon: 'vocab' },
+  { kind: 'item', id: 'fluidSnippets', icon: 'tag' },
   {
     kind: 'group',
     key: 'style',
@@ -252,7 +261,9 @@ function FloatingShellBody({
     openSettings('general');
   };
 
-  const mobileTitle = settingsOpen ? t('shell.footer.settings') : t(subItemLabelKey(currentTab));
+  const mobileTitle = settingsOpen
+    ? t('shell.footer.settings')
+    : (PENDING_I18N_NAV_LABELS[currentTab] ?? t(subItemLabelKey(currentTab)));
   const moreTabActive = MORE_TAB_IDS.includes(currentTab);
   const styleTabActive = STYLE_TAB_IDS.includes(currentTab);
 
@@ -363,7 +374,7 @@ function FloatingShellBody({
                   return (
                     <Tooltip
                       key={node.id}
-                      content={t(`shell.navHint.${node.id}`)}
+                      content={PENDING_I18N_NAV_LABELS[node.id] ?? t(`shell.navHint.${node.id}`)}
                       placement="right"
                     >
                       <button
@@ -372,7 +383,9 @@ function FloatingShellBody({
                         style={navBtnStyle}
                       >
                         <Icon name={node.icon} size={16} />
-                        <span style={{ flex: 1 }}>{t(`nav.${node.id}`)}</span>
+                        <span style={{ flex: 1 }}>
+                          {PENDING_I18N_NAV_LABELS[node.id] ?? t(`nav.${node.id}`)}
+                        </span>
                       </button>
                     </Tooltip>
                   );

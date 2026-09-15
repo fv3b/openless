@@ -2,9 +2,11 @@ import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from './Icon';
 import type { AppTab } from '../state/useAppState';
+import { PENDING_I18N_NAV_LABELS } from '../lib/navLabels';
 
 const MORE_TABS: Array<{ id: AppTab; icon: string }> = [
   { id: 'vocab', icon: 'vocab' },
+  { id: 'fluidSnippets', icon: 'tag' },
   { id: 'translation', icon: 'translate' },
   { id: 'selectionAsk', icon: 'selectionAsk' },
   { id: 'corrections', icon: 'filter' },
@@ -89,7 +91,9 @@ export function MobileMoreSheet({
                 style={rowBtnStyle}
               >
                 <Icon name={item.icon} size={16} />
-                <span style={rowLabelStyle}>{t(`nav.${item.id}`)}</span>
+                <span style={rowLabelStyle}>
+                  {PENDING_I18N_NAV_LABELS[item.id] ?? t(`nav.${item.id}`)}
+                </span>
                 <Icon name="chevRight" size={13} />
               </button>
             );
