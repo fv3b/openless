@@ -34,9 +34,9 @@ pub use sherpa_runtime::SherpaOnnxRuntime;
 
 #[cfg(target_os = "macos")]
 mod apple_speech_provider;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
 mod mlx_qwen_engine;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
 mod mlx_worker;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod qwen_engine;
@@ -48,9 +48,9 @@ mod qwen_ffi;
 pub use apple_speech_provider::{native_name_to_apple_locale, AppleSpeechAsr};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use local_provider::LocalQwenAsr;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
 pub use mlx_qwen_engine::MlxQwenAsrEngine;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
 pub(crate) use mlx_worker::run_if_requested as run_mlx_worker_if_requested;
 #[cfg(target_os = "macos")]
 pub(crate) use whisper_provider::WhisperEngine;
@@ -88,7 +88,7 @@ pub fn is_local_qwen3(id: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QwenBackend {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
     Mlx,
     C,
 }
@@ -96,7 +96,7 @@ pub enum QwenBackend {
 impl QwenBackend {
     pub fn cache_key(self) -> &'static str {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx => "mlx",
             Self::C => "c",
         }
@@ -105,7 +105,7 @@ impl QwenBackend {
 
 pub fn qwen_backend_for_provider(id: &str) -> Option<QwenBackend> {
     match id {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
         PROVIDER_ID | LOCAL_QWEN3_MLX_PROVIDER_ID => Some(QwenBackend::Mlx),
         #[cfg(target_os = "linux")]
         PROVIDER_ID | LOCAL_QWEN3_C_PROVIDER_ID => Some(QwenBackend::C),
@@ -119,7 +119,7 @@ pub fn qwen_backend_for_provider(id: &str) -> Option<QwenBackend> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub enum LocalQwenEngine {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
     Mlx(MlxQwenAsrEngine),
     C(qwen_engine::QwenAsrEngine),
 }
@@ -128,7 +128,7 @@ pub enum LocalQwenEngine {
 impl LocalQwenEngine {
     pub fn load(backend: QwenBackend, model_dir: &std::path::Path) -> anyhow::Result<Self> {
         match backend {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             QwenBackend::Mlx => Ok(Self::Mlx(MlxQwenAsrEngine::load(model_dir)?)),
             QwenBackend::C => Ok(Self::C(qwen_engine::QwenAsrEngine::load(model_dir)?)),
         }
@@ -136,7 +136,7 @@ impl LocalQwenEngine {
 
     pub fn transcribe_pcm(&self, samples: &[f32]) -> anyhow::Result<String> {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => engine.transcribe_pcm(samples),
             Self::C(engine) => engine.transcribe_audio(samples),
         }
@@ -144,7 +144,7 @@ impl LocalQwenEngine {
 
     pub fn next_operation_id(&self) -> u64 {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => engine.next_operation_id(),
             Self::C(_) => 0,
         }
@@ -152,7 +152,7 @@ impl LocalQwenEngine {
 
     pub fn cancel_operation(&self, operation_id: u64) {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => engine.cancel_operation(operation_id),
             Self::C(_) => {
                 let _ = operation_id;
@@ -162,7 +162,7 @@ impl LocalQwenEngine {
 
     pub fn cancel(&self) {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => engine.abort(),
             Self::C(_) => {}
         }
@@ -170,7 +170,7 @@ impl LocalQwenEngine {
 
     pub fn is_healthy(&self) -> bool {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => engine.is_healthy(),
             Self::C(_) => true,
         }
@@ -189,7 +189,7 @@ impl LocalQwenEngine {
         F: FnMut(&str) + Send + 'static,
     {
         match self {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             Self::Mlx(engine) => {
                 engine.transcribe_pcm_for_operation(operation_id, &samples, cancelled)
             }

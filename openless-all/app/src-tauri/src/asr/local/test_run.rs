@@ -127,7 +127,7 @@ pub async fn run_test(
 
     Ok(TestResult {
         backend: match backend {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "mlx"))]
             super::QwenBackend::Mlx => "MLX Metal (Apple Silicon)",
             super::QwenBackend::C => "C CPU",
         }
