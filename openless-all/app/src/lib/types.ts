@@ -345,7 +345,7 @@ export interface StylePackRuntimeDiagnostics {
   previewOmitsFrontApp: boolean;
 }
 
-/** Ghostwriter 层（Ghostwriter 流式浮框）候选/推荐流开关＋节流参数；与 Core GhostwriterPreferences 对齐。 */
+/** Ghostwriter 层（Ghostwriter 流式浮框）候选/推荐流开关＋节流参数＋背景落点；与 Core GhostwriterPreferences 对齐。 */
 export interface GhostwriterPreferences {
   /** 候选流开关（M3 消费，仅 UI 存储）。 */
   candidatesEnabled: boolean;
@@ -355,6 +355,8 @@ export interface GhostwriterPreferences {
   candidateThrottleMs: number;
   /** 推荐流节流间隔毫秒（M3 消费，不在设置页暴露）。 */
   recommendationThrottleMs: number;
+  /** 全局背景落点：所有背景块（背景类常用语＋表述附件）统一附在开头或文末。 */
+  backgroundPlacement: SnippetPlacement;
 }
 
 export interface UserPreferences {
@@ -707,7 +709,8 @@ export type CapsuleStyle = 'siri' | 'classic' | 'typeless' | 'fluid';
 /** 常用语种类：'phrasing' 表述（文本融进正文）、'background' 背景（整条进背景块）。 */
 export type SnippetKind = 'phrasing' | 'background';
 
-/** 背景落点：'head' 附在开头、'tail' 附在文末（默认）。 */
+/** 背景落点：'head' 附在开头、'tail' 附在文末（默认）。
+ *  单条常用语不再各自带落点——这是全局偏好的取值（Ghostwriter 设置页签）。 */
 export type SnippetPlacement = 'head' | 'tail';
 
 /** 表述的附带背景：引用库里一条背景类常用语，或手写一段文本。 */
@@ -715,14 +718,14 @@ export type SnippetAttachment =
   | { type: 'reference'; snippetId: string }
   | { type: 'text'; text: string };
 
-/** 常用语：触发词/别名 → 文本，命中后按种类生效（表述融进正文＋附件进背景块；背景整条进背景块）。 */
+/** 常用语：触发词/别名 → 文本，命中后按种类生效
+ *  （表述融进正文＋附件进背景块；背景整条进背景块；落点由全局偏好统一决定）。 */
 export interface Snippet {
   id: string;
   trigger: string;
   aliases: string[];
   text: string;
   kind: SnippetKind;
-  placement: SnippetPlacement;
   attachments: SnippetAttachment[];
   enabled: boolean;
 }

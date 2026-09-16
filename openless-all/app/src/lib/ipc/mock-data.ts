@@ -52,6 +52,7 @@ export let mockSettings: UserPreferences = {
     recommendationsEnabled: true,
     candidateThrottleMs: 2000,
     recommendationThrottleMs: 2000,
+    backgroundPlacement: 'tail',
   },
   muteDuringRecording: false,
   audioCueOnRecord: true,

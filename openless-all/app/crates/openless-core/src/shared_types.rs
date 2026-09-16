@@ -8,8 +8,7 @@ use crate::android_types::{
     default_android_overlay_cancel_swipe_direction, default_android_overlay_left_swipe_action,
     default_android_overlay_size_dp, default_android_overlay_trigger,
     normalize_android_insert_strategy, normalize_android_overlay_size_dp,
-};
-pub use crate::android_types::{
+};pub use crate::android_types::{
     AndroidAccessibilityDiagnosis, AndroidAccessibilityRecoveryOutcome,
     AndroidAccessibilityRecoveryResult, AndroidAccessibilityState, AndroidAccessibilityStatus,
     AndroidInsertStrategy, AndroidOverlayActivationMode, AndroidOverlayCancelSwipeDirection,
@@ -18,6 +17,8 @@ pub use crate::android_types::{
 };
 
 pub use crate::types::{HistorySource, PolishMode};
+
+use crate::ghostwriter::snippet_store::SnippetPlacement;
 
 /// 本地 ASR 保持加载设置的兼容值：不自动释放，仅由显式操作或进程退出卸载。
 pub const LOCAL_ASR_KEEP_LOADED_FOREVER_SECS: u32 = 86_400;
@@ -318,9 +319,9 @@ fn resolve_windows_sendinput_insertion_only_legacy(
     resolve_windows_insertion_mode(mode, legacy_sendinput_only) == WindowsInsertionMode::SendInput
 }
 
-/// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数。
-/// 润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象或对象内
-/// 缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
+/// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数＋
+/// 背景落点。润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象
+/// 或对象内缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GhostwriterPreferences {
@@ -332,6 +333,9 @@ pub struct GhostwriterPreferences {
     pub candidate_throttle_ms: u64,
     /// 推荐流节流间隔毫秒（M3 消费）。
     pub recommendation_throttle_ms: u64,
+    /// 全局背景落点：所有背景类常用语与表述附件的背景块统一附在开头或文末；
+    /// 单条常用语不再各自带落点。会话创建时取值传入，偏好保存后对存活会话即时生效。
+    pub background_placement: SnippetPlacement,
 }
 
 impl Default for GhostwriterPreferences {
@@ -341,6 +345,7 @@ impl Default for GhostwriterPreferences {
             recommendations_enabled: true,
             candidate_throttle_ms: 2000,
             recommendation_throttle_ms: 2000,
+            background_placement: SnippetPlacement::default(),
         }
     }
 }
@@ -3470,6 +3475,8 @@ mod tests {
         let p = GhostwriterPreferences::default();
         assert!(p.candidates_enabled && p.recommendations_enabled);
         assert_eq!(p.candidate_throttle_ms, 2000);
+        // 背景落点默认文末
+        assert_eq!(p.background_placement, SnippetPlacement::Tail);
     }
 
     #[test]
@@ -3477,6 +3484,7 @@ mod tests {
         let json = r#"{}"#;
         let p: GhostwriterPreferences = serde_json::from_str(json).unwrap();
         assert!(p.candidates_enabled && p.recommendations_enabled);
+        assert_eq!(p.background_placement, SnippetPlacement::Tail);
     }
 
     #[test]
@@ -3485,6 +3493,14 @@ mod tests {
         let prefs: UserPreferences = serde_json::from_str(json).unwrap();
         assert!(!prefs.ghostwriter.candidates_enabled);
         assert!(prefs.ghostwriter.recommendations_enabled); // 未写回落默认
+        assert_eq!(prefs.ghostwriter.background_placement, SnippetPlacement::Tail);
+        // 显式写 head：wire 往返不丢字段（缺映射会被静默丢弃——历史教训）
+        let json = r#"{"ghostwriter":{"backgroundPlacement":"head"}}"#;
+        let prefs: UserPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            prefs.ghostwriter.background_placement,
+            SnippetPlacement::Head
+        );
     }
 
     #[test]

@@ -280,7 +280,7 @@ export function GhostwriterPanel() {
     });
   };
 
-  // 选中候选 chip 的 [存]：把这条说法收成常用语（触发词＝候选文本、表述类·落点文末、无附件、启用）。
+  // 选中候选 chip 的 [存]：把这条说法收成常用语（触发词＝候选文本、表述类、无附件、启用）。
   const saveCandidateSnippet = (text: string) => {
     void createGhostwriterSnippet({
       id: '',
@@ -288,7 +288,6 @@ export function GhostwriterPanel() {
       aliases: [],
       text,
       kind: 'phrasing',
-      placement: 'tail',
       attachments: [],
       enabled: true,
     }).catch(error => {

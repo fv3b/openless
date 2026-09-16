@@ -628,7 +628,7 @@ mod tests {
     use crate::credentials::InMemoryCredentialStore;
     use crate::dictation_context::DictationContext;
     use crate::events::EventSubscription;
-    use crate::ghostwriter::snippet_store::{Snippet, SnippetKind, SnippetPlacement};
+    use crate::ghostwriter::snippet_store::{Snippet, SnippetKind};
     use crate::ports::{PolishOutput, TextStreamSink};
     use crate::shared_types::GhostwriterPreferences;
     use crate::types::TranscriptDelta;
@@ -743,6 +743,7 @@ mod tests {
             recommendations_enabled: true,
             candidate_throttle_ms: throttles.0,
             recommendation_throttle_ms: throttles.1,
+            ..GhostwriterPreferences::default()
         };
         preferences.set(user_prefs).unwrap();
         let snippets = crate::ghostwriter::snippet_store::SnippetStore::in_memory();
@@ -753,7 +754,6 @@ mod tests {
                 aliases: Vec::new(),
                 text: "推荐常用语的完整表述文本".into(),
                 kind: SnippetKind::Phrasing,
-                placement: SnippetPlacement::Tail,
                 attachments: Vec::new(),
                 enabled: true,
             })

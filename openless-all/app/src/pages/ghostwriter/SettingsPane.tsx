@@ -1,4 +1,4 @@
-// SettingsPane.tsx — 「设置」页签：候选/推荐开关 + 两枚节流间隔输入。
+// SettingsPane.tsx — 「设置」页签：候选/推荐开关＋背景落点 radio＋两枚节流间隔输入。
 // 输入越界（500–10000 外）在失焦时红字提示并回弹上次合法值；合法即保存、立即生效。
 
 import { useEffect, useState } from 'react';
@@ -47,6 +47,34 @@ export function SettingsPane() {
           on={prefs.ghostwriter.recommendationsEnabled}
           onToggle={(next) => void saveGhostwriter({ recommendationsEnabled: next })}
         />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.ghostwriter.backgroundPlacement')}
+        desc={t('settings.ghostwriter.backgroundPlacementDesc')}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          {(
+            [
+              ['head', 'settings.ghostwriter.backgroundPlacementHead'],
+              ['tail', 'settings.ghostwriter.backgroundPlacementTail'],
+            ] as const
+          ).map(([value, labelKey]) => (
+            <label
+              key={value}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'default' }}
+            >
+              <input
+                type="radio"
+                name="ghostwriter-background-placement"
+                checked={prefs.ghostwriter.backgroundPlacement === value}
+                onChange={() => void saveGhostwriter({ backgroundPlacement: value })}
+              />
+              <span style={{ fontSize: 12.5, color: 'var(--ol-ink)' }}>
+                {t(labelKey)}
+              </span>
+            </label>
+          ))}
+        </div>
       </SettingRow>
       <ThrottleRow
         label={t('ghostwriter.settingsPane.throttleCandidate')}

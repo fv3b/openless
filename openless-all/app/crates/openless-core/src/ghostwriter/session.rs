@@ -43,10 +43,8 @@ struct ActiveHit {
     hit: GhostwriterSnippetHit,
     /// 待融材料（表述类命中的全量文本；背景类为 None）。
     material: Option<String>,
-    /// 背景块行（标签, 文本）× 多行，按生效顺序；头/尾由 placement 决定。
+    /// 背景块行（标签, 文本）× 多行，按生效顺序；头/尾由会话的全局落点现算。
     background_lines: Vec<(String, String)>,
-    /// 本命中的背景落点（背景类＝自身 placement；表述类＝附件整体随它走）。
-    placement: SnippetPlacement,
     /// 待融材料是否仍在待融队列（随段/尾巴润色转移后置 false，撤销不再出队）。
     material_pending: bool,
     /// 本次命中登记的背景去重键；撤销时释放，同 snippet 再说到可再贴。
@@ -111,6 +109,10 @@ pub struct GhostwriterSession {
     /// 最近一次尾巴补润成功时覆盖的尾巴字符长度；尾巴长度一变即失配，
     /// 旧润色结果对不上新尾巴，作废回落原文。
     tail_polished_covered: usize,
+    /// 全局背景落点（源自 Ghostwriter 偏好 backgroundPlacement）：
+    /// 所有背景块（背景类命中＋表述附件）拼装时按它现算头/尾位置；
+    /// 设置变更经 [`Self::set_background_placement`] 即时生效。
+    background_placement: SnippetPlacement,
 }
 
 impl Default for GhostwriterSession {
@@ -137,7 +139,20 @@ impl GhostwriterSession {
             cancelled_once: HashSet::new(),
             cancelled_selections: HashSet::new(),
             tail_polished_covered: 0,
+            background_placement: SnippetPlacement::default(),
         }
+    }
+
+    /// 创建时指定全局背景落点（api 从偏好取值传入）；不传按默认文末。
+    pub fn with_background_placement(mut self, placement: SnippetPlacement) -> Self {
+        self.background_placement = placement;
+        self
+    }
+
+    /// 更新全局背景落点（偏好保存后对存活会话即时生效）：
+    /// 拼装现算，已生效的背景块位置随之挪，无需其他处理。
+    pub fn set_background_placement(&mut self, placement: SnippetPlacement) {
+        self.background_placement = placement;
     }
 
     /// 喂入一条转写增量与当前启用的常用语。缓冲按 delta 形态自适应
@@ -293,7 +308,9 @@ impl GhostwriterSession {
             let hit = GhostwriterSnippetHit {
                 snippet_id: snippet.id.clone(),
                 title: snippet.trigger.clone(),
-                mode: hit_mode(snippet.kind, snippet.placement).to_string(),
+                // 背景类按命中当时会话的全局落点记录（历史快照语义，事后改
+                // 设置不改旧记录）；表述恒 "inline"（即使带附件）。
+                mode: hit_mode(snippet.kind, self.background_placement).to_string(),
             };
             match snippet.kind {
                 SnippetKind::Phrasing => {
@@ -305,7 +322,6 @@ impl GhostwriterSession {
                         hit: hit.clone(),
                         material: Some(snippet.text.clone()),
                         background_lines: lines,
-                        placement: snippet.placement,
                         material_pending: true,
                         dedup_keys: keys,
                     }));
@@ -321,7 +337,6 @@ impl GhostwriterSession {
                         hit: hit.clone(),
                         material: None,
                         background_lines: vec![(snippet.trigger.clone(), snippet.text.clone())],
-                        placement: snippet.placement,
                         material_pending: false,
                         dedup_keys: vec![key],
                     }));
@@ -695,9 +710,10 @@ impl GhostwriterSession {
         })
     }
 
-    /// 指令预览＝最终贴出：头背景块＋主文本（润色回落段原文）＋尾巴（补润回落原文）
-    /// ＋待融剩余材料（润色失败兜底）＋尾背景块。块格式＝节头 `[背景]`＋行式
-    /// 「- 标签：文本」，多条同节按生效顺序；头块拼在最前，尾块拼在最后。
+    /// 指令预览＝最终贴出：主文本（润色回落段原文）＋尾巴（补润回落原文）
+    /// ＋待融剩余材料（润色失败兜底）＋背景块。块格式＝节头 `[背景]`＋行式
+    /// 「- 标签：文本」，多条同节按生效顺序（含表述附件行）；全部背景行
+    /// 按会话当前全局落点归入同一块——头块拼在最前、尾块拼在最后。
     pub fn assembled_text(&self) -> String {
         let mut main: String = self
             .segments
@@ -718,26 +734,30 @@ impl GhostwriterSession {
         for material in &self.inline_pending {
             assembled.push_str(material);
         }
-        let head_lines = self.background_lines(SnippetPlacement::Head);
-        if !head_lines.is_empty() {
-            assembled = format!("[背景]\n{}\n\n{}", head_lines.join("\n"), assembled);
-        }
-        let tail_lines = self.background_lines(SnippetPlacement::Tail);
-        if !tail_lines.is_empty() {
-            assembled.push_str("\n\n[背景]\n");
-            assembled.push_str(&tail_lines.join("\n"));
+        let background_lines = self.background_lines();
+        match self.background_placement {
+            SnippetPlacement::Head => {
+                if !background_lines.is_empty() {
+                    assembled = format!("[背景]\n{}\n\n{}", background_lines.join("\n"), assembled);
+                }
+            }
+            SnippetPlacement::Tail => {
+                if !background_lines.is_empty() {
+                    assembled.push_str("\n\n[背景]\n");
+                    assembled.push_str(&background_lines.join("\n"));
+                }
+            }
         }
         assembled
     }
 
-    /// 现算某落点的背景块行（「- 标签：文本」），按动作生效顺序（含表述附件行）。
-    fn background_lines(&self, placement: SnippetPlacement) -> Vec<String> {
+    /// 现算全部背景块行（「- 标签：文本」），按动作生效顺序（含表述附件行）；
+    /// 头/尾归属由调用方按会话当前全局落点决定。
+    fn background_lines(&self) -> Vec<String> {
         self.active_actions
             .iter()
             .filter_map(|action| match action {
-                ActiveAction::Hit(active) if active.placement == placement => {
-                    Some(active.background_lines.iter())
-                }
+                ActiveAction::Hit(active) => Some(active.background_lines.iter()),
                 _ => None,
             })
             .flatten()
@@ -805,7 +825,8 @@ fn match_snippet(text: &str, snippet: &Snippet) -> Option<String> {
         .map(|_| snippet.text.clone())
 }
 
-/// 命中记录里的贴位字符串：表述恒 "inline"（即使带附件）；背景按落点 head/tail。
+/// 命中记录里的贴位字符串：表述恒 "inline"（即使带附件）；
+/// 背景按命中当时会话的全局落点记 head/tail（历史快照语义）。
 fn hit_mode(kind: SnippetKind, placement: SnippetPlacement) -> &'static str {
     match kind {
         SnippetKind::Phrasing => "inline",
@@ -880,18 +901,14 @@ mod tests {
             aliases: Vec::new(),
             text: format!("【{id}】{trigger}的完整表述文本"),
             kind,
-            placement: SnippetPlacement::Tail,
             attachments: Vec::new(),
             enabled: true,
         }
     }
 
-    /// 指定落点的常用语（背景类头/尾落点与表述类附件落点测试用）。
-    fn placed(id: &str, trigger: &str, kind: SnippetKind, placement: SnippetPlacement) -> Snippet {
-        Snippet {
-            placement,
-            ..snip(id, trigger, kind)
-        }
+    /// 指定全局背景落点的会话（背景块头/尾位置测试用）。
+    fn session_with_placement(placement: SnippetPlacement) -> GhostwriterSession {
+        GhostwriterSession::new().with_background_placement(placement)
     }
 
     /// 给表述挂附件（引用/手写，按列表顺序）。
@@ -1439,39 +1456,86 @@ mod tests {
     }
 
     #[test]
-    fn background_hits_split_head_and_tail_blocks() {
-        // 头落点与尾落点各一条背景：拼装＝[背景] 头块＋主文本＋[背景] 尾块；
-        // 命中 mode 随落点（head/tail），表述命中恒 inline。
-        let mut s = GhostwriterSession::new();
-        let head = placed("b-head", "开头", SnippetKind::Background, SnippetPlacement::Head);
-        let tail = placed("b-tail", "文末", SnippetKind::Background, SnippetPlacement::Tail);
+    fn background_block_position_follows_session_placement() {
+        // 全局落点驱动背景块位置：默认文末 → 尾块；改头 → 头块；
+        // 背景类与表述附件两类都随会话落点走。
+        let mut s = session_with_placement(SnippetPlacement::Tail);
+        let bg = snip("b1", "文末", SnippetKind::Background);
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![SnippetAttachment::Text {
+                text: "手写的背景说明".to_string(),
+            }],
+        );
         let outcome = s
             .feed(
-                &delta("开头一下。文末一下。", 0, true),
-                &[head.clone(), tail.clone()],
+                &delta("文末一下。给个方案。继续", 0, true),
+                &[bg.clone(), phrasing],
             )
             .unwrap();
         assert_eq!(outcome.new_hits.len(), 2);
-        assert_eq!(outcome.new_hits[0].mode, "head");
-        assert_eq!(outcome.new_hits[1].mode, "tail");
         assert_eq!(
             s.assembled_text(),
             format!(
-                "[背景]\n- 开头：{}\n\n开头一下。文末一下。\n\n[背景]\n- 文末：{}",
-                head.text, tail.text
+                "文末一下。给个方案。继续\n\n[背景]\n- 文末：{}\n- 方案：手写的背景说明",
+                bg.text
+            )
+        );
+
+        // 同样两条命中，会话落点为头 → 头块在最前
+        let mut s = session_with_placement(SnippetPlacement::Head);
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![SnippetAttachment::Text {
+                text: "手写的背景说明".to_string(),
+            }],
+        );
+        s.feed(
+            &delta("文末一下。给个方案。继续", 0, true),
+            &[bg.clone(), phrasing],
+        )
+        .unwrap();
+        assert_eq!(
+            s.assembled_text(),
+            format!(
+                "[背景]\n- 文末：{}\n- 方案：手写的背景说明\n\n文末一下。给个方案。继续",
+                bg.text
             )
         );
     }
 
     #[test]
-    fn phrasing_attachments_ride_own_placement_with_kind_labels() {
-        // 表述带附件（引用＋手写）按表述的落点进块：引用行标签＝被引用背景的
+    fn set_background_placement_moves_existing_blocks() {
+        // 设置变更即时生效：命中生效后改会话落点，已贴的背景块位置随动
+        // （拼装现算，改字段即可）；命中 mode 是命中当时的快照，不随改。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("b1", "附注", SnippetKind::Background);
+        let outcome = s.feed(&delta("加个附注。完毕", 0, true), &[bg.clone()]).unwrap();
+        assert_eq!(outcome.new_hits[0].mode, "tail");
+        let tail_assembled = s.assembled_text();
+        assert!(tail_assembled.ends_with(&format!("\n\n[背景]\n- 附注：{}", bg.text)));
+
+        s.set_background_placement(SnippetPlacement::Head);
+        assert_eq!(
+            s.assembled_text(),
+            format!("[背景]\n- 附注：{}\n\n加个附注。完毕", bg.text)
+        );
+        // 撤销后重新命中：新命中 mode 按当时落点记 head
+        assert!(s.cancel_last_action().is_some());
+        let outcome = s.feed(&delta("再提附注", 0, false), &[bg.clone()]).unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].mode, "head");
+    }
+
+    #[test]
+    fn phrasing_attachments_lines_carry_kind_labels() {
+        // 表述带附件（引用＋手写）按会话全局落点进块：引用行标签＝被引用背景的
         // 触发词、手写行标签＝表述的触发词；表述文本本身仍进待融队列，
         // 命中 mode 恒 "inline"（即使带附件）。
         let mut s = GhostwriterSession::new();
         let bg = snip("bg1", "素材", SnippetKind::Background);
         let phrasing = with_attachments(
-            placed("p1", "方案", SnippetKind::Phrasing, SnippetPlacement::Head),
+            snip("p1", "方案", SnippetKind::Phrasing),
             vec![
                 SnippetAttachment::Reference {
                     snippet_id: "bg1".to_string(),
@@ -1491,7 +1555,7 @@ mod tests {
         assert_eq!(
             s.assembled_text(),
             format!(
-                "[背景]\n- 素材：{}\n- 方案：手写的背景说明\n\n给个方案。继续",
+                "给个方案。继续\n\n[背景]\n- 素材：{}\n- 方案：手写的背景说明",
                 bg.text
             )
         );
@@ -1589,10 +1653,10 @@ mod tests {
     fn cancel_removes_material_and_all_attachment_lines() {
         // 一次命中＝一个撤销单元：融合材料与全部背景行一起撤；撤销后
         // 同 snippet 再说到可再贴（去重键随撤销释放）。
-        let mut s = GhostwriterSession::new();
+        let mut s = session_with_placement(SnippetPlacement::Head);
         let bg = snip("bg1", "素材", SnippetKind::Background);
         let phrasing = with_attachments(
-            placed("p1", "方案", SnippetKind::Phrasing, SnippetPlacement::Head),
+            snip("p1", "方案", SnippetKind::Phrasing),
             vec![
                 SnippetAttachment::Reference {
                     snippet_id: "bg1".to_string(),

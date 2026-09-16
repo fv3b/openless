@@ -1,9 +1,11 @@
-//! 常用语（snippet）存储：用户存下来的表述实体（触发词/别名 → 文本，带种类、落点与启用开关）。
+//! 常用语（snippet）存储：用户存下来的表述实体（触发词/别名 → 文本，带种类与启用开关）。
 //!
 //! 持久化照抄 style_pack_store 模式：Mutex 内存态 + 每次变更后整文件原子写，
 //! 落 `data_dir/ghostwriter-snippets.json`；文件缺失按空库处理。
 //! 旧库文件带 `mode: "inline"|"footnote"` 且无新字段：加载时经 `SnippetWire`
-//! 迁移（inline → 表述；footnote → 背景＋文末；缺省字段补默认），写入即新形态。
+//! 迁移（inline → 表述；footnote → 背景；缺省字段补默认），写入即新形态。
+//! 过渡版文件带 `placement`：反序列化容忍并忽略（落点已改全局偏好，见
+//! `GhostwriterPreferences::background_placement`）。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +24,8 @@ pub enum SnippetKind {
 }
 
 /// 背景落点："head" 附在开头、"tail" 附在文末（默认）。
+/// 单条常用语不再各自带落点：这是全局偏好的取值类型
+/// （`GhostwriterPreferences::background_placement`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SnippetPlacement {
@@ -39,7 +43,7 @@ pub enum SnippetAttachment {
 }
 
 /// 常用语：触发词/别名 → 文本，命中后按种类生效
-/// （表述＝文本进正文＋附件按落点进背景块；背景＝整条按落点进背景块）。
+/// （表述＝文本进正文＋附件进背景块；背景＝整条进背景块；落点由全局偏好统一决定）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", from = "SnippetWire")]
 pub struct Snippet {
@@ -50,14 +54,13 @@ pub struct Snippet {
     /// 表述文本或背景文本（可多句）
     pub text: String,
     pub kind: SnippetKind,
-    /// 背景落点（背景类的 text、表述类的附件整体都按它走）
-    pub placement: SnippetPlacement,
     /// 附带背景（仅表述类有意义；背景类写入前清空）
     pub attachments: Vec<SnippetAttachment>,
     pub enabled: bool,
 }
 
-/// 落盘反序列化的中间形态：兼容旧行（有 mode、无新字段），缺省一律补默认。
+/// 落盘反序列化的中间形态：兼容旧行（有 mode、无新字段），缺省一律补默认；
+/// 过渡版写过的 `placement` 键不在此列——serde 默认忽略未知字段，读入即丢弃。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SnippetWire {
@@ -68,8 +71,6 @@ struct SnippetWire {
     text: String,
     #[serde(default)]
     kind: Option<SnippetKind>,
-    #[serde(default)]
-    placement: Option<SnippetPlacement>,
     #[serde(default)]
     attachments: Vec<SnippetAttachment>,
     #[serde(default)]
@@ -84,24 +85,17 @@ fn default_enabled() -> bool {
 
 impl From<SnippetWire> for Snippet {
     fn from(wire: SnippetWire) -> Self {
-        // 旧库迁移：inline → 表述；footnote → 背景＋文末；无 mode 视为表述。
-        let legacy = wire.kind.is_none();
+        // 旧库迁移：inline → 表述；footnote → 背景；无 mode 视为表述。
         let kind = wire.kind.unwrap_or_else(|| match wire.mode.as_deref() {
             Some("footnote") => SnippetKind::Background,
             _ => SnippetKind::Phrasing,
         });
-        let placement = if legacy && kind == SnippetKind::Background {
-            SnippetPlacement::Tail
-        } else {
-            wire.placement.unwrap_or_default()
-        };
         Self {
             id: wire.id,
             trigger: wire.trigger,
             aliases: wire.aliases,
             text: wire.text,
             kind,
-            placement,
             attachments: wire.attachments,
             enabled: wire.enabled,
         }
@@ -312,7 +306,6 @@ mod tests {
             aliases: Vec::new(),
             text: "表述文本".to_string(),
             kind: SnippetKind::Phrasing,
-            placement: SnippetPlacement::Tail,
             attachments: Vec::new(),
             enabled: true,
         }
@@ -357,17 +350,15 @@ mod tests {
 
     #[test]
     fn update_remove_set_enabled_roundtrip() {
-        // update 改 text/mode；remove 后 list 空；set_enabled 生效；未知 id 均报错
+        // update 改 text/kind；remove 后 list 空；set_enabled 生效；未知 id 均报错
         let store = SnippetStore::in_memory();
         let created = store.create(snippet("", "翻译")).unwrap();
         let mut changed = created.clone();
         changed.text = "已更新的表述".to_string();
         changed.kind = SnippetKind::Background;
-        changed.placement = SnippetPlacement::Head;
         let updated = store.update(changed).unwrap();
         assert_eq!(updated.text, "已更新的表述");
         assert_eq!(updated.kind, SnippetKind::Background);
-        assert_eq!(updated.placement, SnippetPlacement::Head);
         assert_eq!(store.list(), vec![updated.clone()]);
         assert_eq!(
             store.update(snippet("missing", "某词")).unwrap_err().code,
@@ -411,8 +402,8 @@ mod tests {
         assert_eq!(raw[1]["id"], created.id);
         assert_eq!(raw[1]["trigger"], "新增");
         assert_eq!(raw[1]["kind"], "phrasing");
-        assert_eq!(raw[1]["placement"], "tail");
         assert!(raw[1].get("mode").is_none());
+        assert!(raw[1].get("placement").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -467,9 +458,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_mode_migrates_to_kind_and_placement() {
-        // 旧行只有 mode、无新字段：inline → 表述；footnote → 背景＋文末；
-        // aliases 缺省 []、enabled 缺省 true、placement/attachments 缺省补默认。
+    fn legacy_mode_migrates_to_kind() {
+        // 旧行只有 mode、无新字段：inline → 表述；footnote → 背景；
+        // aliases 缺省 []、enabled 缺省 true、attachments 缺省补默认。
         let dir = std::env::temp_dir().join(format!(
             "openless-core-ghostwriter-snippets-legacy-{}",
             uuid::Uuid::new_v4().simple()
@@ -486,40 +477,72 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "old-inline");
         assert_eq!(list[0].kind, SnippetKind::Phrasing);
-        assert_eq!(list[0].placement, SnippetPlacement::Tail);
         assert!(list[0].aliases.is_empty());
         assert!(list[0].attachments.is_empty());
         assert!(list[0].enabled);
         assert_eq!(list[1].id, "old-footnote");
         assert_eq!(list[1].kind, SnippetKind::Background);
-        assert_eq!(list[1].placement, SnippetPlacement::Tail);
         assert_eq!(list[1].aliases, vec!["fz".to_string()]);
         assert!(!list[1].enabled);
-        // 下次写入起只写新字段：文件里 mode 消失、kind/placement/attachments 就位
+        // 下次写入起只写新字段：文件里 mode/placement 消失、kind/attachments 就位
         store.create(snippet("", "新增")).unwrap();
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(raw[0].get("mode").is_none());
         assert_eq!(raw[0]["kind"], "phrasing");
-        assert_eq!(raw[0]["placement"], "tail");
         assert_eq!(raw[0]["attachments"].as_array().unwrap().len(), 0);
         assert_eq!(raw[1]["kind"], "background");
-        assert_eq!(raw[1]["placement"], "tail");
         assert!(raw[1].get("mode").is_none());
+        assert!(raw[1].get("placement").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_historical_file_shapes_load_and_placement_is_ignored() {
+        // 三种历史文件形态都能读：仅 mode / mode+placement（过渡版）/ 新格式。
+        // 过渡版的 placement 键被接受并忽略——单条落点已改全局偏好，
+        // 读入值（head 也好 tail 也好）一律丢弃，不再影响任何行为。
+        let dir = std::env::temp_dir().join(format!(
+            "openless-core-ghostwriter-snippets-shapes-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ghostwriter-snippets.json");
+        let mixed = serde_json::json!([
+            {"id": "only-mode", "trigger": "翻译", "text": "甲", "mode": "inline"},
+            {"id": "mode-and-placement", "trigger": "附注", "text": "乙", "mode": "footnote", "kind": "background", "placement": "head"},
+            {"id": "new-format", "trigger": "方案", "text": "丙", "kind": "phrasing", "enabled": false}
+        ]);
+        std::fs::write(&path, serde_json::to_vec_pretty(&mixed).unwrap()).unwrap();
+        let list = SnippetStore::at_data_dir(&dir).list();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].kind, SnippetKind::Phrasing);
+        assert_eq!(list[1].kind, SnippetKind::Background);
+        assert!(list[1].enabled);
+        assert_eq!(list[2].kind, SnippetKind::Phrasing);
+        assert!(!list[2].enabled);
+        // 落地即新形态：读入的三条写回后 mode/placement 全部消失
+        SnippetStore::at_data_dir(&dir)
+            .create(snippet("", "触发新写"))
+            .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for entry in raw.as_array().unwrap() {
+            assert!(entry.get("mode").is_none());
+            assert!(entry.get("placement").is_none());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn new_format_roundtrips_with_attachments() {
-        // 新格式落盘往返：attachments 引用/手写两形态与 placement 原样读回；
-        // 引用序列化为 {"type":"reference","snippetId":…}。
+        // 新格式落盘往返：attachments 引用/手写两形态原样读回；写入无 mode/placement。
         let dir = std::env::temp_dir().join(format!(
             "openless-core-ghostwriter-snippets-roundtrip-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut phrasing = snippet("", "方案");
-        phrasing.placement = SnippetPlacement::Head;
         phrasing.attachments = vec![
             SnippetAttachment::Reference {
                 snippet_id: "bg-1".to_string(),
@@ -534,7 +557,6 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("ghostwriter-snippets.json")).unwrap())
                 .unwrap();
-        assert_eq!(raw[0]["placement"], "head");
         assert_eq!(raw[0]["attachments"][0]["type"], "reference");
         assert_eq!(raw[0]["attachments"][0]["snippetId"], "bg-1");
         assert_eq!(raw[0]["attachments"][1]["type"], "text");

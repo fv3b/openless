@@ -4102,6 +4102,13 @@ impl OpenLessBackend {
             ));
         }
 
+        // 背景落点改全局设置的即时生效：保存成功后把所有存活 ghostwriter 会话的
+        // 落点更新为新值——拼装现算，已贴的背景块位置随之挪，改字段即可。
+        if previous.ghostwriter.background_placement != preferences.ghostwriter.background_placement
+        {
+            self.sync_ghostwriter_background_placement(preferences.ghostwriter.background_placement);
+        }
+
         if effects.hotkeys.is_some() {
             self.hotkey
                 .lock()
@@ -4126,6 +4133,17 @@ impl OpenLessBackend {
             None,
             BackendEventKind::PreferencesChanged(PreferencesChange { revision }),
         );
+    }
+
+    /// 把全局背景落点推给所有存活 ghostwriter 会话（设置保存后即时生效）。
+    fn sync_ghostwriter_background_placement(
+        &self,
+        placement: crate::ghostwriter::snippet_store::SnippetPlacement,
+    ) {
+        let mut state = self.state.write().expect("backend state lock poisoned");
+        for session in state.ghostwriter_sessions.values_mut() {
+            session.set_background_placement(placement);
+        }
     }
 
     pub fn list_style_packs(&self, active_id: &str) -> Result<Vec<StylePack>, BackendError> {
@@ -4906,7 +4924,10 @@ impl OpenLessBackend {
                     );
                 state.ghostwriter_sessions.insert(
                     session_id,
-                    crate::ghostwriter::session::GhostwriterSession::new(),
+                    // 背景落点从当前偏好取值：会话内的所有背景块都按它现算头/尾。
+                    crate::ghostwriter::session::GhostwriterSession::new().with_background_placement(
+                        self.preferences.get().ghostwriter.background_placement,
+                    ),
                 );
                 Arc::new(raw_context)
             } else {
@@ -6044,7 +6065,6 @@ impl OpenLessBackend {
                 aliases: Vec::new(),
                 text: suggestion.phrase.clone(),
                 kind: crate::ghostwriter::snippet_store::SnippetKind::Phrasing,
-                placement: crate::ghostwriter::snippet_store::SnippetPlacement::Tail,
                 attachments: Vec::new(),
                 enabled: true,
             });
@@ -8612,6 +8632,52 @@ mod tests {
     }
 
     #[test]
+    fn settings_save_updates_background_placement_on_live_ghostwriter_sessions() {
+        // 偏好保存后即时生效：所有存活 ghostwriter 会话的背景落点更新为新值，
+        // 已生效的背景块随拼装现算挪到头部（改字段即可，无需其他处理）。
+        let (backend, _) = backend();
+        let session_id = SessionId::new();
+        {
+            let mut state = backend.state.write().expect("backend state lock poisoned");
+            let mut session = crate::ghostwriter::session::GhostwriterSession::new();
+            session
+                .feed(
+                    &crate::types::TranscriptDelta {
+                        text: "加个附注。".into(),
+                        offset: 0,
+                        is_final: true,
+                    },
+                    &[ghostwriter_background_snippet("bg1", "附注", "背景说明")],
+                )
+                .unwrap();
+            state.ghostwriter_sessions.insert(session_id, session);
+        }
+        // 默认文末：背景块在尾部
+        assert!(
+            ghostwriter_assembled(&backend, session_id).ends_with("\n\n[背景]\n- 附注：背景说明")
+        );
+
+        let mut next = backend.get_preferences();
+        next.ghostwriter.background_placement =
+            crate::ghostwriter::snippet_store::SnippetPlacement::Head;
+        backend
+            .update_settings(
+                next,
+                crate::SettingsUpdateOptions::STRICT,
+                &crate::NoopSettingsRuntime,
+            )
+            .unwrap();
+
+        // 存活会话的背景块挪到头部；偏好确已落盘
+        let assembled = ghostwriter_assembled(&backend, session_id);
+        assert!(assembled.starts_with("[背景]\n- 附注：背景说明\n\n"));
+        assert_eq!(
+            backend.get_preferences().ghostwriter.background_placement,
+            crate::ghostwriter::snippet_store::SnippetPlacement::Head
+        );
+    }
+
+    #[test]
     fn settings_runtime_failure_preserves_preferences_revision_and_events() {
         let (backend, _) = backend();
         let previous = backend.get_preferences();
@@ -10299,7 +10365,7 @@ mod tests {
         crate::PipelineDictationEngine::new(Arc::new(recorder), transcription, polisher)
     }
 
-    /// 表述类测试条目（落点文末、无附件）。
+    /// 表述类测试条目（无附件）。
     fn ghostwriter_snippet(
         id: &str,
         trigger: &str,
@@ -10311,13 +10377,12 @@ mod tests {
             aliases: Vec::new(),
             text: text.to_string(),
             kind: crate::ghostwriter::snippet_store::SnippetKind::Phrasing,
-            placement: crate::ghostwriter::snippet_store::SnippetPlacement::Tail,
             attachments: Vec::new(),
             enabled: true,
         }
     }
 
-    /// 背景类测试条目（落点文末）。
+    /// 背景类测试条目。
     fn ghostwriter_background_snippet(
         id: &str,
         trigger: &str,
@@ -11138,10 +11203,6 @@ mod tests {
         assert_eq!(
             saved.kind,
             crate::ghostwriter::snippet_store::SnippetKind::Phrasing
-        );
-        assert_eq!(
-            saved.placement,
-            crate::ghostwriter::snippet_store::SnippetPlacement::Tail
         );
         assert!(saved.attachments.is_empty());
         assert!(saved.enabled);

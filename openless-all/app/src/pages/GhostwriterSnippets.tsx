@@ -1,11 +1,12 @@
 // GhostwriterSnippets.tsx — 「常用语」管理页。
 // 触发词/别名 → 文本的库：说话中说到触发词即按种类生效
-// （表述融进正文、其附件进背景块；背景整条按落点附在开头/文末）。
-// 骨架照 Style.tsx 简化：PageHeader + Card 列表 + 右侧编辑抽屉 + dirty 确认保护。
+// （表述融进正文、其附件进背景块；背景整条进背景块，落点由全局设置统一决定）。
+// 骨架照 Style.tsx 简化：PageHeader + 工具行（搜索＋种类筛选）+ 单行列表 + 右侧编辑抽屉
+// ＋ dirty 确认保护；点行任意处（Toggle 除外）直接开抽屉，删除挪进抽屉底部危险区。
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   createGhostwriterSnippet,
   deleteGhostwriterSnippet,
@@ -13,7 +14,7 @@ import {
   saveGhostwriterSnippet,
   setGhostwriterSnippetEnabled,
 } from '../lib/ipc';
-import type { Snippet, SnippetAttachment } from '../lib/types';
+import type { Snippet, SnippetAttachment, SnippetKind } from '../lib/types';
 import { Btn, Card, PageHeader, Pill } from './_atoms';
 import { Icon } from '../components/Icon';
 import { SavedToast, type SaveToastState } from '../components/SavedToast';
@@ -21,6 +22,8 @@ import { Toggle } from './settings/shared';
 import { useMobileLayout } from '../lib/useMobileLayout';
 
 type BusyAction = 'loading' | 'saving' | 'deleting' | null;
+/** 种类筛选分段控件的取值。 */
+type KindFilter = 'all' | SnippetKind;
 
 const BLANK_SNIPPET: Snippet = {
   id: '',
@@ -28,22 +31,9 @@ const BLANK_SNIPPET: Snippet = {
   aliases: [],
   text: '',
   kind: 'phrasing',
-  placement: 'tail',
   attachments: [],
   enabled: true,
 };
-
-/** 列表 tag：表述无附件＝融进正文、带附件＝融进正文＋背景；背景按落点。 */
-function listTagKey(snippet: Snippet): string {
-  if (snippet.kind === 'background') {
-    return snippet.placement === 'head'
-      ? 'ghostwriter.snippets.tagBackgroundHead'
-      : 'ghostwriter.snippets.tagBackgroundTail';
-  }
-  return snippet.attachments.length > 0
-    ? 'ghostwriter.snippets.tagPhrasingWithBackground'
-    : 'ghostwriter.snippets.tagPhrasingInline';
-}
 
 function cloneSnippet(snippet: Snippet): Snippet {
   return {
@@ -61,10 +51,18 @@ function fingerprint(snippet: Snippet | null): string {
     snippet.aliases,
     snippet.text,
     snippet.kind,
-    snippet.placement,
     snippet.attachments,
     snippet.enabled,
   ]);
+}
+
+/** 搜索匹配：触发词＋别名＋表述文本，大小写不敏感。 */
+function matchesQuery(snippet: Snippet, query: string): boolean {
+  const folded = query.trim().toLowerCase();
+  if (!folded) return true;
+  return [snippet.trigger, ...snippet.aliases, snippet.text].some((field) =>
+    field.toLowerCase().includes(folded),
+  );
 }
 
 function parseAliases(raw: string): string[] {
@@ -77,8 +75,12 @@ function parseAliases(raw: string): string[] {
 export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const mobile = useMobileLayout();
+  const reducedMotion = useReducedMotion();
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [busy, setBusy] = useState<BusyAction>('loading');
+  // 工具行：搜索＋种类筛选；无结果时一键清除两者。
+  const [query, setQuery] = useState('');
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   // 编辑抽屉：draft 非空即打开；draftIsNew = 新建（保存时走 create，id 留空给后端生成）。
   const [draft, setDraft] = useState<Snippet | null>(null);
   const [baseline, setBaseline] = useState<Snippet | null>(null);
@@ -254,6 +256,20 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
 
   const triggerMissing = Boolean(draft && !draft.trigger.trim());
 
+  const clearFilters = () => {
+    setQuery('');
+    setKindFilter('all');
+  };
+
+  const filtered = useMemo(
+    () =>
+      snippets.filter(
+        (snippet) =>
+          (kindFilter === 'all' || snippet.kind === kindFilter) && matchesQuery(snippet, query),
+      ),
+    [snippets, kindFilter, query],
+  );
+
   // 「选已有背景」下拉：启用中的背景类常用语（排除已挂参考行，避免重复行）。
   const backgroundOptions = draft
     ? snippets.filter(
@@ -344,12 +360,75 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
           </div>
         </div>
 
+        {/* 工具行：搜索框＋种类筛选分段控件 */}
+        <div
+          style={{
+            padding: '10px 18px',
+            borderBottom: '0.5px solid var(--ol-line)',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            flexWrap: 'wrap',
+          }}
+        >
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('ghostwriter.snippets.searchPlaceholder')}
+            style={{ ...toolbarInputStyle, flex: '1 1 180px', minWidth: 0 }}
+          />
+          <div
+            style={{
+              display: 'inline-flex',
+              padding: 3,
+              borderRadius: 8,
+              background: 'var(--ol-surface-2)',
+              border: '0.5px solid var(--ol-line)',
+              flexShrink: 0,
+            }}
+          >
+            {(
+              [
+                ['all', 'ghostwriter.snippets.filterAll'],
+                ['phrasing', 'ghostwriter.snippets.filterPhrasing'],
+                ['background', 'ghostwriter.snippets.filterBackground'],
+              ] as const
+            ).map(([value, labelKey]) => {
+              const active = kindFilter === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setKindFilter(value)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: 6,
+                    border: 0,
+                    background: active ? 'var(--ol-surface)' : 'transparent',
+                    color: active ? 'var(--ol-ink)' : 'var(--ol-ink-3)',
+                    boxShadow: active ? 'var(--ol-shadow-sm)' : 'none',
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 500,
+                    fontFamily: 'inherit',
+                    cursor: 'default',
+                  }}
+                >
+                  {t(labelKey)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>
           {busy === 'loading' && snippets.length === 0 ? (
             <div style={{ padding: 24, fontSize: 12, color: 'var(--ol-ink-4)' }}>
               {t('ghostwriter.snippets.loading')}
             </div>
           ) : snippets.length === 0 ? (
+            // 空库：直通新建
             <div
               style={{
                 display: 'flex',
@@ -381,12 +460,34 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                 {t('ghostwriter.snippets.create')}
               </Btn>
             </div>
+          ) : filtered.length === 0 ? (
+            // 搜索/筛选无结果：一键清除搜索与筛选
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                padding: '64px 24px',
+              }}
+            >
+              <div style={{ fontSize: 13, color: 'var(--ol-ink-3)' }}>
+                {t('ghostwriter.snippets.emptyFiltered')}
+              </div>
+              <Btn variant="ghost" icon="close" onClick={clearFilters}>
+                {t('ghostwriter.snippets.clearFilters')}
+              </Btn>
+            </div>
           ) : (
-            snippets.map((snippet) => (
+            filtered.map((snippet) => (
+              // 单行网格：触发词＋种类标签（固定宽左列）｜表述文本预览（1fr）｜启用 Toggle；
+              // 三列同一网格模板 → 表述列跨行左对齐在同一 x 起点。
               <div
                 key={snippet.id}
                 role="button"
                 tabIndex={0}
+                className="ol-ring"
                 onClick={() => openEditor(snippet)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -395,99 +496,64 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                   }
                 }}
                 style={{
-                  display: 'flex',
+                  display: 'grid',
+                  gridTemplateColumns: '180px minmax(0, 1fr) auto',
                   alignItems: 'center',
                   gap: 12,
-                  padding: '12px 18px',
+                  padding: '10px 18px',
                   borderBottom: '0.5px solid var(--ol-line)',
                   cursor: 'pointer',
                 }}
               >
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    minWidth: 0,
+                  }}
+                >
+                  <span
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {snippet.trigger}
-                    </span>
-                    <Pill tone={snippet.kind === 'phrasing' ? 'blue' : 'default'} size="sm">
-                      {t(listTagKey(snippet))}
-                    </Pill>
-                    {!snippet.enabled && (
-                      <Pill tone="outline" size="sm">
-                        {t('ghostwriter.snippets.disabledBadge')}
-                      </Pill>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      marginTop: 3,
-                      fontSize: 12.5,
-                      color: 'var(--ol-ink-3)',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: 'var(--ol-ink)',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {snippet.text || '—'}
-                  </div>
+                    {snippet.trigger}
+                  </span>
+                  {/* 种类标签只在「全部」筛选下渲染，单一种类视图整行更干净 */}
+                  {kindFilter === 'all' && (
+                    <Pill tone={snippet.kind === 'phrasing' ? 'blue' : 'default'} size="sm">
+                      {t(
+                        snippet.kind === 'phrasing'
+                          ? 'ghostwriter.snippets.kindPhrasing'
+                          : 'ghostwriter.snippets.kindBackground',
+                      )}
+                    </Pill>
+                  )}
                 </div>
-                <Toggle on={snippet.enabled} onToggle={() => void handleToggle(snippet)} />
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openEditor(snippet);
-                  }}
-                  aria-label={t('ghostwriter.snippets.edit')}
-                  title={t('ghostwriter.snippets.edit')}
+                <div
                   style={{
-                    width: 30,
-                    height: 30,
-                    flexShrink: 0,
-                    border: 0,
-                    borderRadius: 8,
-                    background: 'transparent',
+                    fontSize: 12.5,
                     color: 'var(--ol-ink-3)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'default',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  <Icon name="pencil" size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void handleDelete(snippet);
-                  }}
-                  disabled={busy === 'deleting'}
-                  aria-label={t('ghostwriter.snippets.delete')}
-                  title={t('ghostwriter.snippets.delete')}
-                  style={{
-                    width: 30,
-                    height: 30,
-                    flexShrink: 0,
-                    border: 0,
-                    borderRadius: 8,
-                    background: 'transparent',
-                    color: 'var(--ol-ink-3)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'default',
-                    opacity: busy === 'deleting' ? 0.55 : 1,
-                  }}
+                  {snippet.text || '—'}
+                </div>
+                <div
+                  style={{ flexShrink: 0 }}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
                 >
-                  <Icon name="trash" size={14} />
-                </button>
+                  <Toggle on={snippet.enabled} onToggle={() => void handleToggle(snippet)} />
+                </div>
               </div>
             ))
           )}
@@ -504,7 +570,7 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
+              transition={{ duration: reducedMotion ? 0 : 0.2, ease: 'easeOut' }}
               style={{
                 position: 'fixed',
                 inset: 0,
@@ -522,10 +588,14 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
               role="dialog"
               aria-modal="true"
               aria-label={draftIsNew ? t('ghostwriter.snippets.createTitle') : t('ghostwriter.snippets.editTitle')}
-              initial={{ x: '100%', opacity: 0 }}
+              initial={reducedMotion ? { opacity: 0 } : { x: '100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
-              exit={{ x: '100%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 26, stiffness: 280 }}
+              exit={reducedMotion ? { opacity: 0 } : { x: '100%', opacity: 0 }}
+              transition={
+                reducedMotion
+                  ? { duration: 0 }
+                  : { type: 'spring', damping: 26, stiffness: 280 }
+              }
               style={
                 mobile
                   ? {
@@ -820,54 +890,6 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                     </div>
                   )}
 
-                  {(draft.kind === 'background' || draft.attachments.length > 0) && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      <span style={fieldLabelStyle}>
-                        {t('ghostwriter.snippets.placementLabel')}
-                      </span>
-                      <div
-                        style={{
-                          display: 'inline-flex',
-                          alignSelf: 'flex-start',
-                          padding: 3,
-                          borderRadius: 8,
-                          background: 'var(--ol-surface-2)',
-                          border: '0.5px solid var(--ol-line)',
-                        }}
-                      >
-                        {(
-                          [
-                            ['head', t('ghostwriter.snippets.placementHead')],
-                            ['tail', t('ghostwriter.snippets.placementTail')],
-                          ] as const
-                        ).map(([value, label]) => {
-                          const active = draft.placement === value;
-                          return (
-                            <button
-                              key={value}
-                              type="button"
-                              aria-pressed={active}
-                              onClick={() => patchDraft({ placement: value })}
-                              style={{
-                                padding: '6px 12px',
-                                borderRadius: 6,
-                                border: 0,
-                                background: active ? 'var(--ol-surface)' : 'transparent',
-                                color: active ? 'var(--ol-ink)' : 'var(--ol-ink-3)',
-                                boxShadow: active ? 'var(--ol-shadow-sm)' : 'none',
-                                fontSize: 12,
-                                fontWeight: active ? 600 : 500,
-                                fontFamily: 'inherit',
-                              }}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
                   <div
                     style={{
                       display: 'flex',
@@ -908,6 +930,30 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                       {busy === 'saving' ? t('ghostwriter.snippets.saving') : t('ghostwriter.snippets.save')}
                     </Btn>
                   </div>
+
+                  {/* 底部危险区：删除已存条目（confirm 照旧）；新建草稿无可删 */}
+                  {!draftIsNew && (
+                    <div
+                      style={{
+                        paddingTop: 14,
+                        borderTop: '0.5px solid var(--ol-line)',
+                        display: 'flex',
+                        justifyContent: 'flex-start',
+                      }}
+                    >
+                      <Btn
+                        variant="ghost"
+                        icon="trash"
+                        onClick={() => void handleDelete(draft)}
+                        disabled={busy === 'deleting'}
+                        style={{ color: 'var(--ol-err)', borderColor: 'var(--ol-err)' }}
+                      >
+                        {busy === 'deleting'
+                          ? t('ghostwriter.snippets.deleting')
+                          : t('ghostwriter.snippets.delete')}
+                      </Btn>
+                    </div>
+                  )}
                 </div>
               </Card>
             </motion.div>
@@ -922,6 +968,18 @@ const fieldLabelStyle: CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
   color: 'var(--ol-ink)',
+};
+
+const toolbarInputStyle: CSSProperties = {
+  boxSizing: 'border-box',
+  minHeight: 34,
+  padding: '8px 11px',
+  borderRadius: 10,
+  border: '0.5px solid var(--ol-line-strong)',
+  background: 'var(--ol-style-input-bg)',
+  color: 'var(--ol-ink)',
+  font: 'inherit',
+  fontSize: 12.5,
 };
 
 const inputStyle: CSSProperties = {
