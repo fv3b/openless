@@ -34,8 +34,8 @@ const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
   },
   {
     id: 'candidates',
-    title: '名字校准',
-    description: '管说话卡词时出不出名字候选（叫法/命名），改了会影响候选区。',
+    title: '命名校准',
+    description: '管把说话里说不清的点校准成叫法/命名，改了会影响候选区。',
     body: '找出说话里说不清的点，先认后造给名字。（浏览器 mock：真实正文由后端提供）',
   },
   {

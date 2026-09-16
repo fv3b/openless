@@ -8,14 +8,14 @@
 pub const GHOSTWRITER_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户在用语音给 AI 助手下指令，下面是一段口语转写。\n把它整理成清晰、直接、结构清楚的指令：\n- 去掉口头语、重复、语气词（嗯、啊、就是那种、类似什么的）\n- 理顺语句顺序，需要时整理成简短要点\n- 把口语化的说法换成准确表述，但绝不改变用户的意思，绝不添加用户没说的要求\n- 原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n- 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n只输出整理后的指令文本，不要任何解释或前缀。";
 
 /// 实时助手一次调用协同产出（候选/推荐/常用语提醒）的输出契约，逐字拼接，界面只读展示。
-pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|naming\",\"items\":[{\"name\":\"名字\",\"note\":\"注释或理由\"},…]}],\"recommendations\":[\"常用语id\",…],\"sediment\":{\"phrase\":\"说法\",\"count\":出现次数,\"suggestedTrigger\":\"触发词\"}}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=叫法（note=白话注释，回指说话人的说法）、naming=命名（note=起名理由）。";
+pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|naming\",\"items\":[{\"name\":\"名字\",\"note\":\"注释或理由\"},…]}],\"recommendations\":[\"常用语id\",…],\"sediment\":{\"phrase\":\"说法\",\"count\":出现次数,\"suggestedTrigger\":\"触发词\"}}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。";
 
 /// 任务书身份：Ghostwriter 的五个 LLM 功能各对应一份任务书。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskBriefId {
     /// 段润色：把口语转写整理成指令。
     InstructionPolish,
-    /// 名字校准：卡词时把说不清的点校准成对的名字（叫法/命名）。
+    /// 命名校准：把说话里说不清的点校准成叫法/命名，与卡词无关。
     Candidates,
     /// 常用语推荐：从常用语库挑与当前内容相关的条目。
     Recommendations,
@@ -53,7 +53,7 @@ impl TaskBriefId {
     pub fn title(self) -> &'static str {
         match self {
             Self::InstructionPolish => "指令化润色",
-            Self::Candidates => "名字校准",
+            Self::Candidates => "命名校准",
             Self::Recommendations => "常用语推荐",
             Self::SedimentNotice => "常用语提醒",
             Self::SedimentExtraction => "提取常用语",
@@ -65,7 +65,7 @@ impl TaskBriefId {
         match self {
             Self::InstructionPolish => "管段润色怎么把口语转写整理成指令，改了会影响贴给 AI 的指令。",
             Self::Candidates => {
-                "管说话卡词时出不出名字候选（叫法/命名），改了会影响候选区。"
+                "管把说话里说不清的点校准成叫法/命名，改了会影响候选区。"
             }
             Self::Recommendations => "管从常用语库里挑哪些条目推荐，改了会影响推荐区。",
             Self::SedimentNotice => "管判断当前内容是否在重复未入库说法，改了会影响常用语提醒。",
@@ -81,11 +81,10 @@ impl TaskBriefId {
             Self::InstructionPolish => GHOSTWRITER_INSTRUCTION_PROMPT,
             Self::Candidates => {
                 "你是语音说话助手。用户在用语音给 AI 助手下指令，下面是说话人最近的口语转写。\n\
-                 判断说话人此刻是否在卡词：重复、停顿、含糊，或用「那个」「就是那种」指代说不清的东西，都是卡词迹象。\n\
-                 卡词时找出转写里那些说不清的点——可能是一个东西、它的某个部分、几样东西之间的关联——逐个给名字，先认后造：\n\
-                 - 业界已有本名的，给叫法（term）：给出本名，note 写一句白话注释，回指说话人的原话（如「就是你说的那个排队的机制」），让人认得出\n\
-                 - 要新造、还没有公认名字的，给命名（naming）：按领域惯例起名，note 写一句起名理由，尽量沿用相关本名作词根\n\
-                 一个点只出一个名字，优先挑最影响理解的点；候选要贴合正在说的内容，宁缺毋滥，不重复说话人已经说清楚的部分；没有卡词迹象就全部留空。"
+                 说话里总有一些说不清的点：可能是一个东西、一个东西里的某个部分、几样东西之间的关系等等——说话人只能绕着描述。不管说话人卡不卡词，都把这些点逐个找出来、逐个校准：\n\
+                 - 业界已有叫法的，给叫法（term）：给出本名，note 写一句外行能懂的大白话解释，回指说话人的说法（如「就是你说的那个排队的机制」），让人认出指的就是它\n\
+                 - 还没有公认名字、要新造的，给命名（naming）：按领域惯例起名，note 写一句起名理由，尽量沿用相关本名作词根\n\
+                 一个点只出一个名字，优先挑最影响理解的点；候选要贴合正在说的内容，宁缺毋滥，说话人已经说清楚的部分不动；没有说不清的点就全部留空。"
             }
             Self::Recommendations => {
                 "你是语音说话助手。用户在用语音给 AI 助手下指令，下面是说话人最近的口语转写和已启用的常用语库。\n\
@@ -114,7 +113,7 @@ mod tests {
     fn task_brief_ids_have_stable_keys_and_metadata() {
         let expected = [
             (TaskBriefId::InstructionPolish, "instruction_polish", "指令化润色"),
-            (TaskBriefId::Candidates, "candidates", "名字校准"),
+            (TaskBriefId::Candidates, "candidates", "命名校准"),
             (TaskBriefId::Recommendations, "recommendations", "常用语推荐"),
             (TaskBriefId::SedimentNotice, "sediment_notice", "常用语提醒"),
             (TaskBriefId::SedimentExtraction, "sediment_extraction", "提取常用语"),
@@ -150,7 +149,7 @@ mod tests {
         ));
         assert!(ASSIST_OUTPUT_CONTRACT.contains("没有的键给空数组或 null"));
         assert!(ASSIST_OUTPUT_CONTRACT.ends_with(
-            "kind：term=叫法（note=白话注释，回指说话人的说法）、naming=命名（note=起名理由）。"
+            "kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。"
         ));
     }
 

@@ -1,5 +1,5 @@
 //! 实时助手（assist）：说话期间按停顿/句毕触发的一次 LLM 调用，一次协同产出
-//! 候选（卡词时把说不清的点校准成对的名字：term 叫法/naming 命名，见 ADR 0003）、
+//! 候选（把说话里说不清的点校准成叫法/命名，与卡词无关，见 ADR 0003）、
 //! 常用语推荐与常用语提醒。
 //!
 //! LLM 调用模式照抄 [`crate::ghostwriter::segment_polisher::polish_segment`]：
