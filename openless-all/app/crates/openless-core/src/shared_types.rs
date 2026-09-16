@@ -8,7 +8,8 @@ use crate::android_types::{
     default_android_overlay_cancel_swipe_direction, default_android_overlay_left_swipe_action,
     default_android_overlay_size_dp, default_android_overlay_trigger,
     normalize_android_insert_strategy, normalize_android_overlay_size_dp,
-};pub use crate::android_types::{
+};
+pub use crate::android_types::{
     AndroidAccessibilityDiagnosis, AndroidAccessibilityRecoveryOutcome,
     AndroidAccessibilityRecoveryResult, AndroidAccessibilityState, AndroidAccessibilityStatus,
     AndroidInsertStrategy, AndroidOverlayActivationMode, AndroidOverlayCancelSwipeDirection,
