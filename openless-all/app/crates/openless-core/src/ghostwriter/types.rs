@@ -30,14 +30,14 @@ pub struct PolishableSegment {
 pub struct FeedOutcome {
     pub new_segments: Vec<PolishableSegment>,
     pub new_hits: Vec<GhostwriterSnippetHit>,
-    /// 本次 feed 中口头命令（用候选N/用常用语N）新生效的选中，材料已进待融队列。
+    /// 本次 feed 中口头命令（用常用语N）新生效的选中，材料已进待融队列。
     pub new_selections: Vec<Selection>,
 }
 
-/// 口头/点选原的类别：现场候选或推荐常用语。
+/// 口头/点选原的类别：现场候选（纯展示，不可选）或推荐常用语。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SelectionKind {
-    /// 现场候选（LLM 说话中现场生成的表述选项）。
+    /// 现场候选（LLM 说话中现场生成的表述选项；纯展示，不可选中）。
     Candidate,
     /// 推荐常用语（从已启用库里挑出的条目）。
     Recommendation,

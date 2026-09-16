@@ -18,7 +18,6 @@ import {
   type GhostwriterPreviewState,
 } from '../lib/ghostwriterCapsule';
 import {
-  createGhostwriterSnippet,
   getSettings,
   ghostwriterCancelLast,
   ghostwriterDismissSuggestion,
@@ -36,7 +35,9 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作）、候选区
- * （常用语提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换）、
+ * （常用语提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
+ * 候选组 chips 为纯展示提示——不可点选、无 [存]、口头命令只剩「用常用语N」，
+ * 2026-09-17 裁决；推荐行与提醒条照旧可交互）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
@@ -107,18 +108,26 @@ const ACTION_BUTTON_STYLE: CSSProperties = {
   pointerEvents: 'auto',
 };
 
-const CHIP_SAVE_BUTTON_STYLE: CSSProperties = {
-  padding: '0 6px',
-  borderRadius: 999,
-  background: 'rgba(52, 211, 153, 0.18)',
-  border: '1px solid rgba(52, 211, 153, 0.4)',
-  color: '#6ee7b7',
-  fontSize: 11,
-  lineHeight: '16px',
-  cursor: 'pointer',
-  flexShrink: 0,
-  pointerEvents: 'auto',
-};
+// 候选 chip 纯展示样式（2026-09-17 裁决）：不可点选、无 [存]，只读提示。
+function candidateChipStyle(): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: '100%',
+    padding: '3px 10px',
+    borderRadius: 999,
+    background: 'rgba(255, 255, 255, 0.06)',
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+    color: '#e4e4e7',
+    fontSize: 12,
+    fontWeight: 500,
+    letterSpacing: '0.02em',
+    lineHeight: 1.5,
+    cursor: 'default',
+    pointerEvents: 'auto',
+  };
+}
 
 function chipStyle(selected: boolean): CSSProperties {
   return {
@@ -287,22 +296,6 @@ export function GhostwriterPanel() {
     if (!sessionId) return;
     void ghostwriterDismissSuggestion(sessionId).catch(error => {
       console.warn('[ghostwriter] dismiss suggestion failed', error);
-    });
-  };
-
-  // 选中候选 chip 的 [存]：把这条说法收成常用语（触发词＝候选文本、表述类、无附件、启用）。
-  const saveCandidateSnippet = (text: string) => {
-    void createGhostwriterSnippet({
-      id: '',
-      trigger: text,
-      aliases: [],
-      text,
-      kind: 'phrasing',
-      attachments: [],
-      enabled: true,
-    }).catch(error => {
-      console.warn('[ghostwriter] save candidate snippet failed', error);
-      showNotice(tRef.current('ghostwriter.panel.saveFailedDuplicate'));
     });
   };
 
@@ -611,30 +604,11 @@ export function GhostwriterPanel() {
                 <div key={`${group.kind}-${groupIndex}`} style={ASSIST_ROW_STYLE}>
                   <span style={ASSIST_LABEL_STYLE}>{kindLabel(group.kind)}</span>
                   {group.items.map(item => (
-                    <span
-                      key={item.index}
-                      role="button"
-                      onClick={() => toggleSelection('candidate', item.index)}
-                      style={chipStyle(item.selected)}
-                    >
+                    <span key={item.index} style={candidateChipStyle()}>
                       <span style={CHIP_LABEL_STYLE}>
-                        {item.selected ? '✓ ' : ''}
                         {item.index}·{item.text}
                         {item.note ? <span style={CHIP_NOTE_STYLE}> {item.note}</span> : null}
                       </span>
-                      {item.selected ? (
-                        <button
-                          type="button"
-                          onClick={event => {
-                            event.stopPropagation();
-                            saveCandidateSnippet(item.text);
-                          }}
-                          className="ghostwriter-chip-action"
-                          style={CHIP_SAVE_BUTTON_STYLE}
-                        >
-                          {t('ghostwriter.snippets.save')}
-                        </button>
-                      ) : null}
                     </span>
                   ))}
                 </div>

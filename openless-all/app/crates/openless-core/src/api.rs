@@ -10862,8 +10862,9 @@ mod tests {
         }
     }
 
-    /// 口头命令「用候选一」：批次已就位（句毕 assist 已出）后，命令增量选中候选、
+    /// 口头命令「用常用语一」：批次已就位（句毕 assist 已出）后，命令增量选中推荐、
     /// 命令短语被剔除、材料随拼装并入（浮框所见即所贴）；选中态经事件回敬。
+    /// 候选纯展示（2026-09-17 裁决）：「用候选N」不再是命令，当普通话保留。
     #[tokio::test]
     async fn ghostwriter_voice_command_selects_and_merges() {
         let data_dir = std::env::temp_dir().join(format!(
@@ -10872,10 +10873,10 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"},{"name":"精准词乙"}]}],"recommendations":[],"sediment":null}"#,
+                r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"}]}],"recommendations":["s-rec"],"sediment":null}"#,
             ),
         );
-        let transcription = Arc::new(PumpedTranscripts::new("第一句。用候选一"));
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。用常用语一"));
         let engine = ghostwriter_engine_with(
             Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
@@ -10885,35 +10886,32 @@ mod tests {
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
         backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet("s-rec", "推荐标题", "推荐常用语的完整表述文本"),
+        );
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
         transcription.pump("第一句。继续");
         let assist = wait_for_ghostwriter_assist(&mut events).await;
-        assert_eq!(assist.candidate_groups[0].items.len(), 2);
+        assert_eq!(assist.candidate_groups[0].items.len(), 1);
 
-        transcription.pump("用候选一");
+        transcription.pump("用常用语一");
         let selected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
-                .candidate_groups
+                .recommendations
                 .first()
-                .and_then(|group| group.items.first())
                 .is_some_and(|item| item.selected)
         })
         .await;
-        assert_eq!(selected.candidate_groups[0].items[0].text, "精准词甲");
-        assert_eq!(
-            selected.candidate_groups[0].items[0].note.as_deref(),
-            Some("就是你说的那个甲")
-        );
+        assert_eq!(selected.recommendations[0].title, "推荐标题");
         let assembled = ghostwriter_assembled(&backend, session_id);
-        assert!(assembled.contains("精准词甲"), "material missing: {assembled}");
-        // 注释仅展示用：进待融队列的材料只取名字，note 不入拼装。
         assert!(
-            !assembled.contains("就是你说的那个甲"),
-            "note leaked into material: {assembled}"
+            assembled.contains("推荐常用语的完整表述文本"),
+            "material missing: {assembled}"
         );
-        assert!(!assembled.contains("用候选一"), "command leaked: {assembled}");
+        assert!(!assembled.contains("用常用语一"), "command leaked: {assembled}");
 
         backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();
@@ -10922,6 +10920,7 @@ mod tests {
 
     /// M4 历史扩展：stop 时仍生效的命中（标题＋贴位）与仍选中的选中原
     /// （kind 字符串＋文本）按生效顺序进历史条目；list_history 读回一致。
+    /// 候选纯展示（2026-09-17 裁决）：历史里的选中只剩推荐。
     #[tokio::test]
     async fn ghostwriter_stop_records_hits_and_selections() {
         let data_dir = std::env::temp_dir().join(format!(
@@ -10933,7 +10932,7 @@ mod tests {
                 r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
             ),
         );
-        let transcription = Arc::new(PumpedTranscripts::new("第一句。用候选一"));
+        let transcription = Arc::new(PumpedTranscripts::new("第一句。用常用语一"));
         let engine = ghostwriter_engine_with(
             Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
@@ -10965,18 +10964,8 @@ mod tests {
         transcription.pump("第一句。继续");
         let _ = wait_for_ghostwriter_assist(&mut events).await;
 
-        // 命中（背景·文末）＋口头选候选：同一 feed 内命中扫描与命令剔除并行。
-        transcription.pump("加个附注，用候选一");
-        let _ = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
-            assist
-                .candidate_groups
-                .first()
-                .and_then(|group| group.items.first())
-                .is_some_and(|item| item.selected)
-        })
-        .await;
-        // 口头选推荐常用语。
-        transcription.pump("用常用语一");
+        // 命中（背景·文末）＋口头选推荐常用语：同一 feed 内命中扫描与命令剔除并行。
+        transcription.pump("加个附注，用常用语一");
         let _ = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
                 .recommendations
@@ -11001,16 +10990,10 @@ mod tests {
         );
         assert_eq!(
             entry.ghostwriter_selections,
-            Some(vec![
-                crate::types::GhostwriterHistorySelection {
-                    kind: "candidate".into(),
-                    text: "精准词甲".into(),
-                },
-                crate::types::GhostwriterHistorySelection {
-                    kind: "recommendation".into(),
-                    text: "推荐常用语的完整表述文本".into(),
-                },
-            ])
+            Some(vec![crate::types::GhostwriterHistorySelection {
+                kind: "recommendation".into(),
+                text: "推荐常用语的完整表述文本".into(),
+            }])
         );
 
         backend.shutdown().await.unwrap();
@@ -11024,7 +11007,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":[],"sediment":null}"#,
+                r#"{"candidateGroups":[],"recommendations":["s-rec"],"sediment":null}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
@@ -11037,12 +11020,17 @@ mod tests {
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
         backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet("s-rec", "推荐标题", "推荐一的全量文本"),
+        );
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
         transcription.pump("第一句。继续");
         let _ = wait_for_ghostwriter_assist(&mut events).await;
 
+        // 候选纯展示（2026-09-17 裁决）：Candidate toggle 一律 no-op。
         backend
             .toggle_ghostwriter_selection(
                 session_id,
@@ -11050,40 +11038,45 @@ mod tests {
                 1,
             )
             .unwrap();
-        // 点选即推进拼装：后端在同一动作里发布预览事件——停顿中点选后不再说话，
+        // 推荐点选即推进拼装：后端在同一动作里发布预览事件——停顿中点选后不再说话，
         // 大预览也不滞后一拍（只等下一次 delta/润色才迭代是旧行为）。
+        backend
+            .toggle_ghostwriter_selection(
+                session_id,
+                crate::ghostwriter::types::SelectionKind::Recommendation,
+                1,
+            )
+            .unwrap();
         let preview =
-            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("精准词甲"))
+            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("推荐一的全量文本"))
                 .await;
         assert!(preview.revision >= 1);
         let selected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
-                .candidate_groups
+                .recommendations
                 .first()
-                .and_then(|group| group.items.first())
                 .is_some_and(|item| item.selected)
         })
         .await;
-        assert!(selected.candidate_groups[0].items[0].selected);
-        assert!(ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+        assert!(selected.recommendations[0].selected);
+        assert!(ghostwriter_assembled(&backend, session_id).contains("推荐一的全量文本"));
 
         backend
             .toggle_ghostwriter_selection(
                 session_id,
-                crate::ghostwriter::types::SelectionKind::Candidate,
+                crate::ghostwriter::types::SelectionKind::Recommendation,
                 1,
             )
             .unwrap();
         let unselected = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
-                .candidate_groups
+                .recommendations
                 .first()
-                .and_then(|group| group.items.first())
                 .is_some_and(|item| !item.selected)
         })
         .await;
-        assert!(!unselected.candidate_groups[0].items[0].selected);
-        assert!(!ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+        assert!(!unselected.recommendations[0].selected);
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("推荐一的全量文本"));
 
         backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();
@@ -11100,7 +11093,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":[],"sediment":null}"#,
+                r#"{"candidateGroups":[],"recommendations":["s-rec"],"sediment":null}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
@@ -11113,6 +11106,10 @@ mod tests {
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
         backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet("s-rec", "推荐标题", "推荐一的全量文本"),
+        );
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
@@ -11122,12 +11119,12 @@ mod tests {
         backend
             .toggle_ghostwriter_selection(
                 session_id,
-                crate::ghostwriter::types::SelectionKind::Candidate,
+                crate::ghostwriter::types::SelectionKind::Recommendation,
                 1,
             )
             .unwrap();
         let selected_preview =
-            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("精准词甲"))
+            wait_for_ghostwriter_preview_matching(&mut events, |p| p.text.contains("推荐一的全量文本"))
                 .await;
 
         let cancelled = backend
@@ -11140,21 +11137,20 @@ mod tests {
         ));
         // Selection 臂补发预览事件：拼装回退（不再含选中文本）、修订号推进。
         let reverted = wait_for_ghostwriter_preview_matching(&mut events, |p| {
-            p.revision > selected_preview.revision && !p.text.contains("精准词甲")
+            p.revision > selected_preview.revision && !p.text.contains("推荐一的全量文本")
         })
         .await;
         assert!(reverted.revision > selected_preview.revision);
-        assert!(!ghostwriter_assembled(&backend, session_id).contains("精准词甲"));
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("推荐一的全量文本"));
         // 候选区事件同步刷新：选中态回退。
         let assist = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
-                .candidate_groups
+                .recommendations
                 .first()
-                .and_then(|group| group.items.first())
                 .is_some_and(|item| !item.selected)
         })
         .await;
-        assert!(!assist.candidate_groups[0].items[0].selected);
+        assert!(!assist.recommendations[0].selected);
 
         backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();

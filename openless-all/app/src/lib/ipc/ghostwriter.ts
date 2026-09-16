@@ -12,7 +12,7 @@ export interface GhostwriterCancelLastResult {
   revision: number;
 }
 
-/** 候选区点选的两种载体（ghostwriter_toggle_selection 的 kind 参数）。 */
+/** 点选/取消候选区一条的载体：推荐常用语（候选为纯展示，不可选——2026-09-17 裁决）。 */
 export type GhostwriterSelectionKind = 'candidate' | 'recommendation';
 
 /** 任务书快照：身份＋用途说明＋是否已被用户覆写＋当前生效正文。 */
@@ -127,7 +127,7 @@ export function ghostwriterCancelLast(sessionId: string): Promise<GhostwriterCan
   }));
 }
 
-/** 点选/取消候选区一条（index 为候选跨组全局 1-based 序号 / 推荐独立 1-based 序号）。 */
+/** 点选/取消推荐一条（index 为推荐独立 1-based 序号；候选纯展示不可选）。 */
 export function ghostwriterToggleSelection(
   sessionId: string,
   kind: GhostwriterSelectionKind,
