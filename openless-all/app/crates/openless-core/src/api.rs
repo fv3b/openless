@@ -5366,7 +5366,7 @@ impl OpenLessBackend {
                 apply_correction_rules(&engine_result.polished_text, &correction_rules);
         }
 
-        // 会话后沉淀抽取（stop 点）：assembled 已定格，fire-and-forget 合入重复档；
+        // 会话后提取常用语（stop 点）：assembled 已定格，fire-and-forget 合入重复档；
         // 非 Ghostwriter 会话没有幽灵缓冲，跳过。
         let extraction_dispatcher = {
             let state = self.state.read().expect("backend state lock poisoned");
@@ -10475,7 +10475,7 @@ mod tests {
     }
 
     /// 实时助手端到端：句毕触发 assist（精确 uuid5 助手会话 id 路由 canned JSON），
-    /// 候选组/推荐/沉淀提醒整体出现在 `ghostwriter_assist_changed` 事件里。
+    /// 候选组/推荐/常用语提醒整体出现在 `ghostwriter_assist_changed` 事件里。
     #[tokio::test]
     async fn ghostwriter_assist_fires_on_segment_end() {
         let data_dir = std::env::temp_dir().join(format!(
@@ -10541,7 +10541,7 @@ mod tests {
         assert_eq!(assist.recommendations.len(), 1);
         assert_eq!(assist.recommendations[0].snippet_id, "s-rec");
         assert_eq!(assist.recommendations[0].title, "推荐触发词");
-        // 沉淀提醒随同批次发布。
+        // 常用语提醒随同批次发布。
         let sediment = assist.sediment.expect("sediment suggestion");
         assert_eq!(sediment.phrase, "把日志清一下");
         assert_eq!(sediment.count, 2);
@@ -10764,7 +10764,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// 按谓词等待一条 `GhostwriterAssistChanged`（选中态/沉淀提醒等状态断言用）。
+    /// 按谓词等待一条 `GhostwriterAssistChanged`（选中态/常用语提醒等状态断言用）。
     async fn wait_for_ghostwriter_assist_matching(
         events: &mut EventSubscription,
         predicate: impl Fn(&crate::ghostwriter::types::GhostwriterAssistChanged) -> bool,
@@ -11076,7 +11076,7 @@ mod tests {
     }
 
     /// 沉淀建议一键入库：存 → 常用语列表出现新条目（trigger＝建议触发词、
-    /// inline、启用）、重复档移除该说法、沉淀提醒随刷新事件消失。
+    /// inline、启用）、重复档移除该说法、常用语提醒随刷新事件消失。
     #[tokio::test]
     async fn ghostwriter_save_suggestion_creates_snippet() {
         let data_dir = std::env::temp_dir().join(format!(
@@ -11150,7 +11150,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// stop 点沉淀抽取：assembled 定格后 fire-and-forget 调抽取（fixture 收到固定
+    /// stop 点提取常用语：assembled 定格后 fire-and-forget 调抽取（fixture 收到固定
     /// 抽取会话 id 的调用；每次 stop 恰好一次）。
     #[tokio::test]
     async fn ghostwriter_stop_triggers_extraction() {

@@ -36,7 +36,7 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作）、候选区
- * （沉淀提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换）、
+ * （常用语提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。

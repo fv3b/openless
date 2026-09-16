@@ -7,7 +7,7 @@
 /// 段润色的指令化 system prompt（逐字使用，勿改动）。
 pub const GHOSTWRITER_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户在用语音给 AI 助手下指令，下面是一段口语转写。\n把它整理成清晰、直接、结构清楚的指令：\n- 去掉口头语、重复、语气词（嗯、啊、就是那种、类似什么的）\n- 理顺语句顺序，需要时整理成简短要点\n- 把口语化的说法换成准确表述，但绝不改变用户的意思，绝不添加用户没说的要求\n- 原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n- 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n只输出整理后的指令文本，不要任何解释或前缀。";
 
-/// 实时助手一次调用协同产出（候选/推荐/沉淀提醒）的输出契约，逐字拼接，界面只读展示。
+/// 实时助手一次调用协同产出（候选/推荐/常用语提醒）的输出契约，逐字拼接，界面只读展示。
 pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|phrase|naming\",\"items\":[\"候选文本\",…]}],\"recommendations\":[\"常用语id\",…],\"sediment\":{\"phrase\":\"说法\",\"count\":出现次数,\"suggestedTrigger\":\"触发词\"}}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=精准词、phrase=候选表述、naming=命名。";
 
 /// 任务书身份：Ghostwriter 的五个 LLM 功能各对应一份任务书。
@@ -17,11 +17,11 @@ pub enum TaskBriefId {
     InstructionPolish,
     /// 候选生成：卡词时给精准词/候选表述/命名建议。
     Candidates,
-    /// 推荐挑选：从常用语库挑与当前内容相关的条目。
+    /// 常用语推荐：从常用语库挑与当前内容相关的条目。
     Recommendations,
-    /// 沉淀提醒：判断当前内容是否在重复某个未入库说法。
+    /// 常用语提醒：判断当前内容是否在重复某个未入库说法。
     SedimentNotice,
-    /// 沉淀抽取：从说话内容里抽取值得沉淀的说法。
+    /// 提取常用语：从说话内容里提取值得存成常用语的说法。
     SedimentExtraction,
 }
 
@@ -54,9 +54,9 @@ impl TaskBriefId {
         match self {
             Self::InstructionPolish => "指令化润色",
             Self::Candidates => "候选生成",
-            Self::Recommendations => "推荐挑选",
-            Self::SedimentNotice => "沉淀提醒",
-            Self::SedimentExtraction => "沉淀抽取",
+            Self::Recommendations => "常用语推荐",
+            Self::SedimentNotice => "常用语提醒",
+            Self::SedimentExtraction => "提取常用语",
         }
     }
 
@@ -68,8 +68,10 @@ impl TaskBriefId {
                 "管说话卡词时出不出候选（精准词/候选表述/命名建议），改了会影响候选区。"
             }
             Self::Recommendations => "管从常用语库里挑哪些条目推荐，改了会影响推荐区。",
-            Self::SedimentNotice => "管判断当前内容是否在重复未入库说法，改了会影响沉淀提醒。",
-            Self::SedimentExtraction => "管从说话内容里抽取哪些说法去沉淀，改了会影响沉淀抽取结果。",
+            Self::SedimentNotice => "管判断当前内容是否在重复未入库说法，改了会影响常用语提醒。",
+            Self::SedimentExtraction => {
+                "管从说话内容里提取哪些说法存成常用语，改了会影响之后提醒你存的说法。"
+            }
         }
     }
 
@@ -98,8 +100,8 @@ impl TaskBriefId {
             }
             Self::SedimentExtraction => {
                 "你是语音说话助手。用户在用语音给 AI 助手下指令，下面是说话人最近的口语转写。\n\
-                 从转写里找出值得沉淀成常用语的说法：反复出现、说法固定、以后还会用到的表述才值得收。\n\
-                 每条给出整理好的说法和一句原话例句；没有值得沉淀的就返回空数组。"
+                 从转写里找出值得存成常用语的说法：反复出现、说法固定、以后还会用到的表述才值得收。\n\
+                 每条给出整理好的说法和一句原话例句；没有值得收的就返回空数组。"
             }
         }
     }
@@ -114,9 +116,9 @@ mod tests {
         let expected = [
             (TaskBriefId::InstructionPolish, "instruction_polish", "指令化润色"),
             (TaskBriefId::Candidates, "candidates", "候选生成"),
-            (TaskBriefId::Recommendations, "recommendations", "推荐挑选"),
-            (TaskBriefId::SedimentNotice, "sediment_notice", "沉淀提醒"),
-            (TaskBriefId::SedimentExtraction, "sediment_extraction", "沉淀抽取"),
+            (TaskBriefId::Recommendations, "recommendations", "常用语推荐"),
+            (TaskBriefId::SedimentNotice, "sediment_notice", "常用语提醒"),
+            (TaskBriefId::SedimentExtraction, "sediment_extraction", "提取常用语"),
         ];
         for (id, key, title) in expected {
             assert_eq!(id.key(), key);

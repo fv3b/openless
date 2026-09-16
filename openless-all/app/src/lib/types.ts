@@ -741,7 +741,7 @@ export interface GhostwriterRecommendationItem {
   selected: boolean;
 }
 
-/** 沉淀提醒：说话中重复到的可复用说法，可一键存为常用语或忽略。 */
+/** 常用语提醒：说话中重复到的可复用说法，可一键存为常用语或忽略。 */
 export interface GhostwriterSedimentSuggestion {
   phrase: string;
   count: number;

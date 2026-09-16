@@ -1,9 +1,9 @@
-//! 会话后沉淀抽取：会话结束后把终稿交给 LLM，抽出 0-3 条值得复用的说法。
+//! 会话后提取常用语：会话结束后把终稿交给 LLM，提取 0-3 条值得复用的说法。
 //!
 //! LLM 调用模式照抄 [`crate::ghostwriter::assist::run_assist`]：
 //! provider 照既有解析路径解析 LLM 通道，context 用 [`DictationContext::capture`]
 //! 现场捕获后逐项覆写（mode=Light、style_system_prompt=任务书正文＋输出契约、
-//! 清空热词/前文轮次/光标上下文、关翻译）。system prompt＝沉淀抽取任务书
+//! 清空热词/前文轮次/光标上下文、关翻译）。system prompt＝提取常用语任务书
 //! ＋输出契约（固定，逐字拼在末尾）；user 输入＝终稿原文。输出按契约解析为
 //! JSON 数组：失败 → 空 Vec（合法返回，不报错）；解析侧强制至多 3 项。
 //!
@@ -47,7 +47,7 @@ impl TextStreamSink for DiscardTextStream {
     }
 }
 
-/// 跑一次会话后沉淀抽取，返回 (说法, 例句) 列表（至多 3 条）。
+/// 跑一次会话后提取常用语，返回 (说法, 例句) 列表（至多 3 条）。
 /// 空终稿直接返回空（不发 LLM 调用）。
 pub async fn extract_phrases(
     polisher: &Arc<dyn TextPolisher>,

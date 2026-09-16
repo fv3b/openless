@@ -126,7 +126,7 @@ pub struct GhostwriterNotice {
     pub level: String,
 }
 
-/// 实时助手批次变化事件：候选组＋推荐＋沉淀提醒，浮框候选区整体替换渲染。
+/// 实时助手批次变化事件：候选组＋推荐＋常用语提醒，浮框候选区整体替换渲染。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterAssistChanged {
@@ -162,7 +162,7 @@ pub struct GhostwriterRecommendationItem {
     pub selected: bool,
 }
 
-/// 沉淀提醒：说话人正在重复某条值得收进常用语的说法。
+/// 常用语提醒：说话人正在重复某条值得收进常用语的说法。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterSedimentSuggestion {

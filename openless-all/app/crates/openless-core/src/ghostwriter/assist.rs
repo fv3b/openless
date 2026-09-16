@@ -1,11 +1,11 @@
 //! 实时助手（assist）：说话期间按停顿/句毕触发的一次 LLM 调用，一次协同产出
-//! 候选（卡词时给精准词/候选表述/命名）、常用语推荐与沉淀提醒。
+//! 候选（卡词时给精准词/候选表述/命名）、常用语推荐与常用语提醒。
 //!
 //! LLM 调用模式照抄 [`crate::ghostwriter::segment_polisher::polish_segment`]：
 //! provider 照既有解析路径解析 LLM 通道，context 用 [`DictationContext::capture`]
 //! 现场捕获后逐项覆写（mode=Light、style_system_prompt=任务书拼接结果、
 //! 清空热词/前文轮次/光标上下文、关翻译）。system prompt＝候选任务书（按开关）
-//! ＋推荐任务书（按开关）＋沉淀提醒任务书＋输出契约（逐字）；user 输入＝当前
+//! ＋推荐任务书（按开关）＋常用语提醒任务书＋输出契约（逐字）；user 输入＝当前
 //! 内容＋常用语库＋重复档。输出按契约解析为 JSON：失败/空 → 空 outcome（合法
 //! 返回，表示「没什么可给」，不报错）；解析侧强制裁剪候选 ≤2 组、每组 ≤5 条、
 //! 总 ≤8 条、推荐 ≤3 个，候选组 kind 白名单外的归一为 "phrase"（保内容不丢组）；
@@ -85,7 +85,7 @@ pub struct AssistInput {
     pub instruction_candidates: String,
     /// 推荐任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::Recommendations`]）。
     pub instruction_recommendations: String,
-    /// 沉淀提醒任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::SedimentNotice`]）。
+    /// 常用语提醒任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::SedimentNotice`]）。
     pub instruction_sediment: String,
 }
 
@@ -163,7 +163,7 @@ pub async fn run_assist(
 }
 
 /// system prompt 拼装：候选任务书（include_candidates 时）＋推荐任务书
-/// （include_recommendations 时）＋沉淀提醒任务书＋输出契约（逐字，永远在末尾）。
+/// （include_recommendations 时）＋常用语提醒任务书＋输出契约（逐字，永远在末尾）。
 fn compose_system_prompt(input: &AssistInput) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if input.include_candidates {
@@ -323,7 +323,7 @@ mod tests {
             include_recommendations: true,
             instruction_candidates: "候选任务书正文甲".to_string(),
             instruction_recommendations: "推荐任务书正文乙".to_string(),
-            instruction_sediment: "沉淀任务书正文丙".to_string(),
+            instruction_sediment: "常用语提醒任务书正文丙".to_string(),
         }
     }
 
@@ -436,7 +436,7 @@ mod tests {
         let prompt = context[0].polish.style_system_prompt.as_str();
         let pos_candidates = prompt.find("候选任务书正文甲").expect("candidates body");
         let pos_recommendations = prompt.find("推荐任务书正文乙").expect("recommendations body");
-        let pos_sediment = prompt.find("沉淀任务书正文丙").expect("sediment body");
+        let pos_sediment = prompt.find("常用语提醒任务书正文丙").expect("sediment body");
         assert!(pos_candidates < pos_recommendations);
         assert!(pos_recommendations < pos_sediment);
         assert!(prompt.ends_with(ASSIST_OUTPUT_CONTRACT));
@@ -479,7 +479,7 @@ mod tests {
         let prompt = contexts[0].polish.style_system_prompt.as_str();
         assert!(!prompt.contains("候选任务书正文甲"));
         assert!(!prompt.contains("推荐任务书正文乙"));
-        assert!(prompt.contains("沉淀任务书正文丙"));
+        assert!(prompt.contains("常用语提醒任务书正文丙"));
         assert!(prompt.ends_with(ASSIST_OUTPUT_CONTRACT));
         let raw = &fixture.inputs()[0];
         assert!(raw.contains("常用语库（id|触发词|文本）："));

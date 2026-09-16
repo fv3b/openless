@@ -1,5 +1,5 @@
 //! Ghostwriter 段润色调度器：把会话产出的润色段派给 LLM，并把结果合回会话；
-//! 同时驱动实时助手（候选/推荐/沉淀提醒）与会话后沉淀抽取。
+//! 同时驱动实时助手（候选/推荐/常用语提醒）与会话后提取常用语。
 //!
 //! 每个完成的段独立一个 tokio 任务（[`crate::ghostwriter::segment_polisher::polish_segment`]）：
 //! 成功后在状态锁内把结果合回对应会话（[`crate::ghostwriter::session::GhostwriterSession::apply_polished`]）
@@ -19,7 +19,7 @@
 //! 发布，失败发 [`GhostwriterNotice`]（error）轻提示。节流计时一律走注入的
 //! [`Clock`]（不读墙钟）；候选节流锚点在调用收尾写入，推荐节流锚点在现取时写入。
 //!
-//! 会话后沉淀抽取（[`Self::trigger_extraction`]）：fire-and-forget，抽取出的
+//! 会话后提取常用语（[`Self::trigger_extraction`]）：fire-and-forget，提取出的
 //! 说法合入重复档；失败静默（仅日志，不打扰收尾中的浮框）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -252,7 +252,7 @@ impl GhostwriterPolishDispatcher {
         );
     }
 
-    /// 会话后沉淀抽取（fire-and-forget）：prefs 门同助手；spawn 调
+    /// 会话后提取常用语（fire-and-forget）：prefs 门同助手；spawn 调
     /// [`super::sediment_extractor::extract_phrases`]（会话 id 用固定抽取 id，
     /// fixture 路由契约），说法合入重复档；失败静默。
     pub fn trigger_extraction(&self, session_id: &SessionId, final_text: &str) {
@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(second.recommendations[0].title, "推荐触发词");
     }
 
-    /// 沉淀抽取落库前的库去重（控制器裁决）：抽取结果含与已启用常用语文本或
+    /// 提取常用语落库前的库去重（控制器裁决）：抽取结果含与已启用常用语文本或
     /// 触发词相同的说法 → 落库后重复档不含它；不同说法照常入库。
     #[tokio::test]
     async fn trigger_extraction_dedups_against_enabled_snippets() {

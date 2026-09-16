@@ -214,12 +214,12 @@ mod tests {
         let dir = temp_dir("persist");
         let file_store = TaskBriefStore::at_data_dir(&dir);
         file_store
-            .set_body(TaskBriefId::SedimentNotice, "沉淀提醒覆写")
+            .set_body(TaskBriefId::SedimentNotice, "常用语提醒覆写")
             .unwrap();
         let path = dir.join("ghostwriter-prompts.json");
         assert!(path.exists());
         let reopened = TaskBriefStore::at_data_dir(&dir);
-        assert_eq!(reopened.body(TaskBriefId::SedimentNotice), "沉淀提醒覆写");
+        assert_eq!(reopened.body(TaskBriefId::SedimentNotice), "常用语提醒覆写");
         assert!(reopened.is_modified(TaskBriefId::SedimentNotice));
         assert_eq!(
             reopened.body(TaskBriefId::Recommendations),

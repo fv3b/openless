@@ -40,21 +40,21 @@ const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
   },
   {
     id: 'recommendations',
-    title: '推荐挑选',
+    title: '常用语推荐',
     description: '管从常用语库里挑哪些条目推荐，改了会影响推荐区。',
     body: '从常用语库里挑出与当前内容真正相关的条目。（浏览器 mock：真实正文由后端提供）',
   },
   {
     id: 'sediment_notice',
-    title: '沉淀提醒',
-    description: '管判断当前内容是否在重复未入库说法，改了会影响沉淀提醒。',
+    title: '常用语提醒',
+    description: '管判断当前内容是否在重复未入库说法，改了会影响常用语提醒。',
     body: '判断说话人是否又在说某条还没入库的说法。（浏览器 mock：真实正文由后端提供）',
   },
   {
     id: 'sediment_extraction',
-    title: '沉淀抽取',
-    description: '管从说话内容里抽取哪些说法去沉淀，改了会影响沉淀抽取结果。',
-    body: '从转写里找出值得沉淀成常用语的说法。（浏览器 mock：真实正文由后端提供）',
+    title: '提取常用语',
+    description: '管从说话内容里提取哪些说法存成常用语，改了会影响之后提醒你存的说法。',
+    body: '从转写里找出值得存成常用语的说法。（浏览器 mock：真实正文由后端提供）',
   },
 ];
 

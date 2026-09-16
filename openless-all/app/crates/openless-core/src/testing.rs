@@ -647,7 +647,7 @@ impl FixtureTextPolisher {
         self
     }
 
-    /// 沉淀抽取调用（会话后抽取）返回预置 JSON 数组——按控制器裁决路由：
+    /// 提取常用语调用（会话后提取）返回预置 JSON 数组——按控制器裁决路由：
     /// session_id 精确等于 [`crate::ghostwriter::sediment_extractor::extraction_session_id()`]
     /// （uuid5 确定性 id，Task 6 dispatcher 传同一 helper 的值）即认抽取调用。
     pub fn with_extraction_json(mut self, json: impl Into<String>) -> Self {
