@@ -22,8 +22,6 @@ import {
   ghostwriterCancelLast,
   ghostwriterDismissSuggestion,
   ghostwriterSaveSuggestion,
-  ghostwriterToggleSelection,
-  type GhostwriterSelectionKind,
 } from '../lib/ipc';
 import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/types';
 
@@ -36,8 +34,8 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作）、候选区
  * （常用语提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
- * 候选组 chips 为纯展示提示——不可点选、无 [存]、口头命令只剩「用常用语N」，
- * 2026-09-17 裁决；推荐行与提醒条照旧可交互）、
+ * 候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，看中哪个常用语
+ * 直接读它的触发词，命中机制自然接住，2026-09-17 裁决）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
@@ -108,7 +106,8 @@ const ACTION_BUTTON_STYLE: CSSProperties = {
   pointerEvents: 'auto',
 };
 
-// 候选 chip 纯展示样式（2026-09-17 裁决）：不可点选、无 [存]，只读提示。
+// 候选/推荐 chip 纯展示样式（2026-09-17 裁决）：不可点选、只读提示；
+// 需要哪个常用语，直接读它的触发词，命中机制自然接住。
 function candidateChipStyle(): CSSProperties {
   return {
     display: 'inline-flex',
@@ -125,26 +124,6 @@ function candidateChipStyle(): CSSProperties {
     letterSpacing: '0.02em',
     lineHeight: 1.5,
     cursor: 'default',
-    pointerEvents: 'auto',
-  };
-}
-
-function chipStyle(selected: boolean): CSSProperties {
-  return {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    maxWidth: '100%',
-    padding: '3px 10px',
-    borderRadius: 999,
-    background: selected ? 'rgba(52, 211, 153, 0.12)' : 'rgba(255, 255, 255, 0.06)',
-    border: selected ? '1px solid rgba(52, 211, 153, 0.32)' : '1px solid rgba(255, 255, 255, 0.12)',
-    color: selected ? '#6ee7b7' : '#e4e4e7',
-    fontSize: 12,
-    fontWeight: 500,
-    letterSpacing: '0.02em',
-    lineHeight: 1.5,
-    cursor: 'pointer',
     pointerEvents: 'auto',
   };
 }
@@ -269,15 +248,6 @@ export function GhostwriterPanel() {
         console.warn('[ghostwriter] cancel last action failed', error);
       }
     })();
-  };
-
-  // 点选失败（会话已停等）静默：选中态以后端候选区事件为权威，刷新即归位。
-  const toggleSelection = (kind: GhostwriterSelectionKind, index: number) => {
-    const sessionId = transcriptRef.current.sessionId;
-    if (!sessionId) return;
-    void ghostwriterToggleSelection(sessionId, kind, index).catch(error => {
-      console.warn('[ghostwriter] toggle selection failed', error);
-    });
   };
 
   // 沉淀建议存为常用语：成功后后端刷新候选区事件（提醒条随消失）；
@@ -618,14 +588,8 @@ export function GhostwriterPanel() {
               <div style={ASSIST_ROW_STYLE}>
                 <span style={ASSIST_LABEL_STYLE}>{t('ghostwriter.panel.recommendLabel')}</span>
                 {assistView.recommendations.map((recommendation, index) => (
-                  <span
-                    key={recommendation.snippetId}
-                    role="button"
-                    onClick={() => toggleSelection('recommendation', index + 1)}
-                    style={chipStyle(recommendation.selected)}
-                  >
+                  <span key={recommendation.snippetId} style={candidateChipStyle()}>
                     <span style={CHIP_LABEL_STYLE}>
-                      {recommendation.selected ? '✓ ' : ''}
                       {index + 1}·{recommendation.title}
                     </span>
                   </span>

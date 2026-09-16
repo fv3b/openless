@@ -25,22 +25,12 @@ pub struct PolishableSegment {
 }
 
 /// 一次 [`crate::ghostwriter::session::GhostwriterSession::feed`] 的结果：
-/// 新产出的润色段、新生效的常用语命中与口头命令新生效的选中。
+/// 新产出的润色段与新生效的常用语命中。
+/// 候选与推荐均纯展示（2026-09-17 裁决），口头命令/点选选中子系统已移除。
 #[derive(Debug, Clone, Default)]
 pub struct FeedOutcome {
     pub new_segments: Vec<PolishableSegment>,
     pub new_hits: Vec<GhostwriterSnippetHit>,
-    /// 本次 feed 中口头命令（用常用语N）新生效的选中，材料已进待融队列。
-    pub new_selections: Vec<Selection>,
-}
-
-/// 口头/点选原的类别：现场候选（纯展示，不可选）或推荐常用语。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SelectionKind {
-    /// 现场候选（LLM 说话中现场生成的表述选项；纯展示，不可选中）。
-    Candidate,
-    /// 推荐常用语（从已启用库里挑出的条目）。
-    Recommendation,
 }
 
 /// live 批次里的一条推荐常用语（assist 现场产出，未入库）。
@@ -51,23 +41,10 @@ pub struct LiveRecommendation {
     pub text: String,
 }
 
-/// 一次生效的选中原：批次内 1-based 全局序号＋进待融队列的材料文本。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Selection {
-    pub kind: SelectionKind,
-    /// 批次内 1-based 全局序号（候选跨组连续计数；推荐按列表序）。
-    pub index: usize,
-    /// 推荐常用语对应的常用语 id；现场候选无。
-    pub snippet_id: Option<String>,
-    /// 进待融队列的材料文本。
-    pub text: String,
-}
-
-/// 撤销最近一次动作的结果：常用语命中或口头/点选选中。
+/// 撤销最近一次动作的结果：常用语命中。
 #[derive(Debug, Clone, PartialEq)]
 pub enum LastAction {
     Hit(GhostwriterSnippetHit),
-    Selection(Selection),
 }
 
 /// assist 批次视图：浮框候选区的一组同类候选。
@@ -98,13 +75,12 @@ impl From<String> for CandidateItem {
     }
 }
 
-/// 批次视图里的一条候选：1-based 全局序号＋名字＋注释＋选中态。
+/// 批次视图里的一条候选：1-based 全局序号＋名字＋注释（纯展示）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateItemView {
     pub index: usize,
     pub text: String,
     pub note: Option<String>,
-    pub selected: bool,
 }
 
 /// 批次视图里的一条推荐常用语。
@@ -112,10 +88,9 @@ pub struct CandidateItemView {
 pub struct RecommendationView {
     pub snippet_id: String,
     pub title: String,
-    pub selected: bool,
 }
 
-/// 实时助手批次视图：浮框候选区渲染与口头选中范围判定的唯一依据。
+/// 实时助手批次视图：浮框候选区渲染的唯一依据。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistSnapshot {
     pub candidate_groups: Vec<CandidateGroupView>,
@@ -165,7 +140,7 @@ pub struct GhostwriterCandidateGroup {
     pub items: Vec<GhostwriterCandidateItem>,
 }
 
-/// 事件载荷里的一条候选：批次内 1-based 全局序号＋名字＋白话注释＋选中态。
+/// 事件载荷里的一条候选：批次内 1-based 全局序号＋名字＋白话注释（纯展示）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterCandidateItem {
@@ -173,7 +148,6 @@ pub struct GhostwriterCandidateItem {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    pub selected: bool,
 }
 
 /// 事件载荷里的一条推荐常用语。
@@ -182,7 +156,6 @@ pub struct GhostwriterCandidateItem {
 pub struct GhostwriterRecommendationItem {
     pub snippet_id: String,
     pub title: String,
-    pub selected: bool,
 }
 
 /// 常用语提醒：说话人正在重复某条值得收进常用语的说法。
@@ -209,12 +182,11 @@ mod tests {
         let a = GhostwriterAssistChanged {
             candidate_groups: vec![GhostwriterCandidateGroup {
                 kind: "term".into(),
-                items: vec![GhostwriterCandidateItem { index: 1, text: "精准词".into(), note: Some("注".into()), selected: true }],
+                items: vec![GhostwriterCandidateItem { index: 1, text: "精准词".into(), note: Some("注".into()) }],
             }],
             recommendations: vec![GhostwriterRecommendationItem {
                 snippet_id: "s2".into(),
                 title: "触发词".into(),
-                selected: false,
             }],
             sediment: Some(GhostwriterSedimentSuggestion {
                 phrase: "说法".into(),

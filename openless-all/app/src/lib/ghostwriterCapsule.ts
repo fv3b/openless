@@ -182,16 +182,12 @@ export function ghostwriterAssistReducer(
 }
 
 /**
- * 浮框 ✕（撤销最近一次生效动作）的显隐规则：有命中、或任一候选/推荐处于
- * 选中态即显示（撤销的选中态与命中都由后端事件回流，前端只做判定）。
+ * 浮框 ✕（撤销最近一次生效动作）的显隐规则：有命中即显示。
+ * 候选与推荐纯展示（2026-09-17 裁决），选中撤销已随选择子系统移除。
  */
 export function ghostwriterHasUndoAction(
   preview: GhostwriterPreviewState,
-  assist: GhostwriterAssistState,
+  _assist: GhostwriterAssistState,
 ): boolean {
-  if (preview.hits.length > 0) return true;
-  return (
-    assist.candidateGroups.some((group) => group.items.some((item) => item.selected)) ||
-    assist.recommendations.some((item) => item.selected)
-  );
+  return preview.hits.length > 0;
 }

@@ -234,17 +234,17 @@ assert(
     type: 'ghostwriter_assist_changed',
     payload: {
       candidateGroups: [
-        { kind: 'term', items: [{ index: 1, text: '灰度发布', selected: false }] },
-        { kind: 'naming', items: [{ index: 2, text: '先在小范围试运行', selected: true }] },
+        { kind: 'term', items: [{ index: 1, text: '灰度发布' }] },
+        { kind: 'naming', items: [{ index: 2, text: '先在小范围试运行' }] },
       ],
-      recommendations: [{ snippetId: 's1', title: '项目背景', selected: false }],
+      recommendations: [{ snippetId: 's1', title: '项目背景' }],
       sediment: { phrase: '风险控制', count: 3, suggestedTrigger: '风控' },
     },
   });
   assert(s1.candidateGroups.length === 2, 'assist_event_replaces_state: 候选组应整体换上');
   assert(
-    s1.candidateGroups[1].items[0].index === 2 && s1.candidateGroups[1].items[0].selected === true,
-    '候选序号（跨组全局）与选中态应原样保留',
+    s1.candidateGroups[1].items[0].index === 2,
+    '候选序号（跨组全局）应原样保留',
   );
   assert(
     s1.recommendations.length === 1 && s1.recommendations[0].snippetId === 's1',
@@ -281,35 +281,24 @@ assert(
   assert(s2 === base, 'payload 缺失时原样返回');
 }
 
-// ghostwriterHasUndoAction：✕ 显隐规则（命中／任一选中）
+// ghostwriterHasUndoAction：✕ 显隐规则（只认命中；候选/推荐纯展示不可撤销）
 {
   const preview = emptyGhostwriterPreviewState();
   assert(!ghostwriterHasUndoAction(preview, EMPTY_ASSIST), '全空时无可撤销');
+  const assistWithChips = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [{ kind: 'term', items: [{ index: 1, text: '灰度发布' }] }],
+      recommendations: [{ snippetId: 's1', title: '项目背景' }],
+      sediment: null,
+    },
+  });
+  assert(!ghostwriterHasUndoAction(preview, assistWithChips), '候选/推荐纯展示，不构成可撤销');
   const hit = ghostwriterPreviewReducer(preview, {
     type: 'ghostwriter_snippets_hit',
     payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
   });
-  assert(ghostwriterHasUndoAction(hit, EMPTY_ASSIST), '有命中即可撤销');
-  const selectedCandidate = ghostwriterAssistReducer(EMPTY_ASSIST, {
-    type: 'ghostwriter_assist_changed',
-    payload: {
-      candidateGroups: [
-        { kind: 'term', items: [{ index: 1, text: '灰度发布', selected: true }] },
-      ],
-      recommendations: [],
-      sediment: null,
-    },
-  });
-  assert(ghostwriterHasUndoAction(preview, selectedCandidate), '候选选中即可撤销');
-  const selectedRecommendation = ghostwriterAssistReducer(EMPTY_ASSIST, {
-    type: 'ghostwriter_assist_changed',
-    payload: {
-      candidateGroups: [],
-      recommendations: [{ snippetId: 's1', title: '项目背景', selected: true }],
-      sediment: null,
-    },
-  });
-  assert(ghostwriterHasUndoAction(preview, selectedRecommendation), '推荐选中即可撤销');
+  assert(ghostwriterHasUndoAction(hit, assistWithChips), '有命中即可撤销');
 }
 
 console.log('ghostwriterCapsule.test.ts: all assertions passed');

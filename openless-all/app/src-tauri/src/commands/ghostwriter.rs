@@ -1,13 +1,13 @@
-//! Ghostwriter 层命令：常用语（snippet）CRUD、浮框撤销最近动作、候选/推荐点选、
+//! Ghostwriter 层命令：常用语（snippet）CRUD、浮框撤销最近动作、
 //! 沉淀建议存取与任务书管理。
+//! 候选与推荐纯展示（2026-09-17 裁决），点选命令已移除。
 
 use super::*;
 
 use openless_core::ghostwriter::snippet_store::Snippet;
 use openless_core::ghostwriter::task_brief_store::TaskBriefInfo;
-use openless_core::ghostwriter::types::SelectionKind;
 
-/// ghostwriter_cancel_last 的返回：撤销结果（action："hit"|"selection"|"none"）＋
+/// ghostwriter_cancel_last 的返回：撤销结果（action："hit"|"none"）＋
 /// 撤销后的指令预览（拼装文本＋后端权威修订号，前端凭它丢弃撤销前在途的旧预览）。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +62,6 @@ pub fn ghostwriter_cancel_last(
         Some((action, revision)) => {
             let action = match action {
                 openless_core::ghostwriter::types::LastAction::Hit(_) => "hit",
-                openless_core::ghostwriter::types::LastAction::Selection(_) => "selection",
             };
             (true, action.to_string(), revision)
         }
@@ -75,25 +74,6 @@ pub fn ghostwriter_cancel_last(
         assembled,
         revision,
     })
-}
-
-/// 点选/取消候选区一条（index 为 1-based 全局序号；kind："candidate"|"recommendation"）。
-#[tauri::command]
-pub fn ghostwriter_toggle_selection(
-    core: CoreState<'_>,
-    session_id: String,
-    kind: String,
-    index: usize,
-) -> Result<(), String> {
-    let parsed = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let session_id = openless_core::SessionId::from_uuid(parsed);
-    let kind = match kind.as_str() {
-        "candidate" => SelectionKind::Candidate,
-        "recommendation" => SelectionKind::Recommendation,
-        other => return Err(format!("unknown ghostwriter selection kind: {other}")),
-    };
-    core.toggle_ghostwriter_selection(session_id, kind, index)
-        .map_err(|e| e.to_string())
 }
 
 /// 沉淀建议存为常用语；无建议时返回 null。

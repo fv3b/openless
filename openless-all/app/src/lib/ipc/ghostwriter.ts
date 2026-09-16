@@ -1,19 +1,16 @@
 import type { Snippet } from '../types';
 import { invokeOrMock } from './shared';
 
-/** ghostwriter_cancel_last 的返回：是否撤销了命中/选中（action 由后端权威）＋
+/** ghostwriter_cancel_last 的返回：是否撤销了命中（action 由后端权威）＋
  * 撤销后的指令预览（拼装文本＋后端权威修订号，润色结果迟迟未应用时撤销是
- * 预览前进的唯一推手）。 */
+ * 预览前进的唯一推手）。候选与推荐纯展示（2026-09-17 裁决），选中撤销已移除。 */
 export interface GhostwriterCancelLastResult {
   cancelled: boolean;
-  /** 被撤销者："hit" | "selection" | "none"。 */
+  /** 被撤销者："hit" | "none"。 */
   action: string;
   assembled: string | null;
   revision: number;
 }
-
-/** 点选/取消候选区一条的载体：推荐常用语（候选为纯展示，不可选——2026-09-17 裁决）。 */
-export type GhostwriterSelectionKind = 'candidate' | 'recommendation';
 
 /** 任务书快照：身份＋用途说明＋是否已被用户覆写＋当前生效正文。 */
 export interface GhostwriterTaskBrief {
@@ -125,15 +122,6 @@ export function ghostwriterCancelLast(sessionId: string): Promise<GhostwriterCan
     assembled: null,
     revision: 0,
   }));
-}
-
-/** 点选/取消推荐一条（index 为推荐独立 1-based 序号；候选纯展示不可选）。 */
-export function ghostwriterToggleSelection(
-  sessionId: string,
-  kind: GhostwriterSelectionKind,
-  index: number,
-): Promise<void> {
-  return invokeOrMock('ghostwriter_toggle_selection', { sessionId, kind, index }, () => undefined);
 }
 
 /** 沉淀建议存为常用语；无建议时后端返回 null。触发词重复时 reject（调用方提示）。 */

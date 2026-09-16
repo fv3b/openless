@@ -11,11 +11,10 @@
 //! M2：新完成段产出 [`PolishableSegment`]（已润前文尾部＋待融材料随段转移），
 //! 命中扫描 trigger/aliases（会话内去重，撤销后可再生效），
 //! [`GhostwriterSession::assembled_text`] 是指令预览与最终贴出的唯一同源拼装。
-//! M3：live assist 批次可口头选中推荐——「用常用语N」（候选为纯展示不可选，
-//! 2026-09-17 裁决）
-//! 在新话增量里识别（浮着才认、失败不剔），剔除先于断句与段产出；
-//! 命中与选中混入统一动作序，[`GhostwriterSession::cancel_last_action`]
-//! 取最新撤销。
+//! M3：live assist 批次（候选＋推荐）进浮框候选区展示。候选与推荐均纯展示
+//! （2026-09-17 裁决）：不可点选、无口头命令（「用候选N/用常用语N」等说法
+//! 一律当普通话保留）；用户看到提示自己说出来，触发词命中/润色自然吸收。
+//! 命中混入统一动作序，[`GhostwriterSession::cancel_last_action`] 取最新撤销。
 
 use std::collections::HashSet;
 
@@ -30,7 +29,7 @@ use super::types::{
 };
 
 pub use super::types::{FeedOutcome, PolishableSegment};
-pub use super::types::{AssistSnapshot, LastAction, Selection, SelectionKind};
+pub use super::types::{AssistSnapshot, LastAction};
 
 /// 无标点尾巴的硬切阈值（字符数）：ASR 长时间不出标点时按长度断段。
 const DEFAULT_MAX_FORCE_CHARS: usize = 120;
@@ -52,19 +51,11 @@ struct ActiveHit {
     dedup_keys: Vec<String>,
 }
 
-/// 一条已选中且未取消的选中：待融材料与批次视图选中态的共同依据。
-#[derive(Debug, Clone)]
-struct ActiveSelection {
-    selection: Selection,
-    /// 材料是否仍在待融队列（随段/尾巴润色转移后置 false，撤销不再出队）。
-    material_pending: bool,
-}
-
-/// 统一动作序的条目：命中与选中混排，按生效先后记录，撤销取最新。
+/// 统一动作序的条目：按生效先后记录，撤销取最新。
+/// 候选与推荐均纯展示（2026-09-17 裁决），选中子系统已整体移除。
 #[derive(Debug, Clone)]
 enum ActiveAction {
     Hit(ActiveHit),
-    Selection(ActiveSelection),
 }
 
 /// 当前 live assist 批次：现场候选（按组，组别随批次携带）与推荐常用语。
@@ -87,10 +78,10 @@ pub struct GhostwriterSession {
     /// 尾巴补润结果；None＝拼装回落尾巴原文。
     tail_polished: Option<String>,
     revision: u64,
-    /// 统一动作序：已生效未撤销的命中与选中按生效顺序混排；
+    /// 统一动作序：已生效未撤销的命中按生效顺序排列；
     /// 命中同时是 snippet_id 去重依据。
     active_actions: Vec<ActiveAction>,
-    /// 当前 live assist 批次；None＝此刻没有可口头选择的批次。
+    /// 当前 live assist 批次；None＝此刻没有展示中的批次。
     live_batch: Option<LiveBatch>,
     /// inline 材料待融队列（先进先出，随下一段或尾巴补润转移）。
     inline_pending: Vec<String>,
@@ -102,11 +93,6 @@ pub struct GhostwriterSession {
     /// 撤销过且尚未被新话再触发的 snippet：旧文领地（重扫）保持死亡，
     /// 新话增量仍可再触发（触发即出集，规则 6 的撤销-再生效交互）。
     cancelled_once: HashSet<String>,
-    /// 被撤销的选中（kind+序号）：重发/改写重提同一命令不复活（与命中
-    /// 的 cancelled_once 同理——传输层 artifact 不得请回用户明说撤销的
-    /// 材料）；随 set_live_batch 清空（新批次＝新命令），显式重新选中
-    /// 即出集。
-    cancelled_selections: HashSet<(SelectionKind, usize)>,
     /// 最近一次尾巴补润成功时覆盖的尾巴字符长度；尾巴长度一变即失配，
     /// 旧润色结果对不上新尾巴，作废回落原文。
     tail_polished_covered: usize,
@@ -138,7 +124,6 @@ impl GhostwriterSession {
             background_applied: HashSet::new(),
             scanned_chars: 0,
             cancelled_once: HashSet::new(),
-            cancelled_selections: HashSet::new(),
             tail_polished_covered: 0,
             background_placement: SnippetPlacement::default(),
         }
@@ -178,19 +163,10 @@ impl GhostwriterSession {
         if rewritten {
             self.scanned_chars = 0;
         }
-        // 口头命令扫描走在命中扫描与断句之前：命令短语连同紧邻的一个标点
-        // 从缓冲剔除，段文本与尾巴从此不含命令（段文本剔除因此天然发生在
-        // PolishableSegment 产出之前）；无可解析批次/序号越界 → 不剔除、
-        // 当普通话。命令只在新话增量里找（与命中扫描同领地），跨增量的
-        // 断裂短语不认——与命中匹配同一局限。
+        // 扫描领地：只扫新话增量（命中同款规则），改写重扫属旧文领地。
         let cursor = self.scanned_chars.min(self.buffer.chars().count());
         let tail_increment: String = self.buffer.chars().skip(cursor).collect();
-        let (stripped_increment, new_selections) = self.scan_commands(&tail_increment);
-        if stripped_increment != tail_increment {
-            let prefix: String = self.buffer.chars().take(cursor).collect();
-            self.buffer = format!("{prefix}{stripped_increment}");
-        }
-        self.scanned_chars = cursor + stripped_increment.chars().count();
+        self.scanned_chars = cursor + tail_increment.chars().count();
         let text = self.buffer.clone();
         let completed = self.segmenter.update(&text);
         // 尾巴在补润后又长出（或缩回）新内容：旧润色结果对不上新尾巴，
@@ -223,8 +199,7 @@ impl GhostwriterSession {
         }
         // 尾巴增量后扫：尾巴里说出的触发词，材料留给尾巴补润或下一段；
         // 非改写路径的增量是真正的新话，撤销过的 snippet 可在此再生效。
-        // 吃命令剔除后的增量：命令短语不再参与命中匹配。
-        new_hits.extend(self.scan_hits(&stripped_increment, snippets, !rewritten));
+        new_hits.extend(self.scan_hits(&tail_increment, snippets, !rewritten));
         if !new_segments.is_empty() {
             log::debug!(
                 "[ghostwriter] segmenter: {} segment(s) completed (buffer={} chars)",
@@ -235,7 +210,6 @@ impl GhostwriterSession {
         Ok(FeedOutcome {
             new_segments,
             new_hits,
-            new_selections,
         })
     }
 
@@ -394,18 +368,13 @@ impl GhostwriterSession {
         })
     }
 
-    /// 待融材料随段（或尾巴补润）转移后，把仍在排队的命中与选中材料
-    /// 标记为已转移。
+    /// 待融材料随段（或尾巴补润）转移后，把仍在排队的命中材料标记为已转移。
     fn mark_pending_materials_moved(&mut self) {
         for action in &mut self.active_actions {
-            match action {
-                ActiveAction::Hit(active) if active.material.is_some() => {
+            if let ActiveAction::Hit(active) = action {
+                if active.material.is_some() {
                     active.material_pending = false;
                 }
-                ActiveAction::Selection(active) => {
-                    active.material_pending = false;
-                }
-                _ => {}
             }
         }
     }
@@ -448,14 +417,13 @@ impl GhostwriterSession {
         true
     }
 
-    /// 撤销最近一次生效的动作（命中与选中混排按生效时间取最新）：
-    /// 命中按原撤销语义处理（表述材料出待融、背景行随动作弹出消失、
-    /// 去重键释放、snippet 恢复「未生效」可再触发）；引用型背景键随撤销
-    /// 把被引用者一并记入撤销集——旧文重扫（改写式 final、offset 修订，
-    /// allow_cancelled=false）不得让刚被撤单元的背景行复活，新话路径照常
-    /// 出集；选中从待融出队其材料并标记未选中（同批次可再选中）。成功
-    /// 撤销推进修订号（后端权威），调用方据此发布撤销后的预览并让前端
-    /// 丢弃在途旧预览。返回被撤销者供事件确认。
+    /// 撤销最近一次生效的动作（命中）：
+    /// 表述材料出待融、背景行随动作弹出消失、去重键释放、snippet 恢复
+    /// 「未生效」可再触发；引用型背景键随撤销把被引用者一并记入撤销集——
+    /// 旧文重扫（改写式 final、offset 修订，allow_cancelled=false）不得让
+    /// 刚被撤单元的背景行复活，新话路径照常出集。成功撤销推进修订号
+    /// （后端权威），调用方据此发布撤销后的预览并让前端丢弃在途旧预览。
+    /// 返回被撤销者供事件确认。
     pub fn cancel_last_action(&mut self) -> Option<LastAction> {
         match self.active_actions.pop()? {
             ActiveAction::Hit(active) => {
@@ -478,28 +446,12 @@ impl GhostwriterSession {
                 self.revision += 1;
                 Some(LastAction::Hit(active.hit))
             }
-            ActiveAction::Selection(active) => {
-                if active.material_pending {
-                    if let Some(position) = self
-                        .inline_pending
-                        .iter()
-                        .rposition(|m| *m == active.selection.text)
-                    {
-                        self.inline_pending.remove(position);
-                    }
-                }
-                // 撤销即入抑制集：重发/改写重提同一命令不复活
-                self.cancelled_selections
-                    .insert((active.selection.kind, active.selection.index));
-                self.revision += 1;
-                Some(LastAction::Selection(active.selection))
-            }
         }
     }
 
     /// 换上新的 live assist 批次（替换式）：候选组带各自组别（kind 随
-    /// assist 产出直达视图，无按位置的固定映射）；新批次到达即清 active
-    /// selections（已入待融的材料不受影响，随段/尾巴润色照常转移）。
+    /// assist 产出直达视图，无按位置的固定映射）。候选与推荐均纯展示
+    /// （2026-09-17 裁决），批次替换只换展示内容。
     pub fn set_live_batch(
         &mut self,
         candidates: Vec<(String, Vec<CandidateItem>)>,
@@ -509,10 +461,6 @@ impl GhostwriterSession {
             candidates,
             recommendations,
         });
-        self.active_actions
-            .retain(|action| matches!(action, ActiveAction::Hit(_)));
-        // 新批次＝新命令：旧批次的撤销抑制不再适用
-        self.cancelled_selections.clear();
     }
 
     /// 当前批次视图（浮框候选区渲染依据）；无批次 → None。
@@ -534,7 +482,6 @@ impl GhostwriterSession {
                             index,
                             text: item.name.clone(),
                             note: item.note.clone(),
-                            selected: self.is_selection_active(SelectionKind::Candidate, index),
                         }
                     })
                     .collect(),
@@ -543,160 +490,15 @@ impl GhostwriterSession {
         let recommendations = batch
             .recommendations
             .iter()
-            .enumerate()
-            .map(|(i, recommendation)| RecommendationView {
+            .map(|recommendation| RecommendationView {
                 snippet_id: recommendation.snippet_id.clone(),
                 title: recommendation.title.clone(),
-                selected: self.is_selection_active(SelectionKind::Recommendation, i + 1),
             })
             .collect();
         Some(AssistSnapshot {
             candidate_groups,
             recommendations,
         })
-    }
-
-    /// 切换一条批次内选择的生效态（1-based 全局序号）：
-    /// 未选中→选中：材料进待融队列（同 inline 命中路径）、记入动作序；
-    /// 已选中→取消：材料从待融按文本 rposition 移除（已转移则不动）
-    /// 并标记未选中；无批次/序号越界 → None。两个方向都推进修订号。
-    /// 候选为纯展示（2026-09-17 裁决）：不可点选、不可口头选中，Candidate 一律 None。
-    pub fn toggle_selection(&mut self, kind: SelectionKind, index: usize) -> Option<Selection> {
-        if kind == SelectionKind::Candidate {
-            return None;
-        }
-        let text = self.batch_text(kind, index)?;
-        if let Some(position) = self.active_actions.iter().position(|action| {
-            matches!(action, ActiveAction::Selection(active)
-                if active.selection.kind == kind && active.selection.index == index)
-        }) {
-            let ActiveAction::Selection(active) = self.active_actions.remove(position) else {
-                unreachable!("position matched a Selection action");
-            };
-            if active.material_pending {
-                if let Some(pending) = self
-                    .inline_pending
-                    .iter()
-                    .rposition(|m| *m == active.selection.text)
-                {
-                    self.inline_pending.remove(pending);
-                }
-            }
-            // 撤销即入抑制集：重发/改写重提同一命令不复活
-            self.cancelled_selections
-                .insert((kind, index));
-            self.revision += 1;
-            return Some(active.selection);
-        }
-        let snippet_id = match kind {
-            SelectionKind::Candidate => None,
-            SelectionKind::Recommendation => self
-                .live_batch
-                .as_ref()
-                .and_then(|batch| batch.recommendations.get(index - 1))
-                .map(|recommendation| recommendation.snippet_id.clone()),
-        };
-        let selection = Selection {
-            kind,
-            index,
-            snippet_id,
-            text,
-        };
-        // 显式重新选中即出集（与命中「触发即出集」同理）
-        self.cancelled_selections.remove(&(kind, index));
-        self.inline_pending.push(selection.text.clone());
-        self.active_actions.push(ActiveAction::Selection(
-            ActiveSelection {
-                selection: selection.clone(),
-                material_pending: true,
-            },
-        ));
-        self.revision += 1;
-        Some(selection)
-    }
-
-    /// live 批次中某类选择在 1-based 序号处的材料文本（候选取名字，
-    /// 注释仅展示不入材料）；无批次或序号越界 → None。
-    fn batch_text(&self, kind: SelectionKind, index: usize) -> Option<String> {
-        let batch = self.live_batch.as_ref()?;
-        let item = match kind {
-            SelectionKind::Candidate => batch
-                .candidates
-                .iter()
-                .flat_map(|(_, items)| items.iter())
-                .nth(index.checked_sub(1)?)
-                .map(|item| item.name.clone()),
-            SelectionKind::Recommendation => batch
-                .recommendations
-                .get(index.checked_sub(1)?)
-                .map(|recommendation| recommendation.text.clone()),
-        };
-        item
-    }
-
-    /// 某条批次选择当前是否处于选中态（批次视图 selected 标记依据）。
-    fn is_selection_active(&self, kind: SelectionKind, index: usize) -> bool {
-        self.active_actions.iter().any(|action| {
-            matches!(action, ActiveAction::Selection(active)
-                if active.selection.kind == kind && active.selection.index == index)
-        })
-    }
-
-    /// 扫一段新话增量里的口头命令「用候选N」「用常用语N」：有 live 批次且
-    /// 序号可解析且未越界 → 调 toggle_selection 生效并返回选中，同时把
-    /// 命令短语连同紧邻的一个标点（，。、）从文本剔除；已选中的同一条
-    /// 只剔除不重复生效（ASR 快照重发的幂等）；被撤销过的选中在重发/
-    /// 改写重提时不复活（抑制集，随新批次清空）——命令当普通话保留；
-    /// 其余情形原样保留（当普通话）。
-    /// 返回剔除后的文本与本次新生效的选中。
-    fn scan_commands(&mut self, increment: &str) -> (String, Vec<Selection>) {
-        let mut selections = Vec::new();
-        if self.live_batch.is_none() || increment.is_empty() {
-            return (increment.to_string(), selections);
-        }
-        let chars: Vec<char> = increment.chars().collect();
-        let mut kept: Vec<char> = Vec::with_capacity(chars.len());
-        let mut i = 0;
-        while i < chars.len() {
-            let Some((kind, head_len)) = match_command_head(&chars[i..]) else {
-                kept.push(chars[i]);
-                i += 1;
-                continue;
-            };
-            let number = chars
-                .get(i + head_len)
-                .copied()
-                .and_then(parse_command_number);
-            let Some(number) = number else {
-                // 序号不可解析：当普通话，头部照抄后从下一字符继续
-                kept.extend_from_slice(&chars[i..i + head_len]);
-                i += head_len;
-                continue;
-            };
-            if self.batch_text(kind, number).is_none() {
-                // 序号越界：不剔除、当普通话
-                kept.extend_from_slice(&chars[i..i + head_len + 1]);
-                i += head_len + 1;
-                continue;
-            }
-            if self.cancelled_selections.contains(&(kind, number)) {
-                // 被撤销的选中：重发/改写重提不复活，不剔除、当普通话
-                kept.extend_from_slice(&chars[i..i + head_len + 1]);
-                i += head_len + 1;
-                continue;
-            }
-            // 命中：先剔除（短语＋紧邻的一个后续标点），已选中则不再生效
-            if !self.is_selection_active(kind, number) {
-                if let Some(selection) = self.toggle_selection(kind, number) {
-                    selections.push(selection);
-                }
-            }
-            i += head_len + 1;
-            if matches!(chars.get(i), Some('，') | Some('。') | Some('、')) {
-                i += 1;
-            }
-        }
-        (kept.into_iter().collect(), selections)
     }
 
     /// 尾巴补润的输入：segmenter 尾巴非空时返回
@@ -797,26 +599,13 @@ impl GhostwriterSession {
     }
 
     /// 历史归档用：仍生效（未撤销）的命中快照，按生效顺序（标题＋贴位）。
+    /// 候选与推荐纯展示（2026-09-17 裁决），新会话不再产生历史选中；
+    /// 旧历史记录里的选中照常展示（ghostwriter_selections 字段只读保留）。
     pub fn history_hits(&self) -> Vec<GhostwriterSnippetHit> {
         self.active_actions
             .iter()
-            .filter_map(|action| match action {
-                ActiveAction::Hit(active) => Some(active.hit.clone()),
-                ActiveAction::Selection(_) => None,
-            })
-            .collect()
-    }
-
-    /// 历史归档用：仍选中（未取消、批次未换）的选中原，按生效顺序
-    /// （类别＋材料文本）。
-    pub fn selected_history_items(&self) -> Vec<(SelectionKind, String)> {
-        self.active_actions
-            .iter()
-            .filter_map(|action| match action {
-                ActiveAction::Selection(active) => {
-                    Some((active.selection.kind, active.selection.text.clone()))
-                }
-                ActiveAction::Hit(_) => None,
+            .map(|action| match action {
+                ActiveAction::Hit(active) => active.hit.clone(),
             })
             .collect()
     }
@@ -861,31 +650,8 @@ fn background_key_for_text(text: &str) -> String {
     )
 }
 
-/// 口头命令头匹配：返回（选择种类, 头长度）。候选为纯展示（2026-09-17 裁决），
-/// 「用候选N」不再是命令；只剩推荐「用常用语N」。
-fn match_command_head(chars: &[char]) -> Option<(SelectionKind, usize)> {
-    if chars.starts_with(&['用', '常', '用', '语']) {
-        return Some((SelectionKind::Recommendation, 4));
-    }
-    None
-}
-
-/// 口头命令序号解析：中文数字一二两三四五六七八与 ASCII 1-8 写死映射，
-/// 其余（九/十/0/9+/多字数字）不解析 → 调用方按普通话保留。
-fn parse_command_number(c: char) -> Option<usize> {
-    match c {
-        '一' => Some(1),
-        '二' | '两' => Some(2),
-        '三' => Some(3),
-        '四' => Some(4),
-        '五' => Some(5),
-        '六' => Some(6),
-        '七' => Some(7),
-        '八' => Some(8),
-        '1'..='8' => c.to_digit(10).map(|d| d as usize),
-        _ => None,
-    }
-}
+/// 口头命令头匹配已移除：候选与推荐均纯展示（2026-09-17 裁决），
+/// 「用候选N/用常用语N」不再是命令，一律当普通话保留。
 
 #[cfg(test)]
 mod tests {
@@ -1259,274 +1025,23 @@ mod tests {
     }
 
     #[test]
-    fn voice_command_strips_from_tail_and_selects() {
-        let mut s = GhostwriterSession::new();
-        assert!(s.assist_snapshot().is_none());
-        s.set_live_batch(
-            vec![],
-            vec![
-                LiveRecommendation {
-                    snippet_id: "r1".into(),
-                    title: "推荐一".into(),
-                    text: "第一个推荐的完整文本".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r2".into(),
-                    title: "推荐二".into(),
-                    text: "第二个推荐的完整文本".into(),
-                },
-            ],
-        );
-        let outcome = s.feed(&delta("帮我看看用常用语2", 0, false), &[]).unwrap();
-        assert_eq!(s.debug_buffer(), "帮我看看");
-        assert_eq!(outcome.new_selections.len(), 1);
-        assert_eq!(outcome.new_selections[0].index, 2);
-        assert_eq!(outcome.new_selections[0].text, "第二个推荐的完整文本");
-        assert_eq!(outcome.new_selections[0].snippet_id.as_deref(), Some("r2"));
-        // 材料进待融队列：尾巴补润输入携带，预览兜底追加可见
-        let input = s.tail_polish_input().unwrap();
-        assert!(input.materials.contains(&"第二个推荐的完整文本".to_string()));
-        assert!(s.assembled_text().ends_with("第二个推荐的完整文本"));
-        // 已选中再命令：仅剔除不重复入队（不取消、不重复生效）
-        let outcome = s.feed(&delta("，再用常用语2", 0, false), &[]).unwrap();
-        assert!(outcome.new_selections.is_empty());
-        assert_eq!(s.debug_buffer(), "帮我看看，再");
-        assert_eq!(s.assembled_text().matches("第二个推荐的完整文本").count(), 1);
-    }
-
-    #[test]
-    fn voice_command_in_segment_strips_before_polish() {
+    fn selection_phrases_are_plain_speech_now() {
+        // 候选与推荐纯展示（2026-09-17 裁决）：「用候选N」「用常用语N」都不再是
+        // 命令，有批次在场也当普通话保留、原样进文本，不产生选中。
         let mut s = GhostwriterSession::new();
         s.set_live_batch(
-            vec![],
-            vec![
-                LiveRecommendation {
-                    snippet_id: "r1".into(),
-                    title: "甲".into(),
-                    text: "甲推荐".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r2".into(),
-                    title: "乙".into(),
-                    text: "乙推荐".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r3".into(),
-                    title: "丙".into(),
-                    text: "丙推荐".into(),
-                },
-            ],
-        );
-        let outcome = s
-            .feed(&delta("第一句。用常用语三，然后第二句", 0, false), &[])
-            .unwrap();
-        assert_eq!(outcome.new_segments.len(), 1);
-        assert_eq!(outcome.new_segments[0].text, "第一句。");
-        assert_eq!(outcome.new_selections.len(), 1);
-        assert_eq!(outcome.new_selections[0].text, "丙推荐");
-        assert_eq!(s.debug_buffer(), "第一句。然后第二句");
-    }
-
-    #[test]
-    fn candidate_command_is_plain_speech_now() {
-        // 命名校准纯展示（2026-09-17 裁决）：「用候选N」不再是命令，
-        // 有批次在场也当普通话保留、不选中。
-        let mut s = GhostwriterSession::new();
-        s.set_live_batch(vec![("term".to_string(), vec!["甲".into(), "乙".into()])], vec![]);
-        let outcome = s.feed(&delta("用候选二看看", 0, false), &[]).unwrap();
-        assert_eq!(s.debug_buffer(), "用候选二看看");
-        assert!(outcome.new_selections.is_empty());
-        assert!(
-            !s.assist_snapshot()
-                .unwrap()
-                .candidate_groups[0]
-                .items
-                .iter()
-                .any(|item| item.selected)
-        );
-    }
-
-    #[test]
-    fn unresolvable_command_keeps_text() {
-        let mut s = GhostwriterSession::new();
-        let outcome = s.feed(&delta("用常用语二看看", 0, false), &[]).unwrap();
-        assert_eq!(s.debug_buffer(), "用常用语二看看");
-        assert!(outcome.new_selections.is_empty());
-    }
-
-    #[test]
-    fn out_of_range_command_keeps_text() {
-        let mut s = GhostwriterSession::new();
-        s.set_live_batch(
-            vec![],
+            vec![("term".to_string(), vec!["甲".into(), "乙".into()])],
             vec![LiveRecommendation {
                 snippet_id: "r1".into(),
-                title: "甲".into(),
-                text: "甲推荐".into(),
+                title: "推荐一".into(),
+                text: "推荐一的完整文本".into(),
             }],
         );
-        let outcome = s.feed(&delta("用常用语五看看", 0, false), &[]).unwrap();
-        assert_eq!(s.debug_buffer(), "用常用语五看看");
-        assert!(outcome.new_selections.is_empty());
-    }
-
-    #[test]
-    fn toggle_selection_adds_and_removes_material() {
-        let mut s = GhostwriterSession::new();
-        assert!(s.toggle_selection(SelectionKind::Candidate, 1).is_none());
-        s.set_live_batch(
-            vec![("term".to_string(), vec!["甲候选文本".into()])],
-            vec![LiveRecommendation {
-                snippet_id: "r1".into(),
-                title: "推荐标题".into(),
-                text: "推荐一的全量文本".into(),
-            }],
-        );
-        // 候选纯展示：有批次也选不中
-        assert!(s.toggle_selection(SelectionKind::Candidate, 1).is_none());
-        assert!(
-            !s.assist_snapshot()
-                .unwrap()
-                .candidate_groups[0]
-                .items[0]
-                .selected
-        );
-        assert!(s.toggle_selection(SelectionKind::Recommendation, 2).is_none());
-        let selection = s.toggle_selection(SelectionKind::Recommendation, 1).unwrap();
-        assert_eq!(selection.text, "推荐一的全量文本");
-        assert_eq!(selection.snippet_id.as_deref(), Some("r1"));
-        assert!(s.assembled_text().ends_with("推荐一的全量文本"));
-        // 再 toggle 同一条：取消选中，材料出待融
-        let deselected = s.toggle_selection(SelectionKind::Recommendation, 1).unwrap();
-        assert_eq!(deselected.text, "推荐一的全量文本");
-        assert!(!s.assembled_text().contains("推荐一的全量文本"));
-    }
-
-    #[test]
-    fn new_batch_clears_selections_but_keeps_materials() {
-        let mut s = GhostwriterSession::new();
-        s.set_live_batch(
-            vec![],
-            vec![LiveRecommendation {
-                snippet_id: "r1".into(),
-                title: "甲".into(),
-                text: "甲推荐文本".into(),
-            }],
-        );
-        s.toggle_selection(SelectionKind::Recommendation, 1).unwrap();
-        let snapshot = s.assist_snapshot().unwrap();
-        assert!(snapshot.recommendations[0].selected);
-        // 新批次替换：选中态清空，已入待融的材料不受影响
-        s.set_live_batch(vec![("naming".to_string(), vec!["丙候选文本".into()])], vec![]);
-        let snapshot = s.assist_snapshot().unwrap();
-        // 组别随批次携带直达视图（无按位置的固定映射）
-        assert_eq!(snapshot.candidate_groups[0].kind, "naming");
-        assert_eq!(snapshot.candidate_groups[0].items[0].text, "丙候选文本");
-        assert!(!snapshot.candidate_groups[0].items[0].selected);
-        assert!(s.assembled_text().ends_with("甲推荐文本"));
-        // 候选不可选：同序号 toggle 候选无效
-        assert!(s.toggle_selection(SelectionKind::Candidate, 1).is_none());
-        // 各组组别原样透传（含白名单外 kind，session 层不校验）＋候选全局 1-based 连续计数
-        s.set_live_batch(
-            vec![
-                ("term".to_string(), vec!["甲".into()]),
-                ("whatever".to_string(), vec!["乙".into()]),
-                ("naming".to_string(), vec!["丙".into()]),
-            ],
-            vec![],
-        );
-        let snapshot = s.assist_snapshot().unwrap();
-        let kinds: Vec<&str> = snapshot
-            .candidate_groups
-            .iter()
-            .map(|group| group.kind.as_str())
-            .collect();
-        assert_eq!(kinds, vec!["term", "whatever", "naming"]);
-        let indices: Vec<usize> = snapshot
-            .candidate_groups
-            .iter()
-            .flat_map(|group| group.items.iter().map(|item| item.index))
-            .collect();
-        assert_eq!(indices, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn cancel_last_action_mixed_order() {
-        let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetKind::Background);
-        let snippets = vec![snippet.clone()];
-        s.feed(&delta("加个附注", 0, false), &snippets).unwrap();
-        s.set_live_batch(
-            vec![],
-            vec![LiveRecommendation {
-                snippet_id: "r1".into(),
-                title: "甲".into(),
-                text: "甲推荐文本".into(),
-            }],
-        );
-        s.toggle_selection(SelectionKind::Recommendation, 1).unwrap();
-        // 最新生效的是选中 → 先撤销选中，材料出待融
-        match s.cancel_last_action().unwrap() {
-            LastAction::Selection(selection) => assert_eq!(selection.text, "甲推荐文本"),
-            LastAction::Hit(_) => panic!("期望先撤销的是选中"),
-        }
-        assert!(!s.assembled_text().contains("甲推荐文本"));
-        // 再撤销 → 命中
-        match s.cancel_last_action().unwrap() {
-            LastAction::Hit(hit) => assert_eq!(hit.snippet_id, "f1"),
-            LastAction::Selection(_) => panic!("期望再撤销的是命中"),
-        }
-        assert!(!s.assembled_text().contains("[背景]"));
-        assert!(s.cancel_last_action().is_none());
-    }
-
-    #[test]
-    fn cancelled_selection_not_resurrected_by_resend() {
-        let mut s = GhostwriterSession::new();
-        s.set_live_batch(
-            vec![],
-            vec![
-                LiveRecommendation {
-                    snippet_id: "r1".into(),
-                    title: "甲".into(),
-                    text: "甲推荐文本".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r2".into(),
-                    title: "乙".into(),
-                    text: "乙推荐文本".into(),
-                },
-            ],
-        );
-        let outcome = s.feed(&delta("帮我看看用常用语2", 0, false), &[]).unwrap();
-        assert_eq!(outcome.new_selections.len(), 1);
-        assert!(s.cancel_last_action().is_some());
-        assert!(!s.assembled_text().contains("乙推荐文本"));
-        // ASR final 全量重发重提同一命令：被撤销的选中不复活，命令当普通话保留
-        let outcome = s.feed(&delta("帮我看看用常用语2。", 0, true), &[]).unwrap();
-        assert!(outcome.new_selections.is_empty());
-        assert_eq!(s.debug_buffer(), "帮我看看用常用语2。");
-        assert!(!s.assembled_text().contains("乙推荐文本"));
-        // 新批次到达：抑制随批次清空，同序号命令重新可选中
-        s.set_live_batch(
-            vec![],
-            vec![
-                LiveRecommendation {
-                    snippet_id: "r3".into(),
-                    title: "新甲".into(),
-                    text: "新甲".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r4".into(),
-                    title: "新乙".into(),
-                    text: "新乙".into(),
-                },
-            ],
-        );
-        let outcome = s.feed(&delta("再用常用语2，好", 0, false), &[]).unwrap();
-        assert_eq!(outcome.new_selections.len(), 1);
-        assert_eq!(outcome.new_selections[0].text, "新乙");
-        assert_eq!(s.debug_buffer(), "帮我看看用常用语2。再好");
+        let outcome = s.feed(&delta("用候选二看看，用常用语一", 0, false), &[]).unwrap();
+        assert_eq!(s.debug_buffer(), "用候选二看看，用常用语一");
+        assert!(outcome.new_hits.is_empty());
+        assert!(s.assembled_text().contains("用常用语一"));
+        assert!(!s.assembled_text().contains("推荐一的完整文本"));
     }
 
     #[test]
@@ -1803,31 +1318,4 @@ mod tests {
         assert!(s.assembled_text().contains(&format!("- 素材：{}", bg.text)));
     }
 
-    #[test]
-    fn cancelled_selection_not_resurrected_by_rewrite() {
-        let mut s = GhostwriterSession::new();
-        s.set_live_batch(
-            vec![],
-            vec![
-                LiveRecommendation {
-                    snippet_id: "r1".into(),
-                    title: "甲".into(),
-                    text: "甲推荐文本".into(),
-                },
-                LiveRecommendation {
-                    snippet_id: "r2".into(),
-                    title: "乙".into(),
-                    text: "乙推荐文本".into(),
-                },
-            ],
-        );
-        let outcome = s.feed(&delta("帮我看看用常用语2", 0, false), &[]).unwrap();
-        assert_eq!(outcome.new_selections.len(), 1);
-        assert!(s.cancel_last_action().is_some());
-        // offset>0 修订重发改写旧文重提同一命令：同样不复活、原文保留
-        let outcome = s.feed(&delta("大家看看用常用语2", 2, false), &[]).unwrap();
-        assert!(outcome.new_selections.is_empty());
-        assert_eq!(s.debug_buffer(), "帮我大家看看用常用语2");
-        assert!(!s.assembled_text().contains("乙推荐文本"));
-    }
 }

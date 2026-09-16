@@ -735,13 +735,12 @@ export interface Snippet {
 /** 候选组类型：叫法（认出已有事物的本名）/ 命名（新造事物的名字）。 */
 export type GhostwriterCandidateKind = 'term' | 'naming';
 
-/** 事件里的一条候选：index 为批次内跨组全局 1-based 序号（点选/口头命令同源）。 */
+/** 事件里的一条候选：index 为批次内跨组全局 1-based 序号（纯展示）。 */
 export interface GhostwriterCandidateItem {
   index: number;
   text: string;
   /** 白话注释（term=回指说话人的说法；naming=起名理由），仅展示用。 */
   note?: string;
-  selected: boolean;
 }
 
 export interface GhostwriterCandidateGroup {
@@ -749,11 +748,10 @@ export interface GhostwriterCandidateGroup {
   items: GhostwriterCandidateItem[];
 }
 
-/** 事件里的一条推荐常用语（snippetId 指向库内条目，selected 由后端权威）。 */
+/** 事件里的一条推荐常用语（snippetId 指向库内条目；纯展示——读触发词即用）。 */
 export interface GhostwriterRecommendationItem {
   snippetId: string;
   title: string;
-  selected: boolean;
 }
 
 /** 常用语提醒：说话中重复到的可复用说法，可一键存为常用语或忽略。 */

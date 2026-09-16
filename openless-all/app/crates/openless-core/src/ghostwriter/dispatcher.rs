@@ -603,7 +603,6 @@ fn assist_changed_payload(
                         index: item.index as u32,
                         text: item.text.clone(),
                         note: item.note.clone(),
-                        selected: item.selected,
                     })
                     .collect(),
             })
@@ -614,7 +613,6 @@ fn assist_changed_payload(
             .map(|recommendation| GhostwriterRecommendationItem {
                 snippet_id: recommendation.snippet_id.clone(),
                 title: recommendation.title.clone(),
-                selected: recommendation.selected,
             })
             .collect(),
         sediment,

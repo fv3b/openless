@@ -292,7 +292,6 @@ macro_rules! app_invoke_handler_desktop {
             commands::delete_ghostwriter_snippet,
             commands::set_ghostwriter_snippet_enabled,
             commands::ghostwriter_cancel_last,
-            commands::ghostwriter_toggle_selection,
             commands::ghostwriter_save_suggestion,
             commands::ghostwriter_dismiss_suggestion,
             commands::list_ghostwriter_task_briefs,
