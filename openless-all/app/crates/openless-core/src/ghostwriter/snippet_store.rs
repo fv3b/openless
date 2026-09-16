@@ -1,7 +1,9 @@
-//! 常用语（snippet）存储：用户存下来的表述实体（触发词/别名 → 表述文本，带贴位与启用开关）。
+//! 常用语（snippet）存储：用户存下来的表述实体（触发词/别名 → 文本，带种类、落点与启用开关）。
 //!
 //! 持久化照抄 style_pack_store 模式：Mutex 内存态 + 每次变更后整文件原子写，
 //! 落 `data_dir/ghostwriter-snippets.json`；文件缺失按空库处理。
+//! 旧库文件带 `mode: "inline"|"footnote"` 且无新字段：加载时经 `SnippetWire`
+//! 迁移（inline → 表述；footnote → 背景＋文末；缺省字段补默认），写入即新形态。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,26 +13,99 @@ use serde::{Deserialize, Serialize};
 use crate::errors::{BackendError, BackendErrorCode};
 use crate::persistence::{atomic_write, persistence_error, read_or_default};
 
-/// 常用语贴位模式："inline" 进正文、"footnote" 附注。
+/// 常用语种类："phrasing" 表述（文本融进正文，可附带背景）、"background" 背景（整条进背景块）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum SnippetMode {
-    Inline,
-    Footnote,
+pub enum SnippetKind {
+    Phrasing,
+    Background,
 }
 
-/// 常用语：触发词/别名 → 表述文本，命中后按贴位进正文或附注。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// 背景落点："head" 附在开头、"tail" 附在文末（默认）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum SnippetPlacement {
+    Head,
+    #[default]
+    Tail,
+}
+
+/// 表述的附带背景：引用库里一条背景类常用语，或手写一段文本。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SnippetAttachment {
+    Reference { snippet_id: String },
+    Text { text: String },
+}
+
+/// 常用语：触发词/别名 → 文本，命中后按种类生效
+/// （表述＝文本进正文＋附件按落点进背景块；背景＝整条按落点进背景块）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", from = "SnippetWire")]
 pub struct Snippet {
     pub id: String,
     /// 触发词（非空，≤24 chars）
     pub trigger: String,
     pub aliases: Vec<String>,
-    /// 表述文本（可多句）
+    /// 表述文本或背景文本（可多句）
     pub text: String,
-    pub mode: SnippetMode,
+    pub kind: SnippetKind,
+    /// 背景落点（背景类的 text、表述类的附件整体都按它走）
+    pub placement: SnippetPlacement,
+    /// 附带背景（仅表述类有意义；背景类写入前清空）
+    pub attachments: Vec<SnippetAttachment>,
     pub enabled: bool,
+}
+
+/// 落盘反序列化的中间形态：兼容旧行（有 mode、无新字段），缺省一律补默认。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnippetWire {
+    id: String,
+    trigger: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    text: String,
+    #[serde(default)]
+    kind: Option<SnippetKind>,
+    #[serde(default)]
+    placement: Option<SnippetPlacement>,
+    #[serde(default)]
+    attachments: Vec<SnippetAttachment>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl From<SnippetWire> for Snippet {
+    fn from(wire: SnippetWire) -> Self {
+        // 旧库迁移：inline → 表述；footnote → 背景＋文末；无 mode 视为表述。
+        let legacy = wire.kind.is_none();
+        let kind = wire.kind.unwrap_or_else(|| match wire.mode.as_deref() {
+            Some("footnote") => SnippetKind::Background,
+            _ => SnippetKind::Phrasing,
+        });
+        let placement = if legacy && kind == SnippetKind::Background {
+            SnippetPlacement::Tail
+        } else {
+            wire.placement.unwrap_or_default()
+        };
+        Self {
+            id: wire.id,
+            trigger: wire.trigger,
+            aliases: wire.aliases,
+            text: wire.text,
+            kind,
+            placement,
+            attachments: wire.attachments,
+            enabled: wire.enabled,
+        }
+    }
 }
 
 pub struct SnippetStore {
@@ -81,6 +156,7 @@ impl SnippetStore {
         snippet.trigger = required_trigger(&snippet.trigger)?;
         ensure_trigger_available(&snippets, &snippet.trigger, None)?;
         normalize_aliases(&mut snippet.aliases);
+        normalize_attachments(&mut snippet);
         snippets.push(snippet.clone());
         self.persist_locked(&snippets)?;
         Ok(snippet)
@@ -95,6 +171,7 @@ impl SnippetStore {
         snippet.trigger = required_trigger(&snippet.trigger)?;
         ensure_trigger_available(&snippets, &snippet.trigger, Some(snippet.id.as_str()))?;
         normalize_aliases(&mut snippet.aliases);
+        normalize_attachments(&mut snippet);
         if let Some(slot) = snippets
             .iter_mut()
             .find(|existing| existing.id == snippet.id)
@@ -204,6 +281,19 @@ fn normalize_aliases(aliases: &mut Vec<String>) {
         .collect();
 }
 
+/// 附带背景归一化：背景类不携带附件（直接清空）；
+/// 表述类剔除空文本项（trim 后为空）与空引用（snippet_id trim 后为空）。
+fn normalize_attachments(snippet: &mut Snippet) {
+    if snippet.kind == SnippetKind::Background {
+        snippet.attachments.clear();
+        return;
+    }
+    snippet.attachments.retain(|attachment| match attachment {
+        SnippetAttachment::Reference { snippet_id } => !snippet_id.trim().is_empty(),
+        SnippetAttachment::Text { text } => !text.trim().is_empty(),
+    });
+}
+
 fn not_found(id: &str) -> BackendError {
     BackendError::new(
         BackendErrorCode::InvalidArgument,
@@ -221,7 +311,9 @@ mod tests {
             trigger: trigger.to_string(),
             aliases: Vec::new(),
             text: "表述文本".to_string(),
-            mode: SnippetMode::Inline,
+            kind: SnippetKind::Phrasing,
+            placement: SnippetPlacement::Tail,
+            attachments: Vec::new(),
             enabled: true,
         }
     }
@@ -270,10 +362,12 @@ mod tests {
         let created = store.create(snippet("", "翻译")).unwrap();
         let mut changed = created.clone();
         changed.text = "已更新的表述".to_string();
-        changed.mode = SnippetMode::Footnote;
+        changed.kind = SnippetKind::Background;
+        changed.placement = SnippetPlacement::Head;
         let updated = store.update(changed).unwrap();
         assert_eq!(updated.text, "已更新的表述");
-        assert_eq!(updated.mode, SnippetMode::Footnote);
+        assert_eq!(updated.kind, SnippetKind::Background);
+        assert_eq!(updated.placement, SnippetPlacement::Head);
         assert_eq!(store.list(), vec![updated.clone()]);
         assert_eq!(
             store.update(snippet("missing", "某词")).unwrap_err().code,
@@ -316,7 +410,9 @@ mod tests {
         assert_eq!(raw.as_array().unwrap().len(), 2);
         assert_eq!(raw[1]["id"], created.id);
         assert_eq!(raw[1]["trigger"], "新增");
-        assert_eq!(raw[1]["mode"], "inline");
+        assert_eq!(raw[1]["kind"], "phrasing");
+        assert_eq!(raw[1]["placement"], "tail");
+        assert!(raw[1].get("mode").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -368,5 +464,136 @@ mod tests {
         assert_eq!(store.enabled(), vec![kept.clone()]);
         store.set_enabled(&kept.id, false).unwrap();
         assert!(store.enabled().is_empty());
+    }
+
+    #[test]
+    fn legacy_mode_migrates_to_kind_and_placement() {
+        // 旧行只有 mode、无新字段：inline → 表述；footnote → 背景＋文末；
+        // aliases 缺省 []、enabled 缺省 true、placement/attachments 缺省补默认。
+        let dir = std::env::temp_dir().join(format!(
+            "openless-core-ghostwriter-snippets-legacy-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ghostwriter-snippets.json");
+        let legacy = serde_json::json!([
+            {"id": "old-inline", "trigger": "翻译", "text": "inline 文本", "mode": "inline"},
+            {"id": "old-footnote", "trigger": "附注", "aliases": ["fz"], "text": "footnote 文本", "mode": "footnote", "enabled": false}
+        ]);
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let store = SnippetStore::at_data_dir(&dir);
+        let list = store.list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "old-inline");
+        assert_eq!(list[0].kind, SnippetKind::Phrasing);
+        assert_eq!(list[0].placement, SnippetPlacement::Tail);
+        assert!(list[0].aliases.is_empty());
+        assert!(list[0].attachments.is_empty());
+        assert!(list[0].enabled);
+        assert_eq!(list[1].id, "old-footnote");
+        assert_eq!(list[1].kind, SnippetKind::Background);
+        assert_eq!(list[1].placement, SnippetPlacement::Tail);
+        assert_eq!(list[1].aliases, vec!["fz".to_string()]);
+        assert!(!list[1].enabled);
+        // 下次写入起只写新字段：文件里 mode 消失、kind/placement/attachments 就位
+        store.create(snippet("", "新增")).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(raw[0].get("mode").is_none());
+        assert_eq!(raw[0]["kind"], "phrasing");
+        assert_eq!(raw[0]["placement"], "tail");
+        assert_eq!(raw[0]["attachments"].as_array().unwrap().len(), 0);
+        assert_eq!(raw[1]["kind"], "background");
+        assert_eq!(raw[1]["placement"], "tail");
+        assert!(raw[1].get("mode").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_format_roundtrips_with_attachments() {
+        // 新格式落盘往返：attachments 引用/手写两形态与 placement 原样读回；
+        // 引用序列化为 {"type":"reference","snippetId":…}。
+        let dir = std::env::temp_dir().join(format!(
+            "openless-core-ghostwriter-snippets-roundtrip-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut phrasing = snippet("", "方案");
+        phrasing.placement = SnippetPlacement::Head;
+        phrasing.attachments = vec![
+            SnippetAttachment::Reference {
+                snippet_id: "bg-1".to_string(),
+            },
+            SnippetAttachment::Text {
+                text: "手写一段".to_string(),
+            },
+        ];
+        let created = SnippetStore::at_data_dir(&dir).create(phrasing).unwrap();
+        let reopened = SnippetStore::at_data_dir(&dir).list();
+        assert_eq!(reopened, vec![created.clone()]);
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("ghostwriter-snippets.json")).unwrap())
+                .unwrap();
+        assert_eq!(raw[0]["placement"], "head");
+        assert_eq!(raw[0]["attachments"][0]["type"], "reference");
+        assert_eq!(raw[0]["attachments"][0]["snippetId"], "bg-1");
+        assert_eq!(raw[0]["attachments"][1]["type"], "text");
+        assert_eq!(raw[0]["attachments"][1]["text"], "手写一段");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_kind_clears_attachments() {
+        // 背景类不携带附件：create 与 update 都在写入前清空
+        let store = SnippetStore::in_memory();
+        let mut background = snippet("", "素材");
+        background.kind = SnippetKind::Background;
+        background.attachments = vec![SnippetAttachment::Text {
+            text: "多余".to_string(),
+        }];
+        let created = store.create(background).unwrap();
+        assert_eq!(created.kind, SnippetKind::Background);
+        assert!(created.attachments.is_empty());
+        let mut changed = created.clone();
+        changed.attachments = vec![SnippetAttachment::Reference {
+            snippet_id: "x".to_string(),
+        }];
+        assert!(store.update(changed).unwrap().attachments.is_empty());
+    }
+
+    #[test]
+    fn empty_attachment_items_are_dropped() {
+        // 空文本项（trim 后为空）与空引用（snippet_id trim 后为空）写入前剔除，顺序保留
+        let store = SnippetStore::in_memory();
+        let mut input = snippet("", "方案");
+        input.attachments = vec![
+            SnippetAttachment::Text {
+                text: "   ".to_string(),
+            },
+            SnippetAttachment::Reference {
+                snippet_id: String::new(),
+            },
+            SnippetAttachment::Reference {
+                snippet_id: "  ".to_string(),
+            },
+            SnippetAttachment::Text {
+                text: "保留".to_string(),
+            },
+            SnippetAttachment::Reference {
+                snippet_id: "bg-1".to_string(),
+            },
+        ];
+        let created = store.create(input).unwrap();
+        assert_eq!(
+            created.attachments,
+            vec![
+                SnippetAttachment::Text {
+                    text: "保留".to_string()
+                },
+                SnippetAttachment::Reference {
+                    snippet_id: "bg-1".to_string()
+                },
+            ]
+        );
     }
 }

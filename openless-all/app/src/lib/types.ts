@@ -41,7 +41,7 @@ export interface ActivityDay {
   durationMs?: number;
 }
 
-/** 历史明细里的一次常用语命中：触发词标题＋贴位（"inline" / "footnote"）。
+/** 历史明细里的一次常用语命中：触发词标题＋贴位（"inline" / "head" / "tail"）。
  *  仅 Ghostwriter 会话且 stop 时仍有生效命中才写；旧记录无此字段。 */
 export interface GhostwriterHistoryHit {
   title: string;
@@ -704,16 +704,26 @@ export type CapsuleState =
 /** 录音胶囊样式：'siri' = 流光 Siri 光效版（默认）；'classic' = Openless 经典药丸版。 */
 export type CapsuleStyle = 'siri' | 'classic' | 'typeless' | 'fluid';
 
-/** 常用语贴位模式：'inline' 进正文、'footnote' 附注。 */
-export type SnippetMode = 'inline' | 'footnote';
+/** 常用语种类：'phrasing' 表述（文本融进正文）、'background' 背景（整条进背景块）。 */
+export type SnippetKind = 'phrasing' | 'background';
 
-/** 常用语：用户存下来的表述实体（触发词/别名 → 表述文本，命中后按贴位生效）。 */
+/** 背景落点：'head' 附在开头、'tail' 附在文末（默认）。 */
+export type SnippetPlacement = 'head' | 'tail';
+
+/** 表述的附带背景：引用库里一条背景类常用语，或手写一段文本。 */
+export type SnippetAttachment =
+  | { type: 'reference'; snippetId: string }
+  | { type: 'text'; text: string };
+
+/** 常用语：触发词/别名 → 文本，命中后按种类生效（表述融进正文＋附件进背景块；背景整条进背景块）。 */
 export interface Snippet {
   id: string;
   trigger: string;
   aliases: string[];
   text: string;
-  mode: SnippetMode;
+  kind: SnippetKind;
+  placement: SnippetPlacement;
+  attachments: SnippetAttachment[];
   enabled: boolean;
 }
 

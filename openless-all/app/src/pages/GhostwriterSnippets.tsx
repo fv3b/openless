@@ -1,5 +1,6 @@
 // GhostwriterSnippets.tsx — 「常用语」管理页。
-// 触发词/别名 → 表述文本的库：说话中说到触发词即按贴位生效（inline 进正文 / footnote 附在文末）。
+// 触发词/别名 → 文本的库：说话中说到触发词即按种类生效
+// （表述融进正文、其附件进背景块；背景整条按落点附在开头/文末）。
 // 骨架照 Style.tsx 简化：PageHeader + Card 列表 + 右侧编辑抽屉 + dirty 确认保护。
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
@@ -12,7 +13,7 @@ import {
   saveGhostwriterSnippet,
   setGhostwriterSnippetEnabled,
 } from '../lib/ipc';
-import type { Snippet, SnippetMode } from '../lib/types';
+import type { Snippet, SnippetAttachment } from '../lib/types';
 import { Btn, Card, PageHeader, Pill } from './_atoms';
 import { Icon } from '../components/Icon';
 import { SavedToast, type SaveToastState } from '../components/SavedToast';
@@ -26,27 +27,42 @@ const BLANK_SNIPPET: Snippet = {
   trigger: '',
   aliases: [],
   text: '',
-  mode: 'inline',
+  kind: 'phrasing',
+  placement: 'tail',
+  attachments: [],
   enabled: true,
 };
 
-const MODE_LABEL_KEYS: Record<SnippetMode, string> = {
-  inline: 'ghostwriter.snippets.modeInline',
-  footnote: 'ghostwriter.snippets.modeFootnote',
-};
-
-function cloneSnippet(snippet: Snippet): Snippet {
-  return { ...snippet, aliases: [...snippet.aliases] };
+/** 列表 tag：表述无附件＝融进正文、带附件＝融进正文＋背景；背景按落点。 */
+function listTagKey(snippet: Snippet): string {
+  if (snippet.kind === 'background') {
+    return snippet.placement === 'head'
+      ? 'ghostwriter.snippets.tagBackgroundHead'
+      : 'ghostwriter.snippets.tagBackgroundTail';
+  }
+  return snippet.attachments.length > 0
+    ? 'ghostwriter.snippets.tagPhrasingWithBackground'
+    : 'ghostwriter.snippets.tagPhrasingInline';
 }
 
-/** dirty 判定指纹：五个可编辑字段全部参与。 */
+function cloneSnippet(snippet: Snippet): Snippet {
+  return {
+    ...snippet,
+    aliases: [...snippet.aliases],
+    attachments: snippet.attachments.map((attachment) => ({ ...attachment })),
+  };
+}
+
+/** dirty 判定指纹：全部可编辑字段参与。 */
 function fingerprint(snippet: Snippet | null): string {
   if (!snippet) return '';
   return JSON.stringify([
     snippet.trigger,
     snippet.aliases,
     snippet.text,
-    snippet.mode,
+    snippet.kind,
+    snippet.placement,
+    snippet.attachments,
     snippet.enabled,
   ]);
 }
@@ -154,6 +170,27 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
     setDraft((current) => (current ? { ...current, ...patch } : current));
   };
 
+  const patchAttachments = (
+    update: (attachments: SnippetAttachment[]) => SnippetAttachment[],
+  ) => {
+    setDraft((current) =>
+      current ? { ...current, attachments: update(current.attachments) } : current,
+    );
+  };
+
+  // 提交前归一化：背景类不携带附件；空文本附件与未选择的引用剔除。
+  const cleanDraft = (snippet: Snippet): Snippet => ({
+    ...snippet,
+    attachments:
+      snippet.kind === 'background'
+        ? []
+        : snippet.attachments.filter((attachment) =>
+            attachment.type === 'reference'
+              ? attachment.snippetId.trim().length > 0
+              : attachment.text.trim().length > 0,
+          ),
+  });
+
   const handleSave = async () => {
     if (!draft || busy === 'saving') return;
     const trigger = draft.trigger.trim();
@@ -161,9 +198,10 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
     setBusy('saving');
     showSaveStatus('saving', t('ghostwriter.snippets.saving'));
     try {
+      const clean = cleanDraft(draft);
       const saved = draftIsNew
-        ? await createGhostwriterSnippet({ ...draft, id: '', trigger })
-        : await saveGhostwriterSnippet({ ...draft, trigger });
+        ? await createGhostwriterSnippet({ ...clean, id: '', trigger })
+        : await saveGhostwriterSnippet({ ...clean, trigger });
       const list = await listGhostwriterSnippets();
       setSnippets(list);
       // 保存期间用户可能已关掉抽屉（或切到别的条目）：只对齐仍指向同一条的草稿。
@@ -215,6 +253,19 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
   };
 
   const triggerMissing = Boolean(draft && !draft.trigger.trim());
+
+  // 「选已有背景」下拉：启用中的背景类常用语（排除已挂参考行，避免重复行）。
+  const backgroundOptions = draft
+    ? snippets.filter(
+        (item) =>
+          item.kind === 'background' &&
+          item.enabled &&
+          !draft.attachments.some(
+            (attachment) =>
+              attachment.type === 'reference' && attachment.snippetId === item.id,
+          ),
+      )
+    : [];
 
   const actions = (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -364,8 +415,8 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                     <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ol-ink)' }}>
                       {snippet.trigger}
                     </span>
-                    <Pill tone={snippet.mode === 'inline' ? 'blue' : 'default'} size="sm">
-                      {t(MODE_LABEL_KEYS[snippet.mode])}
+                    <Pill tone={snippet.kind === 'phrasing' ? 'blue' : 'default'} size="sm">
+                      {t(listTagKey(snippet))}
                     </Pill>
                     {!snippet.enabled && (
                       <Pill tone="outline" size="sm">
@@ -585,66 +636,237 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                     </span>
                   </label>
 
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <span style={fieldLabelStyle}>{t('ghostwriter.snippets.kindLabel')}</span>
+                    {(
+                      [
+                        ['phrasing', 'kindPhrasing', 'kindPhrasingHint'],
+                        ['background', 'kindBackground', 'kindBackgroundHint'],
+                      ] as const
+                    ).map(([value, labelKey, hintKey]) => (
+                      <label
+                        key={value}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 8,
+                          cursor: 'default',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="snippet-kind"
+                          checked={draft.kind === value}
+                          onChange={() => patchDraft({ kind: value })}
+                          style={{ marginTop: 2 }}
+                        />
+                        <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ol-ink)' }}>
+                            {t(`ghostwriter.snippets.${labelKey}`)}
+                          </span>
+                          <span
+                            style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}
+                          >
+                            {t(`ghostwriter.snippets.${hintKey}`)}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('ghostwriter.snippets.text')}
+                    <span style={fieldLabelStyle}>
+                      {draft.kind === 'background'
+                        ? t('ghostwriter.snippets.textBackground')
+                        : t('ghostwriter.snippets.textPhrasing')}
                     </span>
                     <textarea
                       value={draft.text}
                       onChange={(event) => patchDraft({ text: event.target.value })}
                       style={{ ...textareaStyle, minHeight: 110 }}
-                      placeholder={t('ghostwriter.snippets.textPlaceholder')}
+                      placeholder={
+                        draft.kind === 'background'
+                          ? t('ghostwriter.snippets.textBackgroundPlaceholder')
+                          : t('ghostwriter.snippets.textPhrasingPlaceholder')
+                      }
                     />
                   </label>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ol-ink)' }}>
-                      {t('ghostwriter.snippets.modeLabel')}
-                    </span>
-                    <div
-                      style={{
-                        display: 'inline-flex',
-                        alignSelf: 'flex-start',
-                        padding: 3,
-                        borderRadius: 8,
-                        background: 'var(--ol-surface-2)',
-                        border: '0.5px solid var(--ol-line)',
-                      }}
-                    >
-                      {(
-                        [
-                          ['inline', t('ghostwriter.snippets.modeInline')],
-                          ['footnote', t('ghostwriter.snippets.modeFootnote')],
-                        ] as const
-                      ).map(([value, label]) => {
-                        const active = draft.mode === value;
+                  {draft.kind === 'phrasing' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <span style={fieldLabelStyle}>
+                        {t('ghostwriter.snippets.attachmentsTitle')}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
+                        {t('ghostwriter.snippets.attachmentsHint')}
+                      </span>
+                      {draft.attachments.map((attachment, index) => {
+                        const referenced =
+                          attachment.type === 'reference'
+                            ? snippets.find((item) => item.id === attachment.snippetId)
+                            : undefined;
                         return (
-                          <button
-                            key={value}
-                            type="button"
-                            aria-pressed={active}
-                            onClick={() => patchDraft({ mode: value })}
+                          <div
+                            key={index}
                             style={{
-                              padding: '6px 12px',
-                              borderRadius: 6,
-                              border: 0,
-                              background: active ? 'var(--ol-surface)' : 'transparent',
-                              color: active ? 'var(--ol-ink)' : 'var(--ol-ink-3)',
-                              boxShadow: active ? 'var(--ol-shadow-sm)' : 'none',
-                              fontSize: 12,
-                              fontWeight: active ? 600 : 500,
-                              fontFamily: 'inherit',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              padding: '6px 8px',
+                              borderRadius: 10,
+                              border: '0.5px solid var(--ol-line)',
+                              background: 'var(--ol-surface-2)',
                             }}
                           >
-                            {label}
-                          </button>
+                            {attachment.type === 'reference' ? (
+                              <span
+                                style={{
+                                  flex: 1,
+                                  minWidth: 0,
+                                  fontSize: 12.5,
+                                  color: referenced ? 'var(--ol-ink)' : 'var(--ol-ink-3)',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {referenced
+                                  ? referenced.trigger
+                                  : t('ghostwriter.snippets.attachmentMissingReference')}
+                              </span>
+                            ) : (
+                              <input
+                                value={attachment.text}
+                                onChange={(event) =>
+                                  patchAttachments((list) =>
+                                    list.map((item, i) =>
+                                      i === index
+                                        ? { type: 'text', text: event.target.value }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                                style={{ ...inputStyle, minHeight: 32, flex: 1 }}
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                patchAttachments((list) =>
+                                  list.filter((_, i) => i !== index),
+                                )
+                              }
+                              aria-label={t('ghostwriter.snippets.delete')}
+                              title={t('ghostwriter.snippets.delete')}
+                              style={{
+                                width: 26,
+                                height: 26,
+                                flexShrink: 0,
+                                border: 0,
+                                borderRadius: 8,
+                                background: 'transparent',
+                                color: 'var(--ol-ink-3)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'default',
+                              }}
+                            >
+                              <Icon name="close" size={12} />
+                            </button>
+                          </div>
                         );
                       })}
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <select
+                          value=""
+                          disabled={backgroundOptions.length === 0}
+                          onChange={(event) => {
+                            const snippetId = event.target.value;
+                            if (!snippetId) return;
+                            patchAttachments((list) => [
+                              ...list,
+                              { type: 'reference', snippetId },
+                            ]);
+                          }}
+                          style={{ ...inputStyle, minHeight: 34, flex: '1 1 160px' }}
+                        >
+                          <option value="">
+                            {t('ghostwriter.snippets.attachmentAddReference')}
+                          </option>
+                          {backgroundOptions.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.trigger}
+                            </option>
+                          ))}
+                        </select>
+                        <Btn
+                          variant="ghost"
+                          icon="plus"
+                          onClick={() =>
+                            patchAttachments((list) => [...list, { type: 'text', text: '' }])
+                          }
+                        >
+                          {t('ghostwriter.snippets.attachmentAddText')}
+                        </Btn>
+                      </div>
+                      {backgroundOptions.length === 0 && (
+                        <span
+                          style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}
+                        >
+                          {t('ghostwriter.snippets.attachmentNoOptions')}
+                        </span>
+                      )}
                     </div>
-                    <span style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', lineHeight: 1.55 }}>
-                      {t('ghostwriter.snippets.modeHint')}
-                    </span>
-                  </div>
+                  )}
+
+                  {(draft.kind === 'background' || draft.attachments.length > 0) && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <span style={fieldLabelStyle}>
+                        {t('ghostwriter.snippets.placementLabel')}
+                      </span>
+                      <div
+                        style={{
+                          display: 'inline-flex',
+                          alignSelf: 'flex-start',
+                          padding: 3,
+                          borderRadius: 8,
+                          background: 'var(--ol-surface-2)',
+                          border: '0.5px solid var(--ol-line)',
+                        }}
+                      >
+                        {(
+                          [
+                            ['head', t('ghostwriter.snippets.placementHead')],
+                            ['tail', t('ghostwriter.snippets.placementTail')],
+                          ] as const
+                        ).map(([value, label]) => {
+                          const active = draft.placement === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => patchDraft({ placement: value })}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: 6,
+                                border: 0,
+                                background: active ? 'var(--ol-surface)' : 'transparent',
+                                color: active ? 'var(--ol-ink)' : 'var(--ol-ink-3)',
+                                boxShadow: active ? 'var(--ol-shadow-sm)' : 'none',
+                                fontSize: 12,
+                                fontWeight: active ? 600 : 500,
+                                fontFamily: 'inherit',
+                              }}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   <div
                     style={{
@@ -695,6 +917,12 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
     </div>
   );
 }
+
+const fieldLabelStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: 'var(--ol-ink)',
+};
 
 const inputStyle: CSSProperties = {
   width: '100%',

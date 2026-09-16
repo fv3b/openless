@@ -291,7 +291,7 @@ mod tests {
     use super::*;
     use crate::credentials::InMemoryCredentialStore;
     use crate::ghostwriter::prompts::TaskBriefId;
-    use crate::ghostwriter::snippet_store::{Snippet, SnippetMode};
+    use crate::ghostwriter::snippet_store::{Snippet, SnippetKind, SnippetPlacement};
     use crate::testing::FixtureTextPolisher;
 
     const CANNED_JSON: &str = r#"{"candidateGroups":[{"kind":"term","items":["精准词一","精准词二","精准词三","精准词四","精准词五","精准词六"]},{"kind":"phrase","items":["候选表述一","候选表述二","候选表述三"]},{"kind":"naming","items":["命名一","命名二"]}],"recommendations":["rec-1","rec-2","rec-3","rec-4"],"sediment":{"phrase":"把那个日志清一下","count":3,"suggestedTrigger":"清日志"}}"#;
@@ -302,7 +302,9 @@ mod tests {
             trigger: trigger.to_string(),
             aliases: Vec::new(),
             text: text.to_string(),
-            mode: SnippetMode::Inline,
+            kind: SnippetKind::Phrasing,
+            placement: SnippetPlacement::Tail,
+            attachments: Vec::new(),
             enabled: true,
         }
     }

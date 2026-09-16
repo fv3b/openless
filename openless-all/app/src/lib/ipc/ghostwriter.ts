@@ -73,9 +73,13 @@ function mockId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `mock-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function cloneMockSnippet(snippet: Snippet): Snippet {
+  return { ...snippet, aliases: [...snippet.aliases], attachments: [...snippet.attachments] };
+}
+
 export function listGhostwriterSnippets(): Promise<Snippet[]> {
   return invokeOrMock('list_ghostwriter_snippets', undefined, () =>
-    mockSnippets.map((snippet) => ({ ...snippet, aliases: [...snippet.aliases] })),
+    mockSnippets.map(cloneMockSnippet),
   );
 }
 
@@ -83,7 +87,7 @@ export function createGhostwriterSnippet(snippet: Snippet): Promise<Snippet> {
   return invokeOrMock('create_ghostwriter_snippet', { snippet }, () => {
     const created = { ...snippet, id: snippet.id || mockId() };
     mockSnippets.push(created);
-    return { ...created, aliases: [...created.aliases] };
+    return cloneMockSnippet(created);
   });
 }
 
@@ -92,7 +96,7 @@ export function saveGhostwriterSnippet(snippet: Snippet): Promise<Snippet> {
     const index = mockSnippets.findIndex((existing) => existing.id === snippet.id);
     if (index < 0) throw new Error('Snippet not found');
     mockSnippets[index] = snippet;
-    return { ...snippet, aliases: [...snippet.aliases] };
+    return cloneMockSnippet(snippet);
   });
 }
 

@@ -628,7 +628,7 @@ mod tests {
     use crate::credentials::InMemoryCredentialStore;
     use crate::dictation_context::DictationContext;
     use crate::events::EventSubscription;
-    use crate::ghostwriter::snippet_store::{Snippet, SnippetMode};
+    use crate::ghostwriter::snippet_store::{Snippet, SnippetKind, SnippetPlacement};
     use crate::ports::{PolishOutput, TextStreamSink};
     use crate::shared_types::GhostwriterPreferences;
     use crate::types::TranscriptDelta;
@@ -752,7 +752,9 @@ mod tests {
                 trigger: "推荐触发词".into(),
                 aliases: Vec::new(),
                 text: "推荐常用语的完整表述文本".into(),
-                mode: SnippetMode::Inline,
+                kind: SnippetKind::Phrasing,
+                placement: SnippetPlacement::Tail,
+                attachments: Vec::new(),
                 enabled: true,
             })
             .unwrap();

@@ -109,7 +109,7 @@ pub struct GhostwriterPreviewChanged {
     pub revision: u64,
 }
 
-/// 常用语命中确认：命中哪条常用语、其标题与贴位模式（"inline"|"footnote"）。
+/// 常用语命中确认：命中哪条常用语、其标题与贴位（"inline"|"head"|"tail"）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterSnippetHit {
@@ -180,7 +180,7 @@ mod tests {
         let p = GhostwriterPreviewChanged { text: "你好".into(), revision: 3 };
         let v: serde_json::Value = serde_json::to_value(&p).unwrap();
         assert_eq!(v["revision"], 3);
-        let h = GhostwriterSnippetHit { snippet_id: "s1".into(), title: "翻译".into(), mode: "footnote".into() };
+        let h = GhostwriterSnippetHit { snippet_id: "s1".into(), title: "翻译".into(), mode: "tail".into() };
         let v: serde_json::Value = serde_json::to_value(&h).unwrap();
         assert_eq!(v["snippetId"], "s1");
         let a = GhostwriterAssistChanged {

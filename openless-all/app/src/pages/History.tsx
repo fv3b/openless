@@ -51,11 +51,12 @@ const TRUNCATED_PILL_STYLE = {
   flexShrink: 1,
 } as const;
 
-// Ghostwriter 历史明细的贴位/类别文案：后端存的是字符串（"inline"/"footnote"、
+// Ghostwriter 历史明细的贴位/类别文案：后端存的是字符串（"inline"/"head"/"tail"、
 // "candidate"/"recommendation"），映射回现有 i18n key（与浮框/常用语页同一套文案）。
 const GHOSTWRITER_MODE_LABEL: Record<string, string> = {
-  inline: 'ghostwriter.snippets.modeInline',
-  footnote: 'ghostwriter.snippets.modeFootnote',
+  inline: 'ghostwriter.snippets.tagPhrasingInline',
+  head: 'ghostwriter.snippets.tagBackgroundHead',
+  tail: 'ghostwriter.snippets.tagBackgroundTail',
 };
 
 const GHOSTWRITER_KIND_LABEL: Record<string, string> = {

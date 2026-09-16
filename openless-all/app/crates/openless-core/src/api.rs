@@ -5309,7 +5309,7 @@ impl OpenLessBackend {
 
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
         // Ghostwriter 激活时最终文本取自 GhostwriterSession 拼装缓冲（含生转写、
-        // 材料、附注块）；仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
+        // 材料、背景块）；仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
         // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
         {
             let (tail_input, dispatcher) = {
@@ -6019,9 +6019,9 @@ impl OpenLessBackend {
         Ok(())
     }
 
-    /// 沉淀建议存为常用语（trigger＝建议触发词、贴位 inline、启用）：取走建议 →
-    /// 建条目（触发词重复 → Err 原样返回前端提示，建议放回可重试）→ 重复档移除
-    /// 该说法（mark 沿用建议槽里的库内规范原文，dispatcher 侧解析后写入）→
+    /// 沉淀建议存为常用语（trigger＝建议触发词、表述类·落点文末、无附件、启用）：
+    /// 取走建议 → 建条目（触发词重复 → Err 原样返回前端提示，建议放回可重试）→
+    /// 重复档移除该说法（mark 沿用建议槽里的库内规范原文，dispatcher 侧解析后写入）→
     /// 刷新候选区事件。无建议/无 dispatcher 返回 Ok(None)。
     pub fn save_ghostwriter_suggestion(
         &self,
@@ -6043,7 +6043,9 @@ impl OpenLessBackend {
                 trigger: suggestion.suggested_trigger.clone(),
                 aliases: Vec::new(),
                 text: suggestion.phrase.clone(),
-                mode: crate::ghostwriter::snippet_store::SnippetMode::Inline,
+                kind: crate::ghostwriter::snippet_store::SnippetKind::Phrasing,
+                placement: crate::ghostwriter::snippet_store::SnippetPlacement::Tail,
+                attachments: Vec::new(),
                 enabled: true,
             });
         let snippet = match created {
@@ -10297,19 +10299,33 @@ mod tests {
         crate::PipelineDictationEngine::new(Arc::new(recorder), transcription, polisher)
     }
 
+    /// 表述类测试条目（落点文末、无附件）。
     fn ghostwriter_snippet(
         id: &str,
         trigger: &str,
         text: &str,
-        mode: crate::ghostwriter::snippet_store::SnippetMode,
     ) -> crate::ghostwriter::snippet_store::Snippet {
         crate::ghostwriter::snippet_store::Snippet {
             id: id.to_string(),
             trigger: trigger.to_string(),
             aliases: Vec::new(),
             text: text.to_string(),
-            mode,
+            kind: crate::ghostwriter::snippet_store::SnippetKind::Phrasing,
+            placement: crate::ghostwriter::snippet_store::SnippetPlacement::Tail,
+            attachments: Vec::new(),
             enabled: true,
+        }
+    }
+
+    /// 背景类测试条目（落点文末）。
+    fn ghostwriter_background_snippet(
+        id: &str,
+        trigger: &str,
+        text: &str,
+    ) -> crate::ghostwriter::snippet_store::Snippet {
+        crate::ghostwriter::snippet_store::Snippet {
+            kind: crate::ghostwriter::snippet_store::SnippetKind::Background,
+            ..ghostwriter_snippet(id, trigger, text)
         }
     }
 
@@ -10441,11 +10457,10 @@ mod tests {
         backend.set_preferences(preferences).unwrap();
         insert_ghostwriter_snippet(
             &backend,
-            ghostwriter_snippet(
+            ghostwriter_background_snippet(
                 "f-note",
                 "附注",
                 "这里是附注的完整说明文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
             ),
         );
         let mut events = backend.subscribe();
@@ -10455,7 +10470,7 @@ mod tests {
         let hits = collect_ghostwriter_snippet_hits(&mut events);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].snippet_id, "f-note");
-        assert_eq!(hits[0].mode, "footnote");
+        assert_eq!(hits[0].mode, "tail");
 
         let cancelled = backend.cancel_ghostwriter_last_action(session_id).unwrap();
         // 撤销成功返回被撤销者与撤销后的修订号（后端权威，≥ 1）。
@@ -10464,9 +10479,9 @@ mod tests {
             panic!("hit cancel must report a hit action");
         };
         assert_eq!(hit.snippet_id, "f-note");
-        assert_eq!(hit.mode, "footnote");
+        assert_eq!(hit.mode, "tail");
         assert!(revision >= 1);
-        assert!(!ghostwriter_assembled(&backend, session_id).contains("[附注]"));
+        assert!(!ghostwriter_assembled(&backend, session_id).contains("[背景]"));
         // 撤销本身不再生成命中事件。
         assert!(collect_ghostwriter_snippet_hits(&mut events).is_empty());
 
@@ -10511,7 +10526,6 @@ mod tests {
                 "s-rec",
                 "推荐触发词",
                 "推荐常用语的完整表述文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
         // 重复档先有该说法：沉淀回填按注入集解析规范键，命中才进建议槽。
@@ -10639,7 +10653,6 @@ mod tests {
                 "s-rec",
                 "推荐触发词",
                 "推荐常用语的完整表述文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
         let mut events = backend.subscribe();
@@ -10688,7 +10701,6 @@ mod tests {
                 "s-rec",
                 "推荐触发词",
                 "推荐常用语的完整表述文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
         let mut events = backend.subscribe();
@@ -10857,11 +10869,10 @@ mod tests {
         backend.set_preferences(preferences).unwrap();
         insert_ghostwriter_snippet(
             &backend,
-            ghostwriter_snippet(
+            ghostwriter_background_snippet(
                 "f-note",
                 "附注",
                 "这里是附注的完整说明文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Footnote,
             ),
         );
         insert_ghostwriter_snippet(
@@ -10870,7 +10881,6 @@ mod tests {
                 "s-rec",
                 "推荐触发词",
                 "推荐常用语的完整表述文本",
-                crate::ghostwriter::snippet_store::SnippetMode::Inline,
             ),
         );
         let mut events = backend.subscribe();
@@ -10879,7 +10889,7 @@ mod tests {
         transcription.pump("第一句。继续");
         let _ = wait_for_ghostwriter_assist(&mut events).await;
 
-        // 命中（footnote）＋口头选候选：同一 feed 内命中扫描与命令剔除并行。
+        // 命中（背景·文末）＋口头选候选：同一 feed 内命中扫描与命令剔除并行。
         transcription.pump("加个附注，用候选一");
         let _ = wait_for_ghostwriter_assist_matching(&mut events, |assist| {
             assist
@@ -10910,7 +10920,7 @@ mod tests {
             entry.ghostwriter_hits,
             Some(vec![crate::types::GhostwriterHistoryHit {
                 title: "附注".into(),
-                mode: "footnote".into(),
+                mode: "tail".into(),
             }])
         );
         assert_eq!(
@@ -11126,9 +11136,14 @@ mod tests {
         assert_eq!(saved.trigger, "清日志");
         assert_eq!(saved.text, "把日志清一下");
         assert_eq!(
-            saved.mode,
-            crate::ghostwriter::snippet_store::SnippetMode::Inline
+            saved.kind,
+            crate::ghostwriter::snippet_store::SnippetKind::Phrasing
         );
+        assert_eq!(
+            saved.placement,
+            crate::ghostwriter::snippet_store::SnippetPlacement::Tail
+        );
+        assert!(saved.attachments.is_empty());
         assert!(saved.enabled);
         assert!(backend
             .list_snippets()

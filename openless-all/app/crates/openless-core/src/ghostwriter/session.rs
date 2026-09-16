@@ -22,7 +22,7 @@ use crate::errors::BackendError;
 use crate::types::TranscriptDelta;
 
 use super::segmenter::{Segment, Segmenter};
-use super::snippet_store::{Snippet, SnippetMode};
+use super::snippet_store::{Snippet, SnippetAttachment, SnippetKind, SnippetPlacement};
 use super::types::{
     CandidateGroupView, CandidateItemView, GhostwriterSnippetHit, LiveRecommendation,
     RecommendationView,
@@ -37,16 +37,20 @@ const DEFAULT_MAX_FORCE_CHARS: usize = 120;
 /// prior 截断长度：已润前文只带尾部 200 字符进润色 prompt。
 const PRIOR_MAX_CHARS: usize = 200;
 
-/// 一条已生效且未撤销的命中：附注块、待融材料与会话内去重的共同依据。
+/// 一条已生效且未撤销的命中：背景块、待融材料与会话内去重的共同依据。
 #[derive(Debug, Clone)]
 struct ActiveHit {
     hit: GhostwriterSnippetHit,
-    /// 命中时刻的常用语全量文本（附注行与 inline 材料共用）。
-    text: String,
-    /// inline 命中（材料进待融队列）；false＝footnote（全量文本进附注块）。
-    inline: bool,
-    /// inline 材料是否仍在待融队列（随段/尾巴润色转移后置 false，撤销不再出队）。
+    /// 待融材料（表述类命中的全量文本；背景类为 None）。
+    material: Option<String>,
+    /// 背景块行（标签, 文本）× 多行，按生效顺序；头/尾由 placement 决定。
+    background_lines: Vec<(String, String)>,
+    /// 本命中的背景落点（背景类＝自身 placement；表述类＝附件整体随它走）。
+    placement: SnippetPlacement,
+    /// 待融材料是否仍在待融队列（随段/尾巴润色转移后置 false，撤销不再出队）。
     material_pending: bool,
+    /// 本次命中登记的背景去重键；撤销时释放，同 snippet 再说到可再贴。
+    dedup_keys: Vec<String>,
 }
 
 /// 一条已选中且未取消的选中：待融材料与批次视图选中态的共同依据。
@@ -91,6 +95,9 @@ pub struct GhostwriterSession {
     live_batch: Option<LiveBatch>,
     /// inline 材料待融队列（先进先出，随下一段或尾巴补润转移）。
     inline_pending: Vec<String>,
+    /// 已贴背景的去重键（背景类/引用项＝snippet id、手写项＝归一化文本）：
+    /// 同一背景一次会话只贴一遍，触发命中、被引用、被多条表述引用互相生效。
+    background_applied: HashSet<String>,
     /// 缓冲中已做过命中扫描的字符数（只扫增量，改写旧文的替换重扫）。
     scanned_chars: usize,
     /// 撤销过且尚未被新话再触发的 snippet：旧文领地（重扫）保持死亡，
@@ -125,6 +132,7 @@ impl GhostwriterSession {
             active_actions: Vec::new(),
             live_batch: None,
             inline_pending: Vec::new(),
+            background_applied: HashSet::new(),
             scanned_chars: 0,
             cancelled_once: HashSet::new(),
             cancelled_selections: HashSet::new(),
@@ -253,11 +261,12 @@ impl GhostwriterSession {
     }
 
     /// 扫一段文本的命中：trigger＋aliases contains 匹配（大小写折叠），
-    /// 命中且未生效过 → footnote 进附注、inline 材料进待融队列；
-    /// 返回本次新生效的命中。`allow_cancelled`=false 的扫描属旧文领地
-    /// （段文本重扫、改写后的全量重扫）：撤销过且未被新话再触发的
-    /// snippet 不复活；=true 的扫描是真正的新话增量，可再触发——
-    /// 触发即从撤销集出集（规则 6：撤销后同 snippet 再说到可再生效）。
+    /// 命中且未生效过 → 表述材料进待融队列、附件解析进背景行；
+    /// 背景整条进背景块（按自身落点）。返回本次新生效的命中。
+    /// `allow_cancelled`=false 的扫描属旧文领地（段文本重扫、改写后的
+    /// 全量重扫）：撤销过且未被新话再触发的 snippet 不复活；=true 的扫描
+    /// 是真正的新话增量，可再触发——触发即从撤销集出集
+    /// （规则 6：撤销后同 snippet 再说到可再生效）。
     fn scan_hits(
         &mut self,
         text: &str,
@@ -275,43 +284,92 @@ impl GhostwriterSession {
             if !allow_cancelled && self.cancelled_once.contains(&snippet.id) {
                 continue;
             }
-            let Some(text) = match_snippet(text, snippet) else {
+            if match_snippet(text, snippet).is_none() {
                 continue;
-            };
+            }
             if allow_cancelled {
                 self.cancelled_once.remove(&snippet.id);
             }
-            let mode = match snippet.mode {
-                SnippetMode::Inline => "inline",
-                SnippetMode::Footnote => "footnote",
-            };
             let hit = GhostwriterSnippetHit {
                 snippet_id: snippet.id.clone(),
                 title: snippet.trigger.clone(),
-                mode: mode.to_string(),
+                mode: hit_mode(snippet.kind, snippet.placement).to_string(),
             };
-            match snippet.mode {
-                SnippetMode::Inline => {
-                    self.inline_pending.push(text.clone());
+            match snippet.kind {
+                SnippetKind::Phrasing => {
+                    // 表述：融合材料照旧进待融队列；附件被去重过滤不影响
+                    // 融合与命中登记（撤销单元含融合＋未被过滤的附件）。
+                    self.inline_pending.push(snippet.text.clone());
+                    let (lines, keys) = self.resolve_attachments(snippet, snippets);
                     self.active_actions.push(ActiveAction::Hit(ActiveHit {
                         hit: hit.clone(),
-                        text,
-                        inline: true,
+                        material: Some(snippet.text.clone()),
+                        background_lines: lines,
+                        placement: snippet.placement,
                         material_pending: true,
+                        dedup_keys: keys,
                     }));
                 }
-                SnippetMode::Footnote => {
+                SnippetKind::Background => {
+                    // 背景：整条进背景块；去重后无内容可贴 → 不登记命中。
+                    let key = background_key_for_id(&snippet.id);
+                    if self.background_applied.contains(&key) {
+                        continue;
+                    }
+                    self.background_applied.insert(key.clone());
                     self.active_actions.push(ActiveAction::Hit(ActiveHit {
                         hit: hit.clone(),
-                        text,
-                        inline: false,
+                        material: None,
+                        background_lines: vec![(snippet.trigger.clone(), snippet.text.clone())],
+                        placement: snippet.placement,
                         material_pending: false,
+                        dedup_keys: vec![key],
                     }));
                 }
             }
             hits.push(hit);
         }
         hits
+    }
+
+    /// 表述附件逐条解析成背景行（标签＝引用背景的触发词／手写时表述的触发词），
+    /// 同时登记去重键（引用项＝被引用 id、手写项＝归一化文本）；命中去重
+    /// （同背景已贴过）的条目直接跳过。引用项在本次 feed 传入的启用常用语列表里
+    /// 按 id 现取，缺失/已删 → 跳过该条并 log::debug。
+    fn resolve_attachments(
+        &mut self,
+        snippet: &Snippet,
+        snippets: &[Snippet],
+    ) -> (Vec<(String, String)>, Vec<String>) {
+        let mut lines = Vec::new();
+        let mut keys = Vec::new();
+        for attachment in &snippet.attachments {
+            match attachment {
+                SnippetAttachment::Reference { snippet_id } => {
+                    let Some(referenced) = snippets.iter().find(|s| s.id == *snippet_id) else {
+                        log::debug!(
+                            "[ghostwriter] attachment reference {snippet_id} not in enabled snippets; skipped"
+                        );
+                        continue;
+                    };
+                    let key = background_key_for_id(&referenced.id);
+                    if !self.background_applied.insert(key.clone()) {
+                        continue;
+                    }
+                    keys.push(key);
+                    lines.push((referenced.trigger.clone(), referenced.text.clone()));
+                }
+                SnippetAttachment::Text { text } => {
+                    let key = background_key_for_text(text);
+                    if !self.background_applied.insert(key.clone()) {
+                        continue;
+                    }
+                    keys.push(key);
+                    lines.push((snippet.trigger.clone(), text.clone()));
+                }
+            }
+        }
+        (lines, keys)
     }
 
     fn is_active(&self, snippet_id: &str) -> bool {
@@ -325,7 +383,7 @@ impl GhostwriterSession {
     fn mark_pending_materials_moved(&mut self) {
         for action in &mut self.active_actions {
             match action {
-                ActiveAction::Hit(active) if active.inline => {
+                ActiveAction::Hit(active) if active.material.is_some() => {
                     active.material_pending = false;
                 }
                 ActiveAction::Selection(active) => {
@@ -375,21 +433,26 @@ impl GhostwriterSession {
     }
 
     /// 撤销最近一次生效的动作（命中与选中混排按生效时间取最新）：
-    /// 命中按原撤销语义处理（inline 材料出待融、footnote 移除附注、
-    /// snippet 恢复「未生效」可再触发）；选中从待融出队其材料并标记
-    /// 未选中（同批次可再选中）。成功撤销推进修订号（后端权威），
-    /// 调用方据此发布撤销后的预览并让前端丢弃在途旧预览。
+    /// 命中按原撤销语义处理（表述材料出待融、背景行随动作弹出消失、
+    /// 去重键释放、snippet 恢复「未生效」可再触发）；选中从待融出队
+    /// 其材料并标记未选中（同批次可再选中）。成功撤销推进修订号
+    /// （后端权威），调用方据此发布撤销后的预览并让前端丢弃在途旧预览。
     /// 返回被撤销者供事件确认。
     pub fn cancel_last_action(&mut self) -> Option<LastAction> {
         match self.active_actions.pop()? {
             ActiveAction::Hit(active) => {
                 self.cancelled_once.insert(active.hit.snippet_id.clone());
-                if active.inline && active.material_pending {
-                    if let Some(position) =
-                        self.inline_pending.iter().rposition(|m| *m == active.text)
-                    {
-                        self.inline_pending.remove(position);
+                if active.material_pending {
+                    if let Some(material) = active.material.as_deref() {
+                        if let Some(position) =
+                            self.inline_pending.iter().rposition(|m| m == material)
+                        {
+                            self.inline_pending.remove(position);
+                        }
                     }
+                }
+                for key in &active.dedup_keys {
+                    self.background_applied.remove(key);
                 }
                 self.revision += 1;
                 Some(LastAction::Hit(active.hit))
@@ -627,9 +690,9 @@ impl GhostwriterSession {
         })
     }
 
-    /// 指令预览＝最终贴出：主文本（润色回落段原文）＋尾巴（补润回落原文），
-    /// 待融剩余材料按材料文本追加在主文本后（润色失败兜底），
-    /// 附注块在命中非空时按「- 标题：文本」逐行拼在最后。
+    /// 指令预览＝最终贴出：头背景块＋主文本（润色回落段原文）＋尾巴（补润回落原文）
+    /// ＋待融剩余材料（润色失败兜底）＋尾背景块。块格式＝节头 `[背景]`＋行式
+    /// 「- 标签：文本」，多条同节按生效顺序；头块拼在最前，尾块拼在最后。
     pub fn assembled_text(&self) -> String {
         let mut main: String = self
             .segments
@@ -650,21 +713,31 @@ impl GhostwriterSession {
         for material in &self.inline_pending {
             assembled.push_str(material);
         }
-        let lines: Vec<String> = self
-            .active_actions
+        let head_lines = self.background_lines(SnippetPlacement::Head);
+        if !head_lines.is_empty() {
+            assembled = format!("[背景]\n{}\n\n{}", head_lines.join("\n"), assembled);
+        }
+        let tail_lines = self.background_lines(SnippetPlacement::Tail);
+        if !tail_lines.is_empty() {
+            assembled.push_str("\n\n[背景]\n");
+            assembled.push_str(&tail_lines.join("\n"));
+        }
+        assembled
+    }
+
+    /// 现算某落点的背景块行（「- 标签：文本」），按动作生效顺序（含表述附件行）。
+    fn background_lines(&self, placement: SnippetPlacement) -> Vec<String> {
+        self.active_actions
             .iter()
             .filter_map(|action| match action {
-                ActiveAction::Hit(active) if !active.inline => {
-                    Some(format!("- {}：{}", active.hit.title, active.text))
+                ActiveAction::Hit(active) if active.placement == placement => {
+                    Some(active.background_lines.iter())
                 }
                 _ => None,
             })
-            .collect();
-        if !lines.is_empty() {
-            assembled.push_str("\n\n[附注]\n");
-            assembled.push_str(&lines.join("\n"));
-        }
-        assembled
+            .flatten()
+            .map(|(label, text)| format!("- {label}：{text}"))
+            .collect()
     }
 
     /// 说话中的完整缓冲（原样，未 trim）：测试与 M1′ 验证探针。
@@ -727,6 +800,30 @@ fn match_snippet(text: &str, snippet: &Snippet) -> Option<String> {
         .map(|_| snippet.text.clone())
 }
 
+/// 命中记录里的贴位字符串：表述恒 "inline"（即使带附件）；背景按落点 head/tail。
+fn hit_mode(kind: SnippetKind, placement: SnippetPlacement) -> &'static str {
+    match kind {
+        SnippetKind::Phrasing => "inline",
+        SnippetKind::Background => match placement {
+            SnippetPlacement::Head => "head",
+            SnippetPlacement::Tail => "tail",
+        },
+    }
+}
+
+/// 背景去重键（按 snippet）：背景类命中、引用附件指向同一条时同键。
+fn background_key_for_id(id: &str) -> String {
+    format!("id:{id}")
+}
+
+/// 手写背景去重键：归一化文本（trim＋连续空白折叠）。
+fn background_key_for_text(text: &str) -> String {
+    format!(
+        "text:{}",
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+}
+
 /// 口头命令头匹配：返回（选择种类, 头长度）。
 fn match_command_head(chars: &[char]) -> Option<(SelectionKind, usize)> {
     if chars.starts_with(&['用', '常', '用', '语']) {
@@ -767,15 +864,31 @@ mod tests {
         }
     }
 
-    fn snip(id: &str, trigger: &str, mode: SnippetMode) -> Snippet {
+    fn snip(id: &str, trigger: &str, kind: SnippetKind) -> Snippet {
         Snippet {
             id: id.to_string(),
             trigger: trigger.to_string(),
             aliases: Vec::new(),
             text: format!("【{id}】{trigger}的完整表述文本"),
-            mode,
+            kind,
+            placement: SnippetPlacement::Tail,
+            attachments: Vec::new(),
             enabled: true,
         }
+    }
+
+    /// 指定落点的常用语（背景类头/尾落点与表述类附件落点测试用）。
+    fn placed(id: &str, trigger: &str, kind: SnippetKind, placement: SnippetPlacement) -> Snippet {
+        Snippet {
+            placement,
+            ..snip(id, trigger, kind)
+        }
+    }
+
+    /// 给表述挂附件（引用/手写，按列表顺序）。
+    fn with_attachments(mut snippet: Snippet, attachments: Vec<SnippetAttachment>) -> Snippet {
+        snippet.attachments = attachments;
+        snippet
     }
 
     fn cancelled_hit(action: Option<LastAction>) -> GhostwriterSnippetHit {
@@ -854,9 +967,9 @@ mod tests {
 
     #[test]
     fn feed_emits_segments_with_prior_and_materials() {
-        // inline 常用语「翻译」随段命中：材料随 PolishableSegment 转移，待融队列清空
+        // 表述常用语「翻译」随段命中：材料随 PolishableSegment 转移，待融队列清空
         let mut s = GhostwriterSession::new();
-        let snippets = vec![snip("s1", "翻译", SnippetMode::Inline)];
+        let snippets = vec![snip("s1", "翻译", SnippetKind::Phrasing)];
         let outcome = s
             .feed(&delta("你好，帮我翻译一下。请", 0, false), &snippets)
             .unwrap();
@@ -869,7 +982,7 @@ mod tests {
         assert_eq!(segment.prior, "");
         assert_eq!(
             segment.materials,
-            vec![snip("s1", "翻译", SnippetMode::Inline).text]
+            vec![snip("s1", "翻译", SnippetKind::Phrasing).text]
         );
         // 材料已随段转移：预览不再追加材料文本
         assert_eq!(s.assembled_text(), "你好，帮我翻译一下。请");
@@ -884,18 +997,18 @@ mod tests {
     }
 
     #[test]
-    fn foot_note_hit_records_once_and_dedupes() {
-        // 同 snippet 说到两次 → new_hits 只第一次；附注块只拼一条
+    fn background_hit_records_once_and_dedupes() {
+        // 同 snippet 说到两次 → new_hits 只第一次；背景块只拼一条
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippet = snip("f1", "附注", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         let outcome = s
             .feed(&delta("帮我加个附注说明。继续", 0, false), &snippets)
             .unwrap();
         assert_eq!(outcome.new_hits.len(), 1);
-        assert_eq!(outcome.new_hits[0].mode, "footnote");
+        assert_eq!(outcome.new_hits[0].mode, "tail");
         assert_eq!(outcome.new_hits[0].title, "附注");
-        let expected = format!("\n\n[附注]\n- 附注：{}", snippet.text);
+        let expected = format!("\n\n[背景]\n- 附注：{}", snippet.text);
         assert_eq!(
             s.assembled_text(),
             format!("帮我加个附注说明。继续{expected}")
@@ -908,16 +1021,16 @@ mod tests {
             .unwrap();
         assert!(outcome.new_hits.is_empty());
         let assembled = s.assembled_text();
-        assert_eq!(assembled.matches("[附注]").count(), 1);
+        assert_eq!(assembled.matches("[背景]").count(), 1);
         assert!(assembled.ends_with(&expected));
     }
 
     #[test]
     fn alias_match_fires_hit_case_folded() {
         // 别名分支：trigger 未出现，别名 "fy" 以大写形式出现在文本里 → 大小写折叠命中；
-        // 无句末标点不成段：inline 材料留在待融队列，追加在转写后
+        // 无句末标点不成段：融合材料留在待融队列，追加在转写后
         let mut s = GhostwriterSession::new();
-        let mut snippet = snip("s-fy", "翻译", SnippetMode::Inline);
+        let mut snippet = snip("s-fy", "翻译", SnippetKind::Phrasing);
         snippet.aliases = vec!["fy".to_string()];
         let material = snippet.text.clone();
         let snippets = vec![snippet];
@@ -933,7 +1046,7 @@ mod tests {
     fn alias_match_skips_blank_and_tolerates_surrounding_space() {
         // 别名容错：空串不得通配命中；两侧空白经 trim 折叠后命中
         let mut s = GhostwriterSession::new();
-        let mut snippet = snip("s-alias", "翻译", SnippetMode::Inline);
+        let mut snippet = snip("s-alias", "翻译", SnippetKind::Phrasing);
         snippet.aliases = vec![" a ".to_string(), String::new(), "  b  ".to_string()];
         let snippets = vec![snippet];
         let outcome = s
@@ -943,10 +1056,10 @@ mod tests {
     }
 
     #[test]
-    fn assembled_joins_polished_with_fallback_and_footnote_block() {
-        // 两段：第 1 段已润、第 2 段未润回落原文；附注块格式「- 标题：文本」
+    fn assembled_joins_polished_with_fallback_and_background_block() {
+        // 两段：第 1 段已润、第 2 段未润回落原文；背景块格式「- 标签：文本」
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "标记", SnippetMode::Footnote);
+        let snippet = snip("f1", "标记", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句原文。标记一下然后", 0, false), &snippets)
             .unwrap();
@@ -956,7 +1069,7 @@ mod tests {
         assert_eq!(
             s.assembled_text(),
             format!(
-                "第一句润好。标记一下然后第二句原文。尾\n\n[附注]\n- 标记：{}",
+                "第一句润好。标记一下然后第二句原文。尾\n\n[背景]\n- 标记：{}",
                 snippet.text
             )
         );
@@ -964,25 +1077,25 @@ mod tests {
 
     #[test]
     fn cancel_last_hit_removes_latest_and_allows_re_hit() {
-        // footnote：撤销后附注块消失，同 snippet 再说到 → 再次生效
+        // 背景：撤销后背景块消失，同 snippet 再说到 → 再次生效
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippet = snip("f1", "附注", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
         s.feed(&delta("加个附注", 0, false), &snippets).unwrap();
         let cancelled = cancelled_hit(s.cancel_last_action());
         assert_eq!(cancelled.snippet_id, "f1");
-        assert_eq!(cancelled.mode, "footnote");
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert_eq!(cancelled.mode, "tail");
+        assert!(!s.assembled_text().contains("[背景]"));
         assert!(s.cancel_last_action().is_none());
         let outcome = s.feed(&delta("再说附注。完", 0, false), &snippets).unwrap();
         assert_eq!(outcome.new_hits.len(), 1);
         assert!(s.assembled_text().contains(&format!("- 附注：{}", snippet.text)));
 
-        // inline：撤销把材料从待融队列出队，预览不再追加；可再次生效。
+        // 表述：撤销把材料从待融队列出队，预览不再追加；可再次生效。
         // 「请翻译一下」后无句末标点不产段：材料留在待融队列等尾巴补润。
         let mut s = GhostwriterSession::new();
-        let inline = snip("s1", "翻译", SnippetMode::Inline);
+        let inline = snip("s1", "翻译", SnippetKind::Phrasing);
         let snippets = vec![inline.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
         s.feed(&delta("请翻译一下", 0, false), &snippets).unwrap();
@@ -993,7 +1106,7 @@ mod tests {
         assert_eq!(s.assembled_text(), "第一句。请翻译一下");
         let outcome = s.feed(&delta("再翻译一次。完", 0, false), &snippets).unwrap();
         assert_eq!(outcome.new_hits.len(), 1);
-        // 重生效的 inline 材料：或留在待融队列（未断句）或已随段转移，不散落
+        // 重生效的融合材料：或留在待融队列（未断句）或已随段转移，不散落
         let rehit_materials = s.assembled_text();
         assert!(rehit_materials.ends_with(&inline.text) || !rehit_materials.contains(&inline.text));
     }
@@ -1018,7 +1131,7 @@ mod tests {
         // 失败时兜底追加仍在预览生效
         let mut s = GhostwriterSession::new();
         assert!(s.tail_polish_input().is_none());
-        let inline = snip("s1", "翻译", SnippetMode::Inline);
+        let inline = snip("s1", "翻译", SnippetKind::Phrasing);
         let snippets = vec![inline.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
         s.feed(&delta("第二句来了", 0, false), &snippets).unwrap();
@@ -1040,31 +1153,31 @@ mod tests {
 
     #[test]
     fn final_rescan_does_not_resurrect_cancelled_hits() {
-        // footnote：命中→撤销→final 前缀延伸含触发词 → 不复活
+        // 背景：命中→撤销→final 前缀延伸含触发词 → 不复活
         // （重扫旧文不算「再说到」，规则 6 只认新话）
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippet = snip("f1", "附注", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("第一句。", 0, false), &snippets).unwrap();
         s.feed(&delta("加个附注", 0, false), &snippets).unwrap();
         assert!(s.cancel_last_action().is_some());
         let outcome = s.feed(&delta("第一句。加个附注。", 0, true), &snippets).unwrap();
         assert!(outcome.new_hits.is_empty());
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert!(!s.assembled_text().contains("[背景]"));
 
         // 全量替换型 final（非前缀延伸）：全量重扫但被撤销者保持死亡
         let outcome = s.feed(&delta("换个说法提到附注。", 0, true), &snippets).unwrap();
         assert!(outcome.new_hits.is_empty());
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert!(!s.assembled_text().contains("[背景]"));
 
         // 规则 6 仍成立：之后真正的新话再说到 → 再次生效
         let outcome = s.feed(&delta("再提附注一下", 0, false), &snippets).unwrap();
         assert_eq!(outcome.new_hits.len(), 1);
         assert!(s.assembled_text().contains(&format!("- 附注：{}", snippet.text)));
 
-        // inline：撤销后 final 不把材料送回待融队列
+        // 表述：撤销后 final 不把材料送回待融队列
         let mut s = GhostwriterSession::new();
-        let inline = snip("s1", "翻译", SnippetMode::Inline);
+        let inline = snip("s1", "翻译", SnippetKind::Phrasing);
         let snippets = vec![inline.clone()];
         s.feed(&delta("帮我", 0, false), &snippets).unwrap();
         s.feed(&delta("翻译一下", 0, false), &snippets).unwrap();
@@ -1080,7 +1193,7 @@ mod tests {
         // （如 LLM 失败回落），撤销是预览前进的唯一推手。撤销须推进修订号，
         // 之后 feed 预览按等号规则继续被前端接受，不会冻结在撤销快照。
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippet = snip("f1", "附注", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         let outcome = s
             .feed(&delta("加个附注。完毕", 0, false), &snippets)
@@ -1089,12 +1202,12 @@ mod tests {
         assert_eq!(s.revision(), 0);
         assert!(cancelled_hit(s.cancel_last_action()).snippet_id == "f1");
         assert_eq!(s.revision(), 1);
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert!(!s.assembled_text().contains("[背景]"));
         // 撤销后再喂新内容：预览反映新内容，修订号保持（feed 路径不增）
         s.feed(&delta("，新话来了。", 0, false), &snippets).unwrap();
         assert_eq!(s.revision(), 1);
         assert!(s.assembled_text().contains("新话来了"));
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert!(!s.assembled_text().contains("[背景]"));
     }
 
     #[test]
@@ -1266,7 +1379,7 @@ mod tests {
     #[test]
     fn cancel_last_action_mixed_order() {
         let mut s = GhostwriterSession::new();
-        let snippet = snip("f1", "附注", SnippetMode::Footnote);
+        let snippet = snip("f1", "附注", SnippetKind::Background);
         let snippets = vec![snippet.clone()];
         s.feed(&delta("加个附注", 0, false), &snippets).unwrap();
         s.set_live_batch(vec![("term".to_string(), vec!["甲候选文本".into()])], vec![]);
@@ -1282,7 +1395,7 @@ mod tests {
             LastAction::Hit(hit) => assert_eq!(hit.snippet_id, "f1"),
             LastAction::Selection(_) => panic!("期望再撤销的是命中"),
         }
-        assert!(!s.assembled_text().contains("[附注]"));
+        assert!(!s.assembled_text().contains("[背景]"));
         assert!(s.cancel_last_action().is_none());
     }
 
@@ -1314,6 +1427,190 @@ mod tests {
         assert_eq!(outcome.new_selections.len(), 1);
         assert_eq!(outcome.new_selections[0].text, "新乙");
         assert_eq!(s.debug_buffer(), "帮我看看用候选2。再好");
+    }
+
+    #[test]
+    fn background_hits_split_head_and_tail_blocks() {
+        // 头落点与尾落点各一条背景：拼装＝[背景] 头块＋主文本＋[背景] 尾块；
+        // 命中 mode 随落点（head/tail），表述命中恒 inline。
+        let mut s = GhostwriterSession::new();
+        let head = placed("b-head", "开头", SnippetKind::Background, SnippetPlacement::Head);
+        let tail = placed("b-tail", "文末", SnippetKind::Background, SnippetPlacement::Tail);
+        let outcome = s
+            .feed(
+                &delta("开头一下。文末一下。", 0, true),
+                &[head.clone(), tail.clone()],
+            )
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 2);
+        assert_eq!(outcome.new_hits[0].mode, "head");
+        assert_eq!(outcome.new_hits[1].mode, "tail");
+        assert_eq!(
+            s.assembled_text(),
+            format!(
+                "[背景]\n- 开头：{}\n\n开头一下。文末一下。\n\n[背景]\n- 文末：{}",
+                head.text, tail.text
+            )
+        );
+    }
+
+    #[test]
+    fn phrasing_attachments_ride_own_placement_with_kind_labels() {
+        // 表述带附件（引用＋手写）按表述的落点进块：引用行标签＝被引用背景的
+        // 触发词、手写行标签＝表述的触发词；表述文本本身仍进待融队列，
+        // 命中 mode 恒 "inline"（即使带附件）。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("bg1", "素材", SnippetKind::Background);
+        let phrasing = with_attachments(
+            placed("p1", "方案", SnippetKind::Phrasing, SnippetPlacement::Head),
+            vec![
+                SnippetAttachment::Reference {
+                    snippet_id: "bg1".to_string(),
+                },
+                SnippetAttachment::Text {
+                    text: "手写的背景说明".to_string(),
+                },
+            ],
+        );
+        let outcome = s
+            .feed(&delta("给个方案。继续", 0, false), &[bg.clone(), phrasing])
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "p1");
+        assert_eq!(outcome.new_hits[0].mode, "inline");
+        // 材料随段转移（本 feed 完成段），不散落在预览文本里
+        assert_eq!(
+            s.assembled_text(),
+            format!(
+                "[背景]\n- 素材：{}\n- 方案：手写的背景说明\n\n给个方案。继续",
+                bg.text
+            )
+        );
+    }
+
+    #[test]
+    fn missing_reference_is_skipped() {
+        // 引用不在本次传入的启用列表里（被禁用/删除）→ 跳过该条并 log；
+        // 表述照常融合与登记命中，其余附件不受影响。
+        let mut s = GhostwriterSession::new();
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![
+                SnippetAttachment::Reference {
+                    snippet_id: "ghost".to_string(),
+                },
+                SnippetAttachment::Text {
+                    text: "仍在".to_string(),
+                },
+            ],
+        );
+        let outcome = s
+            .feed(&delta("方案说一下。尾", 0, false), &[phrasing])
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        let assembled = s.assembled_text();
+        assert!(!assembled.contains("ghost"));
+        assert!(assembled.contains("- 方案：仍在"));
+    }
+
+    #[test]
+    fn duplicate_background_applied_once() {
+        // 背景先触发命中；随后表述引用同一条背景（id 去重）＋两条手写
+        // 归一化后同文本（文本去重）→ 背景块只多一行，重复项被过滤；
+        // 表述自身照常登记与融合。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("bg1", "素材", SnippetKind::Background);
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![
+                SnippetAttachment::Reference {
+                    snippet_id: "bg1".to_string(),
+                },
+                SnippetAttachment::Text {
+                    text: "手写重复".to_string(),
+                },
+                SnippetAttachment::Text {
+                    text: "  手写重复  ".to_string(),
+                },
+            ],
+        );
+        let outcome = s
+            .feed(&delta("先说素材再说方案。尾", 0, false), &[bg.clone(), phrasing])
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 2);
+        assert_eq!(outcome.new_hits[0].snippet_id, "bg1");
+        assert_eq!(outcome.new_hits[1].snippet_id, "p1");
+        let assembled = s.assembled_text();
+        assert_eq!(assembled.matches("[背景]").count(), 1);
+        assert_eq!(assembled.matches(&bg.text).count(), 1);
+        assert_eq!(assembled.matches("手写重复").count(), 1);
+        assert!(assembled.contains(&format!("- 素材：{}", bg.text)));
+        assert!(assembled.contains("- 方案：手写重复"));
+    }
+
+    #[test]
+    fn background_hit_with_no_remaining_content_registers_nothing() {
+        // 表述先引用背景（背景行已贴并登记去重键）；背景自身触发词随后命中 →
+        // 去重后无内容可贴 → 不登记命中（无徽标、无撤销单元）。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("bg1", "素材", SnippetKind::Background);
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![SnippetAttachment::Reference {
+                snippet_id: "bg1".to_string(),
+            }],
+        );
+        // 列表顺序：表述在前，先解析引用登记背景去重键
+        let outcome = s
+            .feed(&delta("方案和素材都说了。尾", 0, false), &[phrasing, bg.clone()])
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "p1");
+        let assembled = s.assembled_text();
+        assert_eq!(assembled.matches("[背景]").count(), 1);
+        assert_eq!(assembled.matches(&bg.text).count(), 1);
+        // 撤销表述后背景去重键释放：背景再说到可单独贴
+        assert!(s.cancel_last_action().is_some());
+        let outcome = s.feed(&delta("再提素材", 0, false), &[bg.clone()]).unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "bg1");
+    }
+
+    #[test]
+    fn cancel_removes_material_and_all_attachment_lines() {
+        // 一次命中＝一个撤销单元：融合材料与全部背景行一起撤；撤销后
+        // 同 snippet 再说到可再贴（去重键随撤销释放）。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("bg1", "素材", SnippetKind::Background);
+        let phrasing = with_attachments(
+            placed("p1", "方案", SnippetKind::Phrasing, SnippetPlacement::Head),
+            vec![
+                SnippetAttachment::Reference {
+                    snippet_id: "bg1".to_string(),
+                },
+                SnippetAttachment::Text {
+                    text: "手写".to_string(),
+                },
+            ],
+        );
+        let snippets = vec![bg.clone(), phrasing.clone()];
+        s.feed(&delta("说个方案", 0, false), &snippets).unwrap();
+        let assembled = s.assembled_text();
+        assert!(assembled.starts_with("[背景]\n"));
+        assert!(assembled.contains(&format!("- 素材：{}", bg.text)));
+        assert!(assembled.contains("- 方案：手写"));
+        assert!(assembled.ends_with(&phrasing.text));
+        // 撤销：材料出待融、全部背景行消失（头块随之消失）
+        let cancelled = cancelled_hit(s.cancel_last_action());
+        assert_eq!(cancelled.snippet_id, "p1");
+        assert_eq!(cancelled.mode, "inline");
+        assert_eq!(s.assembled_text(), "说个方案");
+        // 再说到可再贴：去重键已释放，引用行重新出现
+        let outcome = s.feed(&delta("再说方案", 0, false), &snippets).unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        let assembled = s.assembled_text();
+        assert!(assembled.contains("[背景]"));
+        assert!(assembled.contains(&format!("- 素材：{}", bg.text)));
     }
 
     #[test]

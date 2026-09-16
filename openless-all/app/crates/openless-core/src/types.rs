@@ -70,7 +70,7 @@ pub enum HistoryInsertStatus {
     NotRequested,
 }
 
-/// 历史明细里的一次常用语命中：触发词标题＋贴位（"inline"|"footnote"）。
+/// 历史明细里的一次常用语命中：触发词标题＋贴位（"inline"|"head"|"tail"）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterHistoryHit {
