@@ -73,16 +73,37 @@ pub enum LastAction {
 /// assist 批次视图：浮框候选区的一组同类候选。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateGroupView {
-    /// 组别："term"|"phrase"|"naming"。
+    /// 组别："term"|"naming"。
     pub kind: String,
     pub items: Vec<CandidateItemView>,
 }
 
-/// 批次视图里的一条候选：1-based 全局序号＋文本＋选中态。
+/// 候选批次里的一条候选数据：名字＋展示注释（term=白话注释，回指说话人的
+/// 说法；naming=起名理由）。注释仅展示用，进待融队列的材料只取名字。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateItem {
+    pub name: String,
+    pub note: Option<String>,
+}
+
+impl From<&str> for CandidateItem {
+    fn from(name: &str) -> Self {
+        Self { name: name.to_string(), note: None }
+    }
+}
+
+impl From<String> for CandidateItem {
+    fn from(name: String) -> Self {
+        Self { name, note: None }
+    }
+}
+
+/// 批次视图里的一条候选：1-based 全局序号＋名字＋注释＋选中态。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateItemView {
     pub index: usize,
     pub text: String,
+    pub note: Option<String>,
     pub selected: bool,
 }
 
@@ -139,17 +160,19 @@ pub struct GhostwriterAssistChanged {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterCandidateGroup {
-    /// 组别："term"|"phrase"|"naming"。
+    /// 组别："term"|"naming"。
     pub kind: String,
     pub items: Vec<GhostwriterCandidateItem>,
 }
 
-/// 事件载荷里的一条候选：批次内 1-based 全局序号＋文本＋选中态。
+/// 事件载荷里的一条候选：批次内 1-based 全局序号＋名字＋白话注释＋选中态。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterCandidateItem {
     pub index: u32,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub selected: bool,
 }
 
@@ -186,7 +209,7 @@ mod tests {
         let a = GhostwriterAssistChanged {
             candidate_groups: vec![GhostwriterCandidateGroup {
                 kind: "term".into(),
-                items: vec![GhostwriterCandidateItem { index: 1, text: "精准词".into(), selected: true }],
+                items: vec![GhostwriterCandidateItem { index: 1, text: "精准词".into(), note: Some("注".into()), selected: true }],
             }],
             recommendations: vec![GhostwriterRecommendationItem {
                 snippet_id: "s2".into(),

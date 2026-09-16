@@ -235,7 +235,7 @@ assert(
     payload: {
       candidateGroups: [
         { kind: 'term', items: [{ index: 1, text: '灰度发布', selected: false }] },
-        { kind: 'phrase', items: [{ index: 2, text: '先在小范围试运行', selected: true }] },
+        { kind: 'naming', items: [{ index: 2, text: '先在小范围试运行', selected: true }] },
       ],
       recommendations: [{ snippetId: 's1', title: '项目背景', selected: false }],
       sediment: { phrase: '风险控制', count: 3, suggestedTrigger: '风控' },

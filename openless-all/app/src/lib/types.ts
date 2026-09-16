@@ -732,13 +732,15 @@ export interface Snippet {
 
 // --- Ghostwriter M3 候选区（ghostwriter_assist_changed 事件载荷，camelCase） ---
 
-/** 候选组类型：精准词 / 表述 / 命名。 */
-export type GhostwriterCandidateKind = 'term' | 'phrase' | 'naming';
+/** 候选组类型：叫法（认出已有事物的本名）/ 命名（新造事物的名字）。 */
+export type GhostwriterCandidateKind = 'term' | 'naming';
 
 /** 事件里的一条候选：index 为批次内跨组全局 1-based 序号（点选/口头命令同源）。 */
 export interface GhostwriterCandidateItem {
   index: number;
   text: string;
+  /** 白话注释（term=回指说话人的说法；naming=起名理由），仅展示用。 */
+  note?: string;
   selected: boolean;
 }
 

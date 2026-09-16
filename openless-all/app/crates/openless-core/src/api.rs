@@ -10565,7 +10565,7 @@ mod tests {
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本")
                 .with_assist_json(
-                    r#"{"candidateGroups":[{"kind":"term","items":["精准词甲","精准词乙"]},{"kind":"phrase","items":["候选表述丙"]}],"recommendations":["s-rec"],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+                    r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"},{"name":"精准词乙"}]},{"kind":"naming","items":[{"name":"命名丙","note":"理由丙"}]}],"recommendations":["s-rec"],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
                 ),
         );
         let transcription = Arc::new(FixturePartialTranscripts::new(
@@ -10614,8 +10614,10 @@ mod tests {
         assert_eq!(assist.candidate_groups[0].items.len(), 2);
         assert_eq!(assist.candidate_groups[0].items[0].index, 1);
         assert_eq!(assist.candidate_groups[0].items[0].text, "精准词甲");
+        assert_eq!(assist.candidate_groups[0].items[0].note.as_deref(), Some("就是你说的那个甲"));
+        assert_eq!(assist.candidate_groups[0].items[1].note, None);
         assert!(!assist.candidate_groups[0].items[0].selected);
-        assert_eq!(assist.candidate_groups[1].kind, "phrase");
+        assert_eq!(assist.candidate_groups[1].kind, "naming");
         // 推荐条目映射自常用语库：title＝触发词（会话批次无标题字段）。
         assert_eq!(assist.recommendations.len(), 1);
         assert_eq!(assist.recommendations[0].snippet_id, "s-rec");

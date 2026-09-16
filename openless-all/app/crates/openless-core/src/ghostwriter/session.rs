@@ -24,8 +24,8 @@ use crate::types::TranscriptDelta;
 use super::segmenter::{Segment, Segmenter};
 use super::snippet_store::{Snippet, SnippetAttachment, SnippetKind, SnippetPlacement};
 use super::types::{
-    CandidateGroupView, CandidateItemView, GhostwriterSnippetHit, LiveRecommendation,
-    RecommendationView,
+    CandidateGroupView, CandidateItem, CandidateItemView, GhostwriterSnippetHit,
+    LiveRecommendation, RecommendationView,
 };
 
 pub use super::types::{FeedOutcome, PolishableSegment};
@@ -69,7 +69,7 @@ enum ActiveAction {
 /// 当前 live assist 批次：现场候选（按组，组别随批次携带）与推荐常用语。
 #[derive(Debug, Clone)]
 struct LiveBatch {
-    candidates: Vec<(String, Vec<String>)>,
+    candidates: Vec<(String, Vec<CandidateItem>)>,
     recommendations: Vec<LiveRecommendation>,
 }
 
@@ -501,7 +501,7 @@ impl GhostwriterSession {
     /// selections（已入待融的材料不受影响，随段/尾巴润色照常转移）。
     pub fn set_live_batch(
         &mut self,
-        candidates: Vec<(String, Vec<String>)>,
+        candidates: Vec<(String, Vec<CandidateItem>)>,
         recommendations: Vec<LiveRecommendation>,
     ) {
         self.live_batch = Some(LiveBatch {
@@ -526,12 +526,13 @@ impl GhostwriterSession {
                 kind: kind.clone(),
                 items: items
                     .iter()
-                    .map(|text| {
+                    .map(|item| {
                         let index = next_index;
                         next_index += 1;
                         CandidateItemView {
                             index,
-                            text: text.clone(),
+                            text: item.name.clone(),
+                            note: item.note.clone(),
                             selected: self.is_selection_active(SelectionKind::Candidate, index),
                         }
                     })
@@ -609,8 +610,8 @@ impl GhostwriterSession {
         Some(selection)
     }
 
-    /// live 批次中某类选择在 1-based 序号处的材料文本；
-    /// 无批次或序号越界 → None。
+    /// live 批次中某类选择在 1-based 序号处的材料文本（候选取名字，
+    /// 注释仅展示不入材料）；无批次或序号越界 → None。
     fn batch_text(&self, kind: SelectionKind, index: usize) -> Option<String> {
         let batch = self.live_batch.as_ref()?;
         let item = match kind {
@@ -618,13 +619,14 @@ impl GhostwriterSession {
                 .candidates
                 .iter()
                 .flat_map(|(_, items)| items.iter())
-                .nth(index.checked_sub(1)?),
+                .nth(index.checked_sub(1)?)
+                .map(|item| item.name.clone()),
             SelectionKind::Recommendation => batch
                 .recommendations
                 .get(index.checked_sub(1)?)
-                .map(|recommendation| &recommendation.text),
+                .map(|recommendation| recommendation.text.clone()),
         };
-        item.cloned()
+        item
     }
 
     /// 某条批次选择当前是否处于选中态（批次视图 selected 标记依据）。

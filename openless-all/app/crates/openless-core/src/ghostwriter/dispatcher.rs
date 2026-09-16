@@ -602,6 +602,7 @@ fn assist_changed_payload(
                     .map(|item| GhostwriterCandidateItem {
                         index: item.index as u32,
                         text: item.text.clone(),
+                        note: item.note.clone(),
                         selected: item.selected,
                     })
                     .collect(),

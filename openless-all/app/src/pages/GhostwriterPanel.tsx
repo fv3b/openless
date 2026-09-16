@@ -56,7 +56,6 @@ const LEVEL_BARS = [0.45, 0.7, 1, 0.7, 0.45];
 
 const CANDIDATE_KIND_LABEL_KEYS: Record<GhostwriterCandidateKind, string> = {
   term: 'ghostwriter.panel.kindTerm',
-  phrase: 'ghostwriter.panel.kindPhrase',
   naming: 'ghostwriter.panel.kindNaming',
 };
 
@@ -145,6 +144,15 @@ const CHIP_LABEL_STYLE: CSSProperties = {
   whiteSpace: 'normal',
   wordBreak: 'break-word',
   minWidth: 0,
+};
+
+const CHIP_NOTE_STYLE: CSSProperties = {
+  opacity: 0.66,
+  fontSize: '0.82em',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  maxWidth: 280,
 };
 
 interface FallbackNotice {
@@ -610,6 +618,7 @@ export function GhostwriterPanel() {
                       <span style={CHIP_LABEL_STYLE}>
                         {item.selected ? '✓ ' : ''}
                         {item.index}·{item.text}
+                        {item.note ? <span style={CHIP_NOTE_STYLE}> {item.note}</span> : null}
                       </span>
                       {item.selected ? (
                         <button

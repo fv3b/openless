@@ -1,5 +1,6 @@
 //! 实时助手（assist）：说话期间按停顿/句毕触发的一次 LLM 调用，一次协同产出
-//! 候选（卡词时给精准词/候选表述/命名）、常用语推荐与常用语提醒。
+//! 候选（卡词时把说不清的点校准成对的名字：term 叫法/naming 命名，见 ADR 0003）、
+//! 常用语推荐与常用语提醒。
 //!
 //! LLM 调用模式照抄 [`crate::ghostwriter::segment_polisher::polish_segment`]：
 //! provider 照既有解析路径解析 LLM 通道，context 用 [`DictationContext::capture`]
@@ -8,7 +9,7 @@
 //! ＋推荐任务书（按开关）＋常用语提醒任务书＋输出契约（逐字）；user 输入＝当前
 //! 内容＋常用语库＋重复档。输出按契约解析为 JSON：失败/空 → 空 outcome（合法
 //! 返回，表示「没什么可给」，不报错）；解析侧强制裁剪候选 ≤2 组、每组 ≤5 条、
-//! 总 ≤8 条、推荐 ≤3 个，候选组 kind 白名单外的归一为 "phrase"（保内容不丢组）；
+//! 总 ≤8 条、推荐 ≤3 个，候选组 kind 白名单外的归一为 "term"（保内容不丢组）；
 //! 解析后按输入开关机制级清零候选/推荐产出（不依赖模型自觉遵守输出契约，
 //! 沉淀不受这两个开关控制）。
 
@@ -22,6 +23,7 @@ use crate::dictation_context::{
 };
 use crate::errors::BackendError;
 use crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT;
+use crate::ghostwriter::types::CandidateItem;
 use crate::ports::{TextPolisher, TextStreamChunk, TextStreamSink};
 use crate::types::{PolishMode, SessionId};
 
@@ -47,9 +49,9 @@ const MAX_CANDIDATE_ITEMS: usize = 8;
 /// 解析侧裁剪上限：推荐条数。
 const MAX_RECOMMENDATIONS: usize = 3;
 
-/// 候选组 kind 白名单：输出契约约定的三类；白名单外的 kind 归一为
-/// "phrase"（保内容，不丢组）。
-const CANDIDATE_KINDS: [&str; 3] = ["term", "phrase", "naming"];
+/// 候选组 kind 白名单：输出契约约定的两类；白名单外的 kind 归一为
+/// "term"（保内容，不丢组）。
+const CANDIDATE_KINDS: [&str; 2] = ["term", "naming"];
 
 /// 重复档里一条未提示过的说法摘要（调用方从重复档 store 取，≤20 条，仅未 prompted）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,8 +94,8 @@ pub struct AssistInput {
 /// 一次实时助手调用的产出；空 outcome 合法（LLM 判定「没什么可给」）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AssistOutcome {
-    /// 候选组：(kind: "term"|"phrase"|"naming", texts)。
-    pub candidate_groups: Vec<(String, Vec<String>)>,
+    /// 候选组：(kind: "term"|"naming", items)。
+    pub candidate_groups: Vec<(String, Vec<CandidateItem>)>,
     /// 推荐的常用语 id。
     pub recommendation_ids: Vec<String>,
     /// 沉淀命中。
@@ -216,7 +218,37 @@ struct AssistJson {
 struct CandidateGroupJson {
     kind: String,
     #[serde(default)]
-    items: Vec<String>,
+    items: Vec<CandidateItemJson>,
+}
+
+/// 契约里一条候选是 `{"name","note"}` 对象；兼容裸字符串（只当名字，无注释）。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CandidateItemJson {
+    Named {
+        name: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    Plain(String),
+}
+
+impl CandidateItemJson {
+    fn name(&self) -> &str {
+        match self {
+            Self::Named { name, .. } => name,
+            Self::Plain(name) => name,
+        }
+    }
+}
+
+impl From<CandidateItemJson> for CandidateItem {
+    fn from(item: CandidateItemJson) -> Self {
+        match item {
+            CandidateItemJson::Named { name, note } => CandidateItem { name, note },
+            CandidateItemJson::Plain(name) => CandidateItem { name, note: None },
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -243,7 +275,7 @@ pub(crate) fn strip_json_fence(text: &str) -> &str {
 
 /// 解析 LLM 输出为产出：`serde_json::from_str`；失败/空 → 空 outcome（合法返回，
 /// log::warn）。解析侧强制裁剪：候选 ≤2 组、每组 ≤5 条、总 ≤8 条、推荐 ≤3 个；
-/// kind 白名单外的组归一为 "phrase"。
+/// kind 白名单外的组归一为 "term"，空名字的条目丢弃。
 fn parse_outcome(text: &str) -> AssistOutcome {
     let parsed: AssistJson = match serde_json::from_str(strip_json_fence(text)) {
         Ok(parsed) => parsed,
@@ -252,22 +284,24 @@ fn parse_outcome(text: &str) -> AssistOutcome {
             return AssistOutcome::default();
         }
     };
-    let mut candidate_groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut candidate_groups: Vec<(String, Vec<CandidateItem>)> = Vec::new();
     let mut total = 0usize;
     for group in parsed.candidate_groups {
         if candidate_groups.len() >= MAX_CANDIDATE_GROUPS || total >= MAX_CANDIDATE_ITEMS {
             break;
         }
-        let items: Vec<String> = group
+        let items: Vec<CandidateItem> = group
             .items
             .into_iter()
+            .filter(|item| !item.name().trim().is_empty())
             .take(MAX_ITEMS_PER_GROUP.min(MAX_CANDIDATE_ITEMS - total))
+            .map(CandidateItem::from)
             .collect();
         total += items.len();
         let kind = if CANDIDATE_KINDS.contains(&group.kind.as_str()) {
             group.kind
         } else {
-            "phrase".to_string()
+            "term".to_string()
         };
         candidate_groups.push((kind, items));
     }
@@ -294,7 +328,7 @@ mod tests {
     use crate::ghostwriter::snippet_store::{Snippet, SnippetKind};
     use crate::testing::FixtureTextPolisher;
 
-    const CANNED_JSON: &str = r#"{"candidateGroups":[{"kind":"term","items":["精准词一","精准词二","精准词三","精准词四","精准词五","精准词六"]},{"kind":"phrase","items":["候选表述一","候选表述二","候选表述三"]},{"kind":"naming","items":["命名一","命名二"]}],"recommendations":["rec-1","rec-2","rec-3","rec-4"],"sediment":{"phrase":"把那个日志清一下","count":3,"suggestedTrigger":"清日志"}}"#;
+    const CANNED_JSON: &str = r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词一","note":"就是你说的那个甲"},{"name":"精准词二","note":"注"},{"name":"精准词三"},{"name":"精准词四"},{"name":"精准词五"},{"name":"精准词六"}]},{"kind":"naming","items":[{"name":"命名一","note":"理由一"},{"name":"命名二","note":"理由二"}]},{"kind":"whatever","items":["裸字符串一","裸字符串二"]}],"recommendations":["rec-1","rec-2","rec-3","rec-4"],"sediment":{"phrase":"把那个日志清一下","count":3,"suggestedTrigger":"清日志"}}"#;
 
     fn snippet(id: &str, trigger: &str, text: &str) -> Snippet {
         Snippet {
@@ -350,28 +384,28 @@ mod tests {
             .await
             .expect("assist should succeed");
 
+        // 组数上限 2：第三组（kind 白名单外，归一覆盖见下方专门测试）被裁掉。
         assert_eq!(outcome.candidate_groups.len(), 2);
         assert_eq!(
             outcome.candidate_groups[0],
             (
                 "term".to_string(),
                 vec![
-                    "精准词一".to_string(),
-                    "精准词二".to_string(),
-                    "精准词三".to_string(),
-                    "精准词四".to_string(),
-                    "精准词五".to_string(),
+                    CandidateItem { name: "精准词一".into(), note: Some("就是你说的那个甲".into()) },
+                    CandidateItem { name: "精准词二".into(), note: Some("注".into()) },
+                    CandidateItem { name: "精准词三".into(), note: None },
+                    CandidateItem { name: "精准词四".into(), note: None },
+                    CandidateItem { name: "精准词五".into(), note: None },
                 ]
             )
         );
         assert_eq!(
             outcome.candidate_groups[1],
             (
-                "phrase".to_string(),
+                "naming".to_string(),
                 vec![
-                    "候选表述一".to_string(),
-                    "候选表述二".to_string(),
-                    "候选表述三".to_string(),
+                    CandidateItem { name: "命名一".into(), note: Some("理由一".into()) },
+                    CandidateItem { name: "命名二".into(), note: Some("理由二".into()) },
                 ]
             )
         );
@@ -510,8 +544,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assist_normalizes_unknown_candidate_kind_to_phrase() {
-        // 解析侧 kind 白名单：白名单外的组归一为 phrase（保内容，不丢组）。
+    async fn assist_normalizes_unknown_candidate_kind_to_term() {
+        // 解析侧 kind 白名单：白名单外的组归一为 term（保内容，不丢组）。
         let json = r#"{"candidateGroups":[{"kind":"whatever","items":["候选甲","候选乙"]}],"recommendations":[],"sediment":null}"#;
         let fixture = FixtureTextPolisher::successful("unused").with_assist_json(json);
         let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
@@ -523,8 +557,11 @@ mod tests {
         assert_eq!(
             outcome.candidate_groups,
             vec![(
-                "phrase".to_string(),
-                vec!["候选甲".to_string(), "候选乙".to_string()]
+                "term".to_string(),
+                vec![
+                    CandidateItem { name: "候选甲".into(), note: None },
+                    CandidateItem { name: "候选乙".into(), note: None },
+                ]
             )]
         );
     }
