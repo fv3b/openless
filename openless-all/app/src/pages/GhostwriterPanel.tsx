@@ -147,6 +147,8 @@ const CHIP_LABEL_STYLE: CSSProperties = {
 };
 
 const CHIP_NOTE_STYLE: CSSProperties = {
+  display: 'inline-block',
+  verticalAlign: 'bottom',
   opacity: 0.66,
   fontSize: '0.82em',
   overflow: 'hidden',

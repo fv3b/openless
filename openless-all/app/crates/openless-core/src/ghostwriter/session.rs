@@ -1380,11 +1380,11 @@ mod tests {
         // 清空后同序号按新批次文本重新选中
         let selection = s.toggle_selection(SelectionKind::Candidate, 1).unwrap();
         assert_eq!(selection.text, "丙候选文本");
-        // 各组组别原样透传＋候选全局 1-based 连续计数
+        // 各组组别原样透传（含白名单外 kind，session 层不校验）＋候选全局 1-based 连续计数
         s.set_live_batch(
             vec![
                 ("term".to_string(), vec!["甲".into()]),
-                ("phrase".to_string(), vec!["乙".into()]),
+                ("whatever".to_string(), vec!["乙".into()]),
                 ("naming".to_string(), vec!["丙".into()]),
             ],
             vec![],
@@ -1395,7 +1395,7 @@ mod tests {
             .iter()
             .map(|group| group.kind.as_str())
             .collect();
-        assert_eq!(kinds, vec!["term", "phrase", "naming"]);
+        assert_eq!(kinds, vec!["term", "whatever", "naming"]);
         let indices: Vec<usize> = snapshot
             .candidate_groups
             .iter()

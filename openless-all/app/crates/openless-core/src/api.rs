@@ -10872,7 +10872,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲","精准词乙"]}],"recommendations":[],"sediment":null}"#,
+                r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"},{"name":"精准词乙"}]}],"recommendations":[],"sediment":null}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("第一句。用候选一"));
@@ -10902,8 +10902,17 @@ mod tests {
         })
         .await;
         assert_eq!(selected.candidate_groups[0].items[0].text, "精准词甲");
+        assert_eq!(
+            selected.candidate_groups[0].items[0].note.as_deref(),
+            Some("就是你说的那个甲")
+        );
         let assembled = ghostwriter_assembled(&backend, session_id);
         assert!(assembled.contains("精准词甲"), "material missing: {assembled}");
+        // 注释仅展示用：进待融队列的材料只取名字，note 不入拼装。
+        assert!(
+            !assembled.contains("就是你说的那个甲"),
+            "note leaked into material: {assembled}"
+        );
         assert!(!assembled.contains("用候选一"), "command leaked: {assembled}");
 
         backend.stop_dictation_session(session_id).await.unwrap();
