@@ -434,10 +434,12 @@ impl GhostwriterSession {
 
     /// 撤销最近一次生效的动作（命中与选中混排按生效时间取最新）：
     /// 命中按原撤销语义处理（表述材料出待融、背景行随动作弹出消失、
-    /// 去重键释放、snippet 恢复「未生效」可再触发）；选中从待融出队
-    /// 其材料并标记未选中（同批次可再选中）。成功撤销推进修订号
-    /// （后端权威），调用方据此发布撤销后的预览并让前端丢弃在途旧预览。
-    /// 返回被撤销者供事件确认。
+    /// 去重键释放、snippet 恢复「未生效」可再触发）；引用型背景键随撤销
+    /// 把被引用者一并记入撤销集——旧文重扫（改写式 final、offset 修订，
+    /// allow_cancelled=false）不得让刚被撤单元的背景行复活，新话路径照常
+    /// 出集；选中从待融出队其材料并标记未选中（同批次可再选中）。成功
+    /// 撤销推进修订号（后端权威），调用方据此发布撤销后的预览并让前端
+    /// 丢弃在途旧预览。返回被撤销者供事件确认。
     pub fn cancel_last_action(&mut self) -> Option<LastAction> {
         match self.active_actions.pop()? {
             ActiveAction::Hit(active) => {
@@ -453,6 +455,9 @@ impl GhostwriterSession {
                 }
                 for key in &active.dedup_keys {
                     self.background_applied.remove(key);
+                    if let Some(referenced_id) = key.strip_prefix(BACKGROUND_KEY_ID_PREFIX) {
+                        self.cancelled_once.insert(referenced_id.to_string());
+                    }
                 }
                 self.revision += 1;
                 Some(LastAction::Hit(active.hit))
@@ -811,9 +816,13 @@ fn hit_mode(kind: SnippetKind, placement: SnippetPlacement) -> &'static str {
     }
 }
 
+/// 背景去重键的 id 前缀：背景类命中与引用附件共用（撤销时按此前缀
+/// 还原被引用的 snippet id）。
+const BACKGROUND_KEY_ID_PREFIX: &str = "id:";
+
 /// 背景去重键（按 snippet）：背景类命中、引用附件指向同一条时同键。
 fn background_key_for_id(id: &str) -> String {
-    format!("id:{id}")
+    format!("{BACKGROUND_KEY_ID_PREFIX}{id}")
 }
 
 /// 手写背景去重键：归一化文本（trim＋连续空白折叠）。
@@ -1611,6 +1620,49 @@ mod tests {
         let assembled = s.assembled_text();
         assert!(assembled.contains("[背景]"));
         assert!(assembled.contains(&format!("- 素材：{}", bg.text)));
+    }
+
+    #[test]
+    fn cancelled_attachment_background_not_resurrected_by_rewrite() {
+        // 表述带引用（库序表述在前）→ 命中生效 → 撤销：被引用背景随撤销一并
+        // 记入撤销集——改写式 final（allow_cancelled=false 全量重扫旧文）
+        // 不得把刚撤单元的背景行复活；随后新话说到背景触发词仍可再命中。
+        let mut s = GhostwriterSession::new();
+        let bg = snip("bg1", "素材", SnippetKind::Background);
+        let phrasing = with_attachments(
+            snip("p1", "方案", SnippetKind::Phrasing),
+            vec![SnippetAttachment::Reference {
+                snippet_id: "bg1".to_string(),
+            }],
+        );
+        // 库序：表述在前 → 引用先登记背景去重键，背景自身在本次扫描被去重跳过
+        let snippets = vec![phrasing.clone(), bg.clone()];
+        let outcome = s
+            .feed(&delta("先说方案再提素材", 0, false), &snippets)
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "p1");
+        assert!(s.assembled_text().contains(&format!("- 素材：{}", bg.text)));
+
+        let cancelled = cancelled_hit(s.cancel_last_action());
+        assert_eq!(cancelled.snippet_id, "p1");
+        assert!(!s.assembled_text().contains("[背景]"));
+
+        // 改写式 final（非前缀延伸）：游标归零、allow_cancelled=false 全量重扫旧文
+        let outcome = s
+            .feed(&delta("改成先提素材再说方案。", 0, true), &snippets)
+            .unwrap();
+        assert!(outcome.new_hits.is_empty());
+        let assembled = s.assembled_text();
+        assert!(!assembled.contains("[背景]"));
+        assert!(!assembled.contains(&bg.text));
+
+        // 新话增量说到背景触发词：撤销集出集，背景可再命中
+        let outcome = s.feed(&delta("再聊聊素材", 0, false), &snippets).unwrap();
+        assert_eq!(outcome.new_hits.len(), 1);
+        assert_eq!(outcome.new_hits[0].snippet_id, "bg1");
+        assert_eq!(outcome.new_hits[0].mode, "tail");
+        assert!(s.assembled_text().contains(&format!("- 素材：{}", bg.text)));
     }
 
     #[test]
