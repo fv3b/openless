@@ -127,8 +127,10 @@ export function ShortcutRecorder({
       setError(null);
     } catch (reason) {
       const message = String(reason);
+      const modifierOnlyMessage = message.split('hotkeyModifierOnly:')[1];
       setError(
-        message.includes('macDictationKey') ? message : t('settings.recording.comboConflict'),
+        modifierOnlyMessage ??
+          (message.includes('macDictationKey') ? message : t('settings.recording.comboConflict')),
       );
     }
   };

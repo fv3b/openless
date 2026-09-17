@@ -116,7 +116,7 @@ function ConversationSection({
 
   const saveHotkey = async (binding: { primary: string; modifiers: string[] } | null) => {
     if (binding && isModifierOnlyPrimary(binding.primary)) {
-      throw new Error(t('ghostwriter.conversation.hotkeyModifierOnly'));
+      throw new Error(`hotkeyModifierOnly:${t('ghostwriter.conversation.hotkeyModifierOnly')}`);
     }
     await onSave({
       conversationHotkey: binding ? serializeConversationHotkey(binding) : null,

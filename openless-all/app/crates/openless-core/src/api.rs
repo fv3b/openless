@@ -5398,7 +5398,8 @@ impl OpenLessBackend {
                 finalized.chars().count()
             );
             engine_result.polished_text = finalized;
-        }        engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
+        }
+        engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
             &engine_result.polished_text,
             context.polish.chinese_script_preference,
         );
