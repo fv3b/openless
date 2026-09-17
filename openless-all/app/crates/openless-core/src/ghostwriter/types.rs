@@ -169,6 +169,39 @@ pub struct SnippetDraft {
     pub example: Option<String>,
 }
 
+/// 聊天记录行角色：用户（【我】）或助手（【助手】）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+/// 聊天记录里的一条发言：角色＋原话（对话会话维护，行语法由代码固定）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTurn {
+    pub role: ChatRole,
+    pub text: String,
+}
+
+impl ChatTurn {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self { role: ChatRole::User, text: text.into() }
+    }
+
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self { role: ChatRole::Assistant, text: text.into() }
+    }
+}
+
+/// 自动回话门控判定（机制级，不靠模型自觉）：放行／冷却中（等用户新段）／
+/// 封顶（自动回话已达全会话上限）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyGate {
+    Allow,
+    Cooldown,
+    Cap,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

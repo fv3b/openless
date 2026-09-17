@@ -19,13 +19,14 @@
 use std::collections::HashSet;
 
 use crate::errors::BackendError;
+use crate::shared_types::{ConversationProbeDepth, ConversationReplyTiming};
 use crate::types::TranscriptDelta;
 
 use super::segmenter::{Segment, Segmenter};
 use super::snippet_store::{Snippet, SnippetAttachment, SnippetKind, SnippetPlacement};
 use super::types::{
-    CandidateGroupView, CandidateItem, CandidateItemView, GhostwriterSnippetHit,
-    LiveRecommendation, RecommendationView,
+    CandidateGroupView, CandidateItem, CandidateItemView, ChatRole, ChatTurn,
+    GhostwriterSnippetHit, LiveRecommendation, RecommendationView, ReplyGate,
 };
 
 pub use super::types::{FeedOutcome, PolishableSegment};
@@ -36,6 +37,9 @@ const DEFAULT_MAX_FORCE_CHARS: usize = 120;
 
 /// prior 截断长度：已润前文只带尾部 200 字符进润色 prompt。
 const PRIOR_MAX_CHARS: usize = 200;
+
+/// 追问到清深度的自动回话总数封顶（机器契约：默认 5，只数自动回话）。
+const AUTO_REPLY_CAP: usize = 5;
 
 /// 一条已生效且未撤销的命中：背景块、待融材料与会话内去重的共同依据。
 #[derive(Debug, Clone)]
@@ -100,6 +104,19 @@ pub struct GhostwriterSession {
     /// 所有背景块（背景类命中＋表述附件）拼装时按它现算头/尾位置；
     /// 设置变更经 [`Self::set_background_placement`] 即时生效。
     background_placement: SnippetPlacement,
+    /// 对话模式标志：true＝对话会话（聊天记录与回话门控生效）；普通会话恒
+    /// false，一切行为照旧（chat 恒空）。
+    conversational: bool,
+    /// 回话时机（创建时从偏好冻结）：自动触发与显式交话的行为分流依据。
+    reply_timing: ConversationReplyTiming,
+    /// 追问深度（创建时从偏好冻结）：回话门控的机制依据。
+    probe_depth: ConversationProbeDepth,
+    /// 聊天记录：【我】/【助手】按发生顺序混排（仅对话会话维护）。
+    chat: Vec<ChatTurn>,
+    /// 自动回话冷却：AI 回话后置位，用户新段完成即解除（一点一问/回声确认）。
+    reply_cooldown: bool,
+    /// 本次会话已发生的自动回话数（封顶只数自动）。
+    auto_reply_count: usize,
 }
 
 impl Default for GhostwriterSession {
@@ -126,6 +143,12 @@ impl GhostwriterSession {
             cancelled_once: HashSet::new(),
             tail_polished_covered: 0,
             background_placement: SnippetPlacement::default(),
+            conversational: false,
+            reply_timing: ConversationReplyTiming::default(),
+            probe_depth: ConversationProbeDepth::default(),
+            chat: Vec::new(),
+            reply_cooldown: false,
+            auto_reply_count: 0,
         }
     }
 
@@ -139,6 +162,98 @@ impl GhostwriterSession {
     /// 拼装现算，已生效的背景块位置随之挪，无需其他处理。
     pub fn set_background_placement(&mut self, placement: SnippetPlacement) {
         self.background_placement = placement;
+    }
+
+    // ===== 对话会话：聊天记录、模式标志、回话门控 =====
+
+    /// 创建对话会话：聊天记录与回话门控自此生效；回话时机与追问深度从偏好
+    /// 取值冻结进会话。不调用即普通代笔会话，一切行为照旧。
+    pub fn with_conversation(
+        mut self,
+        timing: ConversationReplyTiming,
+        depth: ConversationProbeDepth,
+    ) -> Self {
+        self.conversational = true;
+        self.reply_timing = timing;
+        self.probe_depth = depth;
+        self
+    }
+
+    /// 是否对话会话。
+    pub fn conversational(&self) -> bool {
+        self.conversational
+    }
+
+    /// 创建时冻结的回话时机（dispatcher 据此区分自动触发与显式交话）。
+    pub fn reply_timing(&self) -> ConversationReplyTiming {
+        self.reply_timing
+    }
+
+    /// 回话门控（机制级，不靠模型自觉）：显式交话（auto=false）恒放行——
+    /// 绕过冷却、封顶只数自动回话；自动触发（auto=true）——一点一问/回声
+    /// 确认下冷却激活即 [`ReplyGate::Cooldown`]（用户新段完成即解除），
+    /// 追问到清下自动回话数达 [`AUTO_REPLY_CAP`] 即 [`ReplyGate::Cap`]；
+    /// 其余放行。
+    pub fn reply_gate(&self, auto: bool) -> ReplyGate {
+        if !auto {
+            return ReplyGate::Allow;
+        }
+        match self.probe_depth {
+            ConversationProbeDepth::Single | ConversationProbeDepth::Echo => {
+                if self.reply_cooldown {
+                    ReplyGate::Cooldown
+                } else {
+                    ReplyGate::Allow
+                }
+            }
+            ConversationProbeDepth::UntilClear => {
+                if self.auto_reply_count >= AUTO_REPLY_CAP {
+                    ReplyGate::Cap
+                } else {
+                    ReplyGate::Allow
+                }
+            }
+        }
+    }
+
+    /// 记一条 AI 回话进聊天记录：置自动回话冷却、推进修订号；auto=true 时
+    /// 计入自动回话数（封顶只数自动，显式交话不计）。普通会话不维护聊天
+    /// 记录，调用无效。
+    pub fn record_reply(&mut self, text: String, auto: bool) {
+        if !self.conversational {
+            return;
+        }
+        self.chat.push(ChatTurn::assistant(text));
+        self.reply_cooldown = true;
+        if auto {
+            self.auto_reply_count += 1;
+        }
+        self.revision += 1;
+    }
+
+    /// 聊天记录按行语法格式化（【我】/【助手】逐行，代码固定）；空记录返回
+    /// 空串。对话 assist 与对话出稿的输入都出自这里。
+    pub fn chat_transcript(&self) -> String {
+        self.chat
+            .iter()
+            .map(|turn| match turn.role {
+                ChatRole::User => format!("【我】{}", turn.text),
+                ChatRole::Assistant => format!("【助手】{}", turn.text),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// stop 路径调用一次：未断段的尾巴作为用户话进聊天记录（api stop 时调）。
+    /// 尾巴为空不产生行；普通会话不维护聊天记录。
+    pub fn record_tail_into_chat(&mut self) {
+        if !self.conversational {
+            return;
+        }
+        let tail = self.segmenter.tail(&self.buffer).to_string();
+        if !tail.is_empty() {
+            self.chat.push(ChatTurn::user(tail));
+        }
     }
 
     /// 喂入一条转写增量与当前启用的常用语。缓冲按 delta 形态自适应
@@ -183,6 +298,12 @@ impl GhostwriterSession {
             let segment_text = segment.text.clone();
             self.segments.push(segment);
             self.polished.push(None);
+            if self.conversational {
+                // 对话会话：用户段进聊天记录；新段＝回应了上一问，
+                // 自动回话冷却解除。
+                self.chat.push(ChatTurn::user(segment_text.clone()));
+                self.reply_cooldown = false;
+            }
             // 先扫段文本再取材料：段内说出的触发词，其材料随本段转移。
             // 段文本可含已扫过的旧文，撤销过的命中不在此复活（新话触发
             // 由下方增量扫描负责）。
@@ -1022,6 +1143,107 @@ mod tests {
         assert_eq!(input.text, "尾巴第一截尾巴第二截");
         assert!(s.apply_tail_polished("尾巴二润".to_string()));
         assert_eq!(s.assembled_text(), "第一句。尾巴二润");
+    }
+
+    // ===== 对话会话：聊天记录、模式标志、回话门控 =====
+
+    fn conversational_session(depth: ConversationProbeDepth) -> GhostwriterSession {
+        GhostwriterSession::new().with_conversation(ConversationReplyTiming::Pause, depth)
+    }
+
+    #[test]
+    fn normal_session_never_maintains_chat() {
+        // 普通会话（未调 with_conversation）：聊天记录恒空，回话登记、尾巴入记、
+        // 门控都不产生任何对话行为。
+        let mut s = GhostwriterSession::new();
+        assert!(!s.conversational());
+        s.feed(&delta("第一句。继续", 0, false), &[]).unwrap();
+        s.record_reply("回话一句".into(), true);
+        s.record_tail_into_chat();
+        assert_eq!(s.chat_transcript(), "");
+        assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+        assert_eq!(s.reply_gate(false), ReplyGate::Allow);
+    }
+
+    #[test]
+    fn conversational_flag_follows_builder() {
+        assert!(conversational_session(ConversationProbeDepth::Single).conversational());
+    }
+
+    #[test]
+    fn conversational_segments_enter_chat_as_user_turns() {
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.feed(&delta("第一句。继续说", 0, false), &[]).unwrap();
+        s.feed(&delta("第二句。还没完", 0, false), &[]).unwrap();
+        assert_eq!(s.chat_transcript(), "【我】第一句。\n【我】继续说第二句。");
+    }
+
+    #[test]
+    fn chat_transcript_is_empty_before_any_turn() {
+        let s = conversational_session(ConversationProbeDepth::Single);
+        assert_eq!(s.chat_transcript(), "");
+    }
+
+    #[test]
+    fn record_reply_appends_assistant_turn_and_bumps_revision() {
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.feed(&delta("想把日志清一下。帮", 0, false), &[]).unwrap();
+        let before = s.revision();
+        s.record_reply("你说的是哪个日志？".into(), true);
+        assert_eq!(s.revision(), before + 1);
+        assert_eq!(
+            s.chat_transcript(),
+            "【我】想把日志清一下。\n【助手】你说的是哪个日志？"
+        );
+    }
+
+    #[test]
+    fn reply_gate_matrix_over_depths_and_auto() {
+        // 一点一问：回话后冷却，用户新段解除；显式交话恒放行（绕过冷却）。
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+        s.record_reply("第一问".into(), true);
+        assert_eq!(s.reply_gate(true), ReplyGate::Cooldown);
+        assert_eq!(s.reply_gate(false), ReplyGate::Allow);
+        s.feed(&delta("新段。继续", 0, false), &[]).unwrap();
+        assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+
+        // 回声确认：抑制机制同一点一问。
+        let mut s = conversational_session(ConversationProbeDepth::Echo);
+        assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+        s.record_reply("回声".into(), true);
+        assert_eq!(s.reply_gate(true), ReplyGate::Cooldown);
+        assert_eq!(s.reply_gate(false), ReplyGate::Allow);
+
+        // 追问到清：无冷却；封顶只数自动回话，第 6 次自动 Cap；显式恒放行。
+        let mut s = conversational_session(ConversationProbeDepth::UntilClear);
+        for i in 0..5 {
+            assert_eq!(s.reply_gate(true), ReplyGate::Allow, "第 {} 次应放行", i + 1);
+            s.record_reply(format!("第{}问", i + 1), true);
+        }
+        assert_eq!(s.reply_gate(true), ReplyGate::Cap);
+        assert_eq!(s.reply_gate(false), ReplyGate::Allow);
+    }
+
+    #[test]
+    fn explicit_replies_do_not_count_toward_cap() {
+        let mut s = conversational_session(ConversationProbeDepth::UntilClear);
+        for _ in 0..6 {
+            s.record_reply("显式回话".into(), false);
+        }
+        assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+    }
+
+    #[test]
+    fn tail_is_recorded_into_chat_once_at_stop() {
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.feed(&delta("把日志清一下。顺便", 0, false), &[]).unwrap();
+        s.record_tail_into_chat();
+        assert_eq!(s.chat_transcript(), "【我】把日志清一下。\n【我】顺便");
+        // 空尾巴不产生行。
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.record_tail_into_chat();
+        assert_eq!(s.chat_transcript(), "");
     }
 
     #[test]
