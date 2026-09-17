@@ -28,7 +28,9 @@ export function SavedToast({
   useEffect(() => {
     if (saveState !== 'idle') {
       setInternalVisible(true);
-      // 满足用户要求：弹出后约 0.8 秒自动收回
+      // 失败态不内部收回：错误文案要留给用户读完，存活期由父组件的
+      // timer 决定（failed 时父组件给 6 秒）；成功态维持约 0.8 秒收回。
+      if (saveState === 'failed') return;
       const timer = window.setTimeout(() => setInternalVisible(false), 800);
       return () => window.clearTimeout(timer);
     }

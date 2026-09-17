@@ -195,7 +195,10 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
       setFailedIdx(new Set());
       setExtractView('review');
     } catch (error) {
-      showSaveStatus('failed', t('ghostwriter.snippets.extractFailed', { error: String(error) }));
+      // 错误原文可能很长：截断，避免 toast 药丸（nowrap）溢出屏幕。
+      const detail = String(error);
+      const clipped = detail.length > 80 ? `${detail.slice(0, 80)}…` : detail;
+      showSaveStatus('failed', t('ghostwriter.snippets.extractFailed', { error: clipped }));
     } finally {
       setExtractBusy(false);
     }
