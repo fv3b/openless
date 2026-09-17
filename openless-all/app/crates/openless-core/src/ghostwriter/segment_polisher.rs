@@ -22,6 +22,16 @@ use crate::types::{PolishMode, SessionId};
 /// 这里保留 re-export 兼容既有调用点。
 pub use crate::ghostwriter::prompts::GHOSTWRITER_INSTRUCTION_PROMPT;
 
+/// 对话终稿出稿调用的固定会话 id（uuid5 确定性）：fixture 按「精确等于此 id」
+/// 路由 canned 出稿文本，照 [`crate::ghostwriter::assist::assist_session_id`] 的
+/// 裁决机制；dispatcher 调 [`polish_segment`] 出稿时也传它（生产与测试共享）。
+pub fn conversation_finalize_session_id() -> SessionId {
+    SessionId::from_uuid(uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_DNS,
+        b"openless.ghostwriter.conversation-finalize",
+    ))
+}
+
 /// 一次段润色的请求（由 dispatcher 从缓冲与段状态组装）。
 #[derive(Debug, Clone)]
 pub struct SegmentPolishRequest {

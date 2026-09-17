@@ -451,6 +451,7 @@ impl SelectionServiceInner {
             polish_ms: completed.polish_ms,
             ghostwriter_hits: None,
             ghostwriter_selections: None,
+            ghostwriter_chat: None,
         };
         let mut changed = false;
         match self.history.append_with_retention(

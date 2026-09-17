@@ -4755,6 +4755,17 @@ impl OpenLessBackend {
             .await
     }
 
+    /// 对话热键入口：与现有 ghostwriter 会话启动同路径，启动选项带
+    /// `ghostwriter_conversational`——会话创建点按它以偏好冻结回话时机与
+    /// 追问深度（见 [`Self::start_reserved_dictation`]）。
+    pub async fn start_ghostwriter_conversation(&self) -> Result<SessionId, BackendError> {
+        self.start_dictation_with_options(DictationStartOptions {
+            ghostwriter_conversational: true,
+            ..DictationStartOptions::default()
+        })
+        .await
+    }
+
     pub async fn start_external_dictation_with_options(
         &self,
         mut options: DictationStartOptions,
@@ -4910,13 +4921,20 @@ impl OpenLessBackend {
                     crate::style_packs::default_style_system_prompt_for_mode(
                         crate::types::PolishMode::Raw,
                     );
-                state.ghostwriter_sessions.insert(
-                    session_id,
-                    // 背景落点从当前偏好取值：会话内的所有背景块都按它现算头/尾。
-                    crate::ghostwriter::session::GhostwriterSession::new().with_background_placement(
+                // 对话会话启动标志（对话热键入口）：以偏好冻结回话时机与
+                // 追问深度；普通启动不调用，一切照旧。
+                let mut ghostwriter_session = crate::ghostwriter::session::GhostwriterSession::new()
+                    .with_background_placement(
                         self.preferences.get().ghostwriter.background_placement,
-                    ),
-                );
+                    );
+                if options.ghostwriter_conversational {
+                    let conversation_prefs = self.preferences.get().ghostwriter;
+                    ghostwriter_session = ghostwriter_session.with_conversation(
+                        conversation_prefs.conversation_reply_timing,
+                        conversation_prefs.conversation_probe_depth,
+                    );
+                }
+                state.ghostwriter_sessions.insert(session_id, ghostwriter_session);
                 Arc::new(raw_context)
             } else {
                 context
@@ -5319,23 +5337,43 @@ impl OpenLessBackend {
         log::debug!("[dictation] stop: engine result received (raw={} chars, polished={} chars), proceeding to insertion", engine_result.raw_text.chars().count(), engine_result.polished_text.chars().count());
         // Ghostwriter 激活时最终文本取自 GhostwriterSession 拼装缓冲（含生转写、
         // 材料、背景块）；仍走下方简繁转换与纠错规则。无内容（秒停等）则走上游原路径。
-        // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
-        {
-            let (tail_input, dispatcher) = {
+        let (ghostwriter_conversational, ghostwriter_dispatcher) = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            (
+                state
+                    .ghostwriter_sessions
+                    .get(&session_id)
+                    .is_some_and(|session| session.conversational()),
+                state.ghostwriter_dispatcher.clone(),
+            )
+        };
+        // 对话会话：尾巴先进聊天记录，终稿出稿吃整份聊天记录（命中材料由
+        // 出稿调用并入）；尾段补润跳过（其结果只进拼装缓冲，出稿成功即覆盖）。
+        let conversation_finalized =
+            if ghostwriter_conversational && ghostwriter_dispatcher.is_some() {
+                let dispatcher = ghostwriter_dispatcher.clone().unwrap();
+                {
+                    let mut state = self.state.write().expect("backend state lock poisoned");
+                    if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
+                        session.record_tail_into_chat();
+                    }
+                }
+                dispatcher.finalize_conversation(session_id).await
+            } else {
+            // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
+            let tail_input = {
                 let state = self.state.read().expect("backend state lock poisoned");
-                (
-                    state
-                        .ghostwriter_sessions
-                        .get(&session_id)
-                        .and_then(|session| session.tail_polish_input()),
-                    state.ghostwriter_dispatcher.clone(),
-                )
+                state
+                    .ghostwriter_sessions
+                    .get(&session_id)
+                    .and_then(|session| session.tail_polish_input())
             };
-            if let (Some(dispatcher), Some(segment)) = (dispatcher, tail_input) {
+            if let (Some(dispatcher), Some(segment)) = (ghostwriter_dispatcher.clone(), tail_input) {
                 let request = dispatcher.segment_request(&segment);
                 dispatcher.dispatch_tail(session_id, request).await;
             }
-        }
+            None
+        };
         let ghostwriter_assembled = {
             let state = self.state.read().expect("backend state lock poisoned");
             state
@@ -5349,6 +5387,13 @@ impl OpenLessBackend {
                 assembled.chars().count()
             );
             engine_result.polished_text = assembled;
+        }
+        if let Some(finalized) = conversation_finalized {
+            log::debug!(
+                "[ghostwriter] stop: conversation finalized text replaces assembled output ({} chars)",
+                finalized.chars().count()
+            );
+            engine_result.polished_text = finalized;
         }        engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
             &engine_result.polished_text,
             context.polish.chinese_script_preference,
@@ -5517,13 +5562,15 @@ impl OpenLessBackend {
         Ok(result)
     }
 
-    /// Ghostwriter 会话的历史明细快照：仍生效的命中（标题＋贴位）与仍选中的
-    /// 选中原（kind 字符串＋文本），按生效顺序；任一为空即不进历史（None）。
+    /// Ghostwriter 会话的历史明细快照：仍生效的命中（标题＋贴位）、仍选中的
+    /// 选中原（kind 字符串＋文本）与对话会话的整份聊天记录，按生效顺序；
+    /// 任一为空即不进历史（None）。
     fn ghostwriter_history_detail(
         session: &crate::ghostwriter::session::GhostwriterSession,
     ) -> (
         Option<Vec<crate::types::GhostwriterHistoryHit>>,
         Option<Vec<crate::types::GhostwriterHistorySelection>>,
+        Option<String>,
     ) {
         let hits: Vec<crate::types::GhostwriterHistoryHit> = session
             .history_hits()
@@ -5534,10 +5581,15 @@ impl OpenLessBackend {
             })
             .collect();
         // 候选与推荐纯展示（2026-09-17 裁决）：新会话不再产生历史选中；
-        // 恒 None，字段为旧记录只读保留。
+        // 恒 None，字段为旧记录只读保留。聊天记录仅对话会话写入。
+        let chat = session
+            .conversational()
+            .then(|| session.chat_transcript())
+            .filter(|chat| !chat.is_empty());
         (
             (!hits.is_empty()).then_some(hits),
             None,
+            chat,
         )
     }
 
@@ -5550,6 +5602,7 @@ impl OpenLessBackend {
         ghostwriter_history: Option<(
             Option<Vec<crate::types::GhostwriterHistoryHit>>,
             Option<Vec<crate::types::GhostwriterHistorySelection>>,
+            Option<String>,
         )>,
     ) {
         let preferences = self.get_preferences();
@@ -5581,8 +5634,8 @@ impl OpenLessBackend {
             engine_result.asr_call_label.as_ref(),
             engine_result.llm_call_label.as_ref(),
         );
-        let (ghostwriter_hits, ghostwriter_selections) =
-            ghostwriter_history.unwrap_or((None, None));
+        let (ghostwriter_hits, ghostwriter_selections, ghostwriter_chat) =
+            ghostwriter_history.unwrap_or((None, None, None));
         let session = DictationSession {
             id: result.session_id.to_string(),
             created_at: self.clock.now_utc().to_rfc3339(),
@@ -5612,6 +5665,7 @@ impl OpenLessBackend {
             polish_ms: attribution.polish_ms,
             ghostwriter_hits,
             ghostwriter_selections,
+            ghostwriter_chat,
         };
         if let Err(error) = self.append_history(
             session,
@@ -5688,6 +5742,7 @@ impl OpenLessBackend {
             polish_ms: attribution.polish_ms,
             ghostwriter_hits: None,
             ghostwriter_selections: None,
+            ghostwriter_chat: None,
         };
         if let Err(error) = self.append_history(
             session,
@@ -5952,6 +6007,32 @@ impl OpenLessBackend {
             }
         }
         Ok(Some((action, revision)))
+    }
+
+    /// 显式交话（对话热键入口）：会话须存在且为对话会话，转
+    /// dispatcher.trigger_reply（绕过冷却；封顶只数自动回话）。
+    pub fn trigger_ghostwriter_reply(&self, session_id: SessionId) -> Result<(), BackendError> {
+        let conversational = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            state
+                .ghostwriter_sessions
+                .get(&session_id)
+                .is_some_and(|session| session.conversational())
+        };
+        if !conversational {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidState,
+                "ghostwriter reply trigger requires an active conversation session",
+            ));
+        }
+        let dispatcher = self.ghostwriter_dispatcher_handle().ok_or_else(|| {
+            BackendError::new(
+                BackendErrorCode::Internal,
+                "ghostwriter dispatcher is not configured",
+            )
+        })?;
+        dispatcher.trigger_reply(&session_id);
+        Ok(())
     }
 
 
@@ -7916,6 +7997,7 @@ mod tests {
             polish_ms: None,
             ghostwriter_hits: None,
             ghostwriter_selections: None,
+            ghostwriter_chat: None,
         }
     }
 
@@ -10958,6 +11040,183 @@ mod tests {
             .save_ghostwriter_task_brief("nope", "正文")
             .is_err());
         assert!(backend.reset_ghostwriter_task_brief("nope").is_err());
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    // ===== 对话会话：启动路由、显式交话、终稿出稿、历史聊天记录 =====
+
+    async fn wait_for_ghostwriter_reply(
+        events: &mut EventSubscription,
+    ) -> crate::ghostwriter::types::GhostwriterReplyChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("GhostwriterReplyChanged did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::GhostwriterReplyChanged(payload) = event.kind {
+                return payload;
+            }
+        }
+    }
+
+    /// 对话会话端到端（canned）：对话启动→句毕回话事件→stop 终稿出稿
+    /// （输入＝聊天记录＋命中材料，system prompt＝对话出稿任务书正文）→
+    /// 历史条目带 ghostwriter_chat。
+    #[tokio::test]
+    async fn ghostwriter_conversation_session_end_to_end() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-conversation-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("段润文本")
+                .with_assist_json(r#"{"reply":"你说的是哪个日志？","recommendations":["s-log"]}"#)
+                .with_finalize_text("清空服务端缓存日志。"),
+        );
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["把日志清一下。然后就这样"],
+            "把日志清一下。然后就这样",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend =
+            backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet("s-log", "日志", "日志的完整表述文本"),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        let reply = wait_for_ghostwriter_reply(&mut events).await;
+        assert_eq!(reply.text, "你说的是哪个日志？");
+
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(result.raw_text, "把日志清一下。然后就这样");
+        assert_eq!(result.polished_text, "清空服务端缓存日志。");
+
+        let finalize_index = polisher
+            .session_ids()
+            .iter()
+            .position(|id| {
+                *id == crate::ghostwriter::segment_polisher::conversation_finalize_session_id()
+            })
+            .expect("finalize polish call");
+        assert!(polisher.inputs()[finalize_index].contains("【我】把日志清一下。"));
+        assert!(polisher.inputs()[finalize_index].contains("【助手】你说的是哪个日志？"));
+        assert!(polisher.inputs()[finalize_index].contains("【我】然后就这样"));
+        assert!(polisher.inputs()[finalize_index].contains("参考材料：日志的完整表述文本"));
+        assert_eq!(
+            polisher.contexts()[finalize_index]
+                .polish
+                .style_system_prompt,
+            crate::ghostwriter::prompts::TaskBriefId::ConversationFinalize.default_body()
+        );
+
+        let history = backend.list_history().unwrap();
+        assert_eq!(history.len(), 1);
+        let chat = history[0]
+            .ghostwriter_chat
+            .clone()
+            .expect("conversation history carries the chat transcript");
+        assert!(chat.contains("【我】把日志清一下。"));
+        assert!(chat.contains("【助手】你说的是哪个日志？"));
+        assert!(chat.contains("【我】然后就这样"));
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 显式交话入口：会话不存在/非对话会话报 InvalidState；对话会话放行并出回话。
+    #[tokio::test]
+    async fn ghostwriter_trigger_reply_validates_session() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-trigger-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("段润文本")
+                .with_assist_json(r#"{"reply":"显式交的问","recommendations":[]}"#),
+        );
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["就说一半"],
+            "就说一半",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        assert_eq!(
+            backend
+                .trigger_ghostwriter_reply(SessionId::new())
+                .unwrap_err()
+                .code,
+            BackendErrorCode::InvalidState
+        );
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        backend.trigger_ghostwriter_reply(session_id).unwrap();
+        let reply = wait_for_ghostwriter_reply(&mut events).await;
+        assert_eq!(reply.text, "显式交的问");
+        backend.stop_dictation_session(session_id).await.unwrap();
+
+        let normal = backend.start_external_dictation().await.unwrap();
+        assert_eq!(
+            backend
+                .trigger_ghostwriter_reply(normal)
+                .unwrap_err()
+                .code,
+            BackendErrorCode::InvalidState
+        );
+        backend.stop_dictation_session(normal).await.unwrap();
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 普通会话回归：历史条目不带聊天记录（ghostwriter_chat 恒 None）。
+    #[tokio::test]
+    async fn ghostwriter_normal_session_history_has_no_chat() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-nochat-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。"],
+            "第一句。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        backend.stop_dictation_session(session_id).await.unwrap();
+        let history = backend.list_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].ghostwriter_chat, None);
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

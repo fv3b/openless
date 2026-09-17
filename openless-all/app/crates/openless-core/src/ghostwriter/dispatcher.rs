@@ -184,6 +184,43 @@ impl GhostwriterPolishDispatcher {
         }
     }
 
+    /// 对话终稿出稿（stop 路径同步调用）：整份聊天记录交对话出稿任务书
+    /// 润写成指令，命中材料照旧以「参考材料：」并入（含已被段润色取走的
+    /// ——出稿以聊天记录重新出稿，所有生效材料必须在场）。会话不存在或
+    /// 聊天记录为空返回 None；润色失败告警并返回 None（调用方回落拼装缓冲）。
+    pub async fn finalize_conversation(&self, session_id: SessionId) -> Option<String> {
+        let (chat, materials) = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            let session = state.ghostwriter_sessions.get(&session_id)?;
+            (session.chat_transcript(), session.active_materials())
+        };
+        if chat.trim().is_empty() {
+            return None;
+        }
+        let request = SegmentPolishRequest {
+            session_id: super::segment_polisher::conversation_finalize_session_id(),
+            segment_index: 0,
+            prior: String::new(),
+            segment: chat,
+            materials,
+            instruction: self.task_briefs.body(TaskBriefId::ConversationFinalize),
+        };
+        match polish_segment(
+            &self.polisher,
+            &self.credential_store,
+            &self.active_llm_provider(),
+            &request,
+        )
+        .await
+        {
+            Ok(text) => Some(text),
+            Err(error) => {
+                log::warn!("[ghostwriter] conversation finalize failed: {error}");
+                None
+            }
+        }
+    }
+
     /// 触发一次实时助手（停顿/句毕调用）：对话会话走对话分支（自动回话路径，
     /// 回话门控决定是否抑制）；普通会话走 prefs 门（候选/推荐全关直接返回）→
     /// 候选节流 → 在飞防叠 → spawn 跑 [`run_assist`] 并合回批次。收尾（成败

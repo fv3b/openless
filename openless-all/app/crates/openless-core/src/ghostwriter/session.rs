@@ -732,6 +732,18 @@ impl GhostwriterSession {
             })
             .collect()
     }
+
+    /// 对话终稿出稿用的命中材料：全部仍生效（未撤销）命中的表述文本，按
+    /// 生效顺序。含已被段润色取走的（出稿以聊天记录重新出稿，段润色结果
+    /// 只进预览，材料必须在出稿输入里重新在场）；背景类命中无材料不入。
+    pub fn active_materials(&self) -> Vec<String> {
+        self.active_actions
+            .iter()
+            .filter_map(|action| match action {
+                ActiveAction::Hit(active) => active.material.clone(),
+            })
+            .collect()
+    }
 }
 
 /// contains 命中：trigger 与 aliases 逐个大小写折叠匹配，命中返回常用语全量文本。

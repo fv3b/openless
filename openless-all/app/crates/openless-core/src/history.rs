@@ -152,6 +152,7 @@ mod tests {
             polish_ms: None,
             ghostwriter_hits: None,
             ghostwriter_selections: None,
+            ghostwriter_chat: None,
         }
     }
 

@@ -134,6 +134,10 @@ pub struct DictationSession {
     /// 仅 Ghostwriter 会话且非空才写；旧 JSON 无字段照读。
     #[serde(default)]
     pub ghostwriter_selections: Option<Vec<GhostwriterHistorySelection>>,
+    /// Ghostwriter 对话会话历史明细：整份聊天记录（【我】/【助手】行语法，
+    /// 代码固定）。仅对话会话写入，普通会话不出现；旧 JSON 无字段照读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ghostwriter_chat: Option<String>,
 }
 
 /// Origin of a deterministic correction rule.

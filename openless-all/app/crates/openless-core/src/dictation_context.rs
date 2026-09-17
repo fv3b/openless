@@ -28,6 +28,10 @@ pub struct DictationStartOptions {
     pub style_pack_id: Option<String>,
     pub front_app: Option<String>,
     pub cursor_context: Option<String>,
+    /// 对话会话启动标志（对话热键入口置 true）：ghostwriter 会话创建点按它
+    /// 以偏好冻结回话时机与追问深度（`GhostwriterSession::with_conversation`）。
+    /// 普通启动恒 false，一切照旧。
+    pub ghostwriter_conversational: bool,
 }
 
 impl Default for DictationStartOptions {
@@ -39,6 +43,7 @@ impl Default for DictationStartOptions {
             style_pack_id: None,
             front_app: None,
             cursor_context: None,
+            ghostwriter_conversational: false,
         }
     }
 }

@@ -607,6 +607,7 @@ pub struct FixtureTextPolisher {
     contexts: Arc<Mutex<Vec<Arc<DictationContext>>>>,
     assist_json: Option<String>,
     extraction_json: Option<String>,
+    finalize_text: Option<String>,
 }
 
 impl FixtureTextPolisher {
@@ -619,6 +620,7 @@ impl FixtureTextPolisher {
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
             extraction_json: None,
+            finalize_text: None,
         }
     }
 
@@ -631,6 +633,7 @@ impl FixtureTextPolisher {
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
             extraction_json: None,
+            finalize_text: None,
         }
     }
 
@@ -652,6 +655,15 @@ impl FixtureTextPolisher {
     /// （uuid5 确定性 id，Task 6 dispatcher 传同一 helper 的值）即认抽取调用。
     pub fn with_extraction_json(mut self, json: impl Into<String>) -> Self {
         self.extraction_json = Some(json.into());
+        self
+    }
+
+    /// 对话终稿出稿调用（对话会话 stop）返回预置文本——按控制器裁决路由：
+    /// session_id 精确等于
+    /// [`crate::ghostwriter::segment_polisher::conversation_finalize_session_id()`]
+    /// （uuid5 确定性 id，dispatcher 出稿调用传同一 helper 的值）即认出稿调用。
+    pub fn with_finalize_text(mut self, text: impl Into<String>) -> Self {
+        self.finalize_text = Some(text.into());
         self
     }
 
@@ -691,11 +703,18 @@ impl TextPolisher for FixtureTextPolisher {
     ) -> BoxFuture<'static, Result<crate::ports::PolishOutput, BackendError>> {
         let is_extraction =
             session_id == crate::ghostwriter::snippet_extractor::extraction_session_id();
+        let is_finalize = session_id
+            == crate::ghostwriter::segment_polisher::conversation_finalize_session_id();
         let result = if is_extraction {
             match &self.extraction_json {
                 Some(extraction_json) => {
                     Ok(crate::ports::PolishOutput::text(extraction_json.clone()))
                 }
+                None => self.result.clone(),
+            }
+        } else if is_finalize {
+            match &self.finalize_text {
+                Some(finalize_text) => Ok(crate::ports::PolishOutput::text(finalize_text.clone())),
                 None => self.result.clone(),
             }
         } else {
