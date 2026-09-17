@@ -267,7 +267,10 @@ impl GhostwriterPolishDispatcher {
         prefs: crate::shared_types::GhostwriterPreferences,
         auto: bool,
     ) {
-        if !self.assist_throttle_passed(prefs.candidate_throttle_ms) {
+        // 候选节流只拦自动触发：显式交话（auto=false）不受 candidate_throttle_ms
+        // 节流——热键是显式交话模式下 AI 开口的唯一途径，节流吞掉＝永远无回话；
+        // 在飞防叠保留（防自动/显式叠飞）。
+        if auto && !self.assist_throttle_passed(prefs.candidate_throttle_ms) {
             log::debug!("[ghostwriter] conversation assist throttled (auto={auto})");
             return;
         }
@@ -352,8 +355,13 @@ impl GhostwriterPolishDispatcher {
         let outcome =
             run_assist(&self.polisher, &self.credential_store, &self.active_llm_provider(), &input)
                 .await?;
-        // 回话处理：Some 且非空才动作（AI 的话不进待融、无撤销，只进聊天记录）。
-        if let Some(reply) = outcome.reply.clone().filter(|text| !text.is_empty()) {
+        // 回话处理：Some 且非空白才动作（AI 的话不进待融、无撤销，只进聊天
+        // 记录）；纯空白视为闭嘴，不入 chat、不发事件、不置冷却。
+        if let Some(reply) = outcome
+            .reply
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+        {
             {
                 let mut state = self.state.write().expect("backend state lock poisoned");
                 let Some(session) = state.ghostwriter_sessions.get_mut(session_id) else {
@@ -1027,6 +1035,56 @@ mod tests {
         expect_no_more_events(&mut events).await;
         assert!(harness.polisher.calls().is_empty());
         assert_eq!(chat_transcript_of(&harness), "");
+    }
+
+    #[tokio::test]
+    async fn explicit_trigger_reply_bypasses_candidate_throttle() {
+        // 推荐调用刚收尾（节流窗口 2000ms 未过、时钟不推进）立即显式交话：
+        // 显式触发不受 candidate_throttle_ms 节流——热键是显式交话模式下 AI
+        // 开口的唯一途径，吞掉＝永远无回话。回话事件必须发出。
+        let harness = conversational_harness(
+            (2000, 2000),
+            vec![
+                r#"{"reply":"第一问","recommendations":["s-rec"]}"#,
+                r#"{"reply":"显式交的问","recommendations":["s-rec"]}"#,
+            ],
+            ConversationProbeDepth::Single,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let _ = next_reply_changed(&mut events).await;
+        let _ = next_assist_changed(&mut events).await;
+
+        // 时钟不推进：距上次 assist 收尾 0ms < 2000ms 节流窗口。
+        harness.dispatcher.trigger_reply(&harness.session_id);
+        let reply = next_reply_changed(&mut events).await;
+        assert_eq!(reply.text, "显式交的问");
+        assert_eq!(chat_transcript_of(&harness).matches("【助手】").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn blank_reply_is_treated_as_silence() {
+        // 纯空白 reply＝闭嘴：不入聊天记录、不发回话事件、不置冷却。
+        let harness = conversational_harness(
+            (0, 0),
+            vec![r#"{"reply":"   ","recommendations":["s-rec"]}"#],
+            ConversationProbeDepth::Single,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let assist = next_assist_changed(&mut events).await;
+        assert_eq!(assist.recommendations.len(), 1);
+        expect_no_more_events(&mut events).await;
+        assert!(!chat_transcript_of(&harness).contains("【助手】"));
+        let state = harness.state.read().expect("state lock poisoned");
+        let session = state.ghostwriter_sessions.get(&harness.session_id).unwrap();
+        assert_eq!(session.reply_gate(true), ReplyGate::Allow);
     }
 
     #[tokio::test]

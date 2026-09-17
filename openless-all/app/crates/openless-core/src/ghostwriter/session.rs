@@ -217,13 +217,15 @@ impl GhostwriterSession {
     }
 
     /// 记一条 AI 回话进聊天记录：置自动回话冷却、推进修订号；auto=true 时
-    /// 计入自动回话数（封顶只数自动，显式交话不计）。普通会话不维护聊天
-    /// 记录，调用无效。
+    /// 计入自动回话数（封顶只数自动，显式交话不计）。回话内换行归一为空格
+    /// ——聊天记录「每行一条」的行语法（【我】/【助手】）不被多行回话撑破。
+    /// 普通会话不维护聊天记录，调用无效。
     pub fn record_reply(&mut self, text: String, auto: bool) {
         if !self.conversational {
             return;
         }
-        self.chat.push(ChatTurn::assistant(text));
+        self.chat
+            .push(ChatTurn::assistant(text.replace(['\r', '\n'], " ")));
         self.reply_cooldown = true;
         if auto {
             self.auto_reply_count += 1;
@@ -1232,6 +1234,19 @@ mod tests {
             s.record_reply("显式回话".into(), false);
         }
         assert_eq!(s.reply_gate(true), ReplyGate::Allow);
+    }
+
+    #[test]
+    fn record_reply_normalizes_newlines_to_keep_line_syntax() {
+        // 多行回话归一成单行（换行→空格）：聊天记录「每行一条」的行语法
+        // 不被多行回话撑破。
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.feed(&delta("想把日志清一下。帮", 0, false), &[]).unwrap();
+        s.record_reply("第一行\n第二行".into(), true);
+        assert_eq!(
+            s.chat_transcript(),
+            "【我】想把日志清一下。\n【助手】第一行 第二行"
+        );
     }
 
     #[test]
