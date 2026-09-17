@@ -4951,6 +4951,10 @@ impl OpenLessBackend {
                 }
             });
             state.dictation.translation_active = context.polish.translation_active;
+            // 对话会话标志随状态快照下发（浮框对话标识/常驻推荐用）。ghostwriter
+            // 未激活（非 Fluid 样式/翻译中）时静默降级为普通听写，标志一并落 false。
+            state.dictation.conversational =
+                options.ghostwriter_conversational && ghostwriter_active;
             state.dictation_context = Some(Arc::clone(&context));
             context
         };
@@ -11184,6 +11188,41 @@ mod tests {
                 .code,
             BackendErrorCode::InvalidState
         );
+        backend.stop_dictation_session(normal).await.unwrap();
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 对话会话标志随状态快照下发：对话启动 conversational=true，
+    /// 普通启动恒 false（浮框对话标识/常驻推荐的唯一前端信源）。
+    #[tokio::test]
+    async fn dictation_snapshot_carries_conversational_flag() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-flag-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。"],
+            "第一句。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        assert!(backend.snapshot().dictation.conversational);
+        backend.stop_dictation_session(session_id).await.unwrap();
+
+        let normal = backend.start_external_dictation().await.unwrap();
+        assert!(!backend.snapshot().dictation.conversational);
         backend.stop_dictation_session(normal).await.unwrap();
 
         backend.shutdown().await.unwrap();

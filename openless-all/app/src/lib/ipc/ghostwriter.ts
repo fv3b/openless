@@ -140,6 +140,19 @@ export function extractGhostwriterCandidates(sessionIds: string[]): Promise<Ghos
   ]);
 }
 
+/** 对话热键入口（会话未开时按下）：开一场对话会话，回话时机与追问深度由
+ * 后端按偏好冻结；返回新会话 id。ghostwriter 未激活（非 Fluid 样式/翻译中）
+ * 时后端静默降级为普通听写。 */
+export function startGhostwriterConversation(): Promise<string> {
+  return invokeOrMock('ghostwriter_start_conversation', undefined, () => mockId());
+}
+
+/** 对话热键入口（会话开着且回话时机＝显式交话时按下）：显式交话一次。
+ * 后端校验会话存在且为对话会话（否则报错），绕过冷却。 */
+export function triggerGhostwriterReply(sessionId: string): Promise<void> {
+  return invokeOrMock('ghostwriter_trigger_reply', { sessionId }, () => undefined);
+}
+
 /** 四份任务书的列表（固定顺序由后端注册表决定）。 */
 export function listGhostwriterTaskBriefs(): Promise<GhostwriterTaskBrief[]> {
   return invokeOrMock('list_ghostwriter_task_briefs', undefined, () =>

@@ -8,6 +8,7 @@ import {
   ghostwriterPreviewReducer,
   shouldUseGhostwriterCapsule,
 } from './ghostwriterCapsule';
+import { applyTranscriptEvent, type TranscriptViewState } from './backendEvent';
 
 // Ghostwriter 浮框纯逻辑测试。与 src/lib 其它测试同风格：自定义 assert + 顶层执行
 //（前端测试栈是 node+tsx，无 DOM；不用 node:test，避免 @types/node 依赖）。
@@ -291,6 +292,133 @@ assert(
     payload: { snippetId: 's1', title: '翻译', mode: 'footnote' },
   });
   assert(ghostwriterHasUndoAction(hit, assistWithChips), '有命中即可撤销');
+}
+
+// --- 对话回话行（ghostwriter_reply_changed）：转写视图状态追加/清空 ---
+
+const EMPTY_TRANSCRIPT: TranscriptViewState = { sessionId: null, sequence: 0, text: '' };
+
+function replyEvent(sequence: number, sessionId: string, text: string) {
+  return {
+    sequence,
+    sessionId,
+    kind: { type: 'ghostwriter_reply_changed', payload: { text } },
+  };
+}
+
+// 回话行追加保序：事件保序即时间序，多行文本原样保留
+{
+  const started = applyTranscriptEvent(EMPTY_TRANSCRIPT, {
+    sequence: 1,
+    sessionId: 's1',
+    kind: { type: 'dictation_state_changed', payload: { phase: 'starting', sessionId: 's1' } },
+  });
+  assert(started.replyLines?.length === 0, 'starting 重置后回话行应为空');
+  const withDelta = applyTranscriptEvent(started, {
+    sequence: 2,
+    sessionId: 's1',
+    kind: { type: 'transcript_delta', payload: { text: '把日志', offset: 0, isFinal: false } },
+  });
+  const r1 = applyTranscriptEvent(withDelta, replyEvent(3, 's1', '你说的是哪个日志？'));
+  assert(
+    r1.replyLines?.length === 1 && r1.replyLines[0].seq === 3 && r1.replyLines[0].text === '你说的是哪个日志？',
+    '回话行应按到达顺序追加',
+  );
+  const r2 = applyTranscriptEvent(r1, replyEvent(4, 's1', '第一行\n第二行'));
+  assert(
+    r2.replyLines?.length === 2 && r2.replyLines[1].text === '第一行\n第二行',
+    '第二条回话按序追加，多行文本原样保留',
+  );
+  assert(r2.text === '把日志', '回话不影响转写文本');
+  // 旧会话的迟到回话不落行
+  const late = applyTranscriptEvent(r2, replyEvent(5, 'old', '迟到的回话'));
+  assert(late.replyLines?.length === 2, '其他会话的回话不追加');
+  // 坏 payload 原样返回
+  const bad = applyTranscriptEvent(r2, {
+    sequence: 6,
+    sessionId: 's1',
+    kind: { type: 'ghostwriter_reply_changed' },
+  });
+  assert(bad.replyLines?.length === 2, '回话载荷缺 text 时原样返回');
+}
+
+// 会话结束清空：终态 phase 与 dictation_completed 都收走回话行
+{
+  const started = applyTranscriptEvent(EMPTY_TRANSCRIPT, {
+    sequence: 1,
+    sessionId: 's1',
+    kind: { type: 'dictation_state_changed', payload: { phase: 'starting', sessionId: 's1' } },
+  });
+  const withReplies = applyTranscriptEvent(
+    applyTranscriptEvent(started, replyEvent(2, 's1', '第一句')),
+    replyEvent(3, 's1', '第二句'),
+  );
+  assert(withReplies.replyLines?.length === 2, '前置：已有两条回话行');
+  const ended = applyTranscriptEvent(withReplies, {
+    sequence: 4,
+    sessionId: 's1',
+    kind: { type: 'dictation_completed', payload: { inserted: 'inserted' } },
+  });
+  assert(ended.replyLines?.length === 0, 'dictation_completed 应清空回话行');
+  const restarted = applyTranscriptEvent(
+    applyTranscriptEvent(ended, {
+      sequence: 5,
+      sessionId: 's2',
+      kind: { type: 'dictation_state_changed', payload: { phase: 'starting', sessionId: 's2' } },
+    }),
+    replyEvent(6, 's2', '新会话第一句'),
+  );
+  assert(
+    restarted.replyLines?.length === 1 && restarted.replyLines[0].text === '新会话第一句',
+    '新会话 starting 重置后只留新回话',
+  );
+  const cancelled = applyTranscriptEvent(restarted, {
+    sequence: 7,
+    sessionId: 's2',
+    kind: { type: 'dictation_state_changed', payload: { phase: 'cancelled' } },
+  });
+  assert(cancelled.replyLines?.length === 0, 'cancelled 终态应清空回话行');
+}
+
+// --- 对话会话推荐行 sticky：推荐为空的批次不塌行，保留最后非空内容 ---
+
+{
+  const withRecs = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [],
+      recommendations: [{ snippetId: 's1', title: '项目背景' }],
+    },
+  });
+  // 普通会话：空批次照旧整行塌掉
+  const normal = ghostwriterAssistReducer(withRecs, {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [] },
+  });
+  assert(normal.recommendations.length === 0, '普通会话空推荐应整体替换（可塌）');
+  // 对话会话：空批次保留最后非空推荐
+  const sticky = ghostwriterAssistReducer(withRecs, {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [] },
+  }, true);
+  assert(
+    sticky.recommendations.length === 1 && sticky.recommendations[0].snippetId === 's1',
+    '对话会话空推荐应保留上一批非空内容',
+  );
+  // 非空批次照旧刷新
+  const refreshed = ghostwriterAssistReducer(sticky, {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [{ snippetId: 's2', title: '测试环境' }] },
+  }, true);
+  assert(
+    refreshed.recommendations.length === 1 && refreshed.recommendations[0].snippetId === 's2',
+    '对话会话非空批次应照常刷新',
+  );
+  // 坏 payload 在对话会话下也原样返回（sticky 不救坏事件）
+  assert(
+    ghostwriterAssistReducer(refreshed, { type: 'ghostwriter_assist_changed' }, true) === refreshed,
+    '对话会话下 payload 缺失仍原样返回',
+  );
 }
 
 console.log('ghostwriterCapsule.test.ts: all assertions passed');

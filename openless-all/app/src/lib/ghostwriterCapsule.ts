@@ -160,10 +160,15 @@ export function emptyGhostwriterAssistState(): GhostwriterAssistState {
  * 候选区纯状态机：只认 ghostwriter_assist_changed，payload 两块整体替换
  * （批次无修订号，事件总线保序，无乱序丢弃逻辑）；payload 缺失/形状不对
  * 与未知事件一律原样返回。
+ *
+ * conversational=true（对话会话）时推荐行常驻：某次批次推荐为空则保留上一批
+ * 的非空推荐（整场只此一份、可刷新不消失），候选组照旧整体替换；会话结束由
+ * 调用方重置整个 assist 状态（复位 sticky）。普通会话（false，缺省）行为不变。
  */
 export function ghostwriterAssistReducer(
   state: GhostwriterAssistState,
   event: GhostwriterEvent,
+  conversational = false,
 ): GhostwriterAssistState {
   if (event.type !== 'ghostwriter_assist_changed') return state;
   const payload = event.payload as Partial<GhostwriterAssistState> | undefined;
@@ -174,9 +179,11 @@ export function ghostwriterAssistReducer(
   ) {
     return state;
   }
+  const keepStaleRecommendations =
+    conversational && payload.recommendations.length === 0 && state.recommendations.length > 0;
   return {
     candidateGroups: payload.candidateGroups,
-    recommendations: payload.recommendations,
+    recommendations: keepStaleRecommendations ? state.recommendations : payload.recommendations,
   };
 }
 

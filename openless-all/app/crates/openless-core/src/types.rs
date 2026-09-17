@@ -250,6 +250,11 @@ pub struct DictationStateSnapshot {
     /// must keep their warming presentation until that callback is observed.
     #[serde(default)]
     pub recording_ready: bool,
+    /// 对话会话标志（对话热键入口的会话为 true）：随 dictation_state_changed
+    /// 事件下发，浮框据此渲染对话标识并让推荐行常驻。旧事件载荷缺省读 false，
+    /// 普通会话恒 false。
+    #[serde(default)]
+    pub conversational: bool,
 }
 
 impl Default for DictationStateSnapshot {
@@ -262,6 +267,7 @@ impl Default for DictationStateSnapshot {
             message: None,
             translation_active: false,
             recording_ready: false,
+            conversational: false,
         }
     }
 }
@@ -460,14 +466,27 @@ mod tests {
             message: None,
             translation_active: true,
             recording_ready: true,
+            conversational: true,
         };
         let value = serde_json::to_value(snapshot).unwrap();
         assert_eq!(value["phase"], "transcribing");
         assert_eq!(value["elapsedMs"], 1500);
         assert_eq!(value["translationActive"], true);
         assert_eq!(value["level"], 0.5);
+        assert_eq!(value["conversational"], true);
         assert!(value.get("sessionId").is_some());
         assert!(value.get("elapsed_ms").is_none());
+
+        // 旧事件载荷缺 conversational 键时按 false 兜底（serde default）。
+        let legacy: DictationStateSnapshot = serde_json::from_value(serde_json::json!({
+            "phase": "recording",
+            "sessionId": None::<String>,
+            "elapsedMs": 0,
+            "level": 0.0,
+            "message": None::<String>,
+        }))
+        .unwrap();
+        assert!(!legacy.conversational);
 
         let result = serde_json::to_value(DictationResult {
             session_id: session,

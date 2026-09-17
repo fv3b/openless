@@ -271,7 +271,7 @@ export {
 // splash（2.0 开屏 PV 首启标记）
 export { takeSplashPlayback, SPLASH_MAJOR } from './splash';
 
-// ghostwriter（常用语库、按需提取、任务书、浮框撤销；候选/推荐纯展示无点选）
+// ghostwriter（常用语库、按需提取、任务书、浮框撤销、对话会话；候选/推荐纯展示无点选）
 export type {
   GhostwriterCancelLastResult,
   GhostwriterTaskBrief,
@@ -288,6 +288,8 @@ export {
   listGhostwriterTaskBriefs,
   saveGhostwriterTaskBrief,
   resetGhostwriterTaskBrief,
+  startGhostwriterConversation,
+  triggerGhostwriterReply,
 } from './ghostwriter';
 
 // utils

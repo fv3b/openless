@@ -345,6 +345,11 @@ export interface StylePackRuntimeDiagnostics {
   previewOmitsFrontApp: boolean;
 }
 
+/** 回话时机：'pause' 停顿即审（默认）/'explicit' 显式交话（热键交话）。 */
+export type GhostwriterReplyTiming = 'pause' | 'explicit';
+/** 追问深度：'single' 一点一问（默认）/'untilClear' 追问到清/'echo' 回声确认。 */
+export type GhostwriterProbeDepth = 'single' | 'untilClear' | 'echo';
+
 /** Ghostwriter 层（Ghostwriter 流式浮框）候选/推荐流开关＋节流参数＋背景落点；与 Core GhostwriterPreferences 对齐。 */
 export interface GhostwriterPreferences {
   /** 候选流开关（M3 消费，仅 UI 存储）。 */
@@ -357,6 +362,16 @@ export interface GhostwriterPreferences {
   recommendationThrottleMs: number;
   /** 全局背景落点：所有背景块（背景类常用语＋表述附件）统一附在开头或文末。 */
   backgroundPlacement: SnippetPlacement;
+  /** 对话模式总开关：默认关，开了才生效。 */
+  conversationEnabled: boolean;
+  /** 对话热键（一键两用：开对话会话/显式交话），序列化串如 "alt+shift+d"；null = 未配置。 */
+  conversationHotkey: string | null;
+  /** 回话时机：停顿即审（默认）/显式交话。 */
+  conversationReplyTiming: GhostwriterReplyTiming;
+  /** 追问深度：一点一问（默认）/追问到清/回声确认。 */
+  conversationProbeDepth: GhostwriterProbeDepth;
+  /** 对话会话的推荐显示开关（仅对话模式，不动原推荐流开关），默认开。 */
+  conversationRecommendations: boolean;
 }
 
 export interface UserPreferences {
@@ -758,6 +773,12 @@ export interface GhostwriterRecommendationItem {
 export interface GhostwriterAssistState {
   candidateGroups: GhostwriterCandidateGroup[];
   recommendations: GhostwriterRecommendationItem[];
+}
+
+/** 对话回话事件（ghostwriter_reply_changed）载荷：AI 在对话会话里说的一句话。
+ *  前端按到达顺序追加进转写流（事件保序即时间序）；回话不产生生效动作。 */
+export interface GhostwriterReplyChanged {
+  text: string;
 }
 
 /** 按需批量提取产出的一条候选常用语草稿（管理页编辑勾选后才入库）。 */
