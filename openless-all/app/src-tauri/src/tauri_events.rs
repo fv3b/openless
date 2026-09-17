@@ -1330,6 +1330,7 @@ mod tests {
                     message: Some("fixture".to_string()),
                     translation_active: true,
                     recording_ready: phase != DictationPhase::Starting,
+                    conversational: false,
                 },
                 CapsuleStyle::Classic,
             );

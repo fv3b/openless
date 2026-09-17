@@ -53,6 +53,8 @@ pub struct HotkeyRuntimeTarget {
     pub coding_agent_enabled: bool,
     pub coding_agent_voice: Option<ShortcutBinding>,
     pub style_packs: Vec<StylePackHotkey>,
+    /// 对话热键（Core 存前端序列化串，宿主解析后注册全局键；None = 未配置）。
+    pub conversation: Option<String>,
 }
 
 impl From<&UserPreferences> for HotkeyRuntimeTarget {
@@ -68,6 +70,7 @@ impl From<&UserPreferences> for HotkeyRuntimeTarget {
             coding_agent_enabled: preferences.coding_agent_enabled,
             coding_agent_voice: preferences.coding_agent_voice_hotkey.clone(),
             style_packs: preferences.style_pack_hotkeys.clone(),
+            conversation: preferences.ghostwriter.conversation_hotkey.clone(),
         }
     }
 }
@@ -260,5 +263,20 @@ mod tests {
         assert!(!change.previous.openless_language_profile_enabled);
         assert!(change.next.openless_language_profile_enabled);
         assert!(!tsf_with_hidden_pref.windows_show_openless_in_keyboard_list);
+    }
+
+    #[test]
+    fn hotkey_runtime_target_carries_conversation_hotkey() {
+        let mut prefs = UserPreferences::default();
+        assert_eq!(HotkeyRuntimeTarget::from(&prefs).conversation, None);
+        prefs.ghostwriter.conversation_hotkey = Some("alt+shift+d".into());
+        assert_eq!(
+            HotkeyRuntimeTarget::from(&prefs).conversation.as_deref(),
+            Some("alt+shift+d")
+        );
+        // 改对话热键要能触发热键 effect（宿主据此重装监听器）。
+        let mut next = prefs.clone();
+        next.ghostwriter.conversation_hotkey = None;
+        assert!(SettingsEffectPlan::between(&prefs, &next).hotkeys.is_some());
     }
 }

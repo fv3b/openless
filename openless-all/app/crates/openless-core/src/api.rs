@@ -6039,6 +6039,18 @@ impl OpenLessBackend {
         Ok(())
     }
 
+    /// 对话热键分发用：当前活跃会话（reserve 起至重置前）若为对话会话，
+    /// 返回其 id；无活跃会话或活跃会话非对话会话返回 None。
+    pub fn active_ghostwriter_conversation_session(&self) -> Option<SessionId> {
+        let state = self.state.read().expect("backend state lock poisoned");
+        let session_id = state.dictation.session_id?;
+        state
+            .ghostwriter_sessions
+            .get(&session_id)
+            .filter(|session| session.conversational())
+            .map(|_| session_id)
+    }
+
 
 
     /// 按需批量提取候选常用语（常用语管理页触发）：校验 id 都在历史里、
@@ -11223,6 +11235,44 @@ mod tests {
 
         let normal = backend.start_external_dictation().await.unwrap();
         assert!(!backend.snapshot().dictation.conversational);
+        backend.stop_dictation_session(normal).await.unwrap();
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 对话热键分发用查询：活跃对话会话返回 Some(id)，普通会话/无活跃会话返回 None。
+    #[tokio::test]
+    async fn active_ghostwriter_conversation_session_tracks_conversation_state() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-active-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。"],
+            "第一句。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        assert_eq!(backend.active_ghostwriter_conversation_session(), None);
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        assert_eq!(
+            backend.active_ghostwriter_conversation_session(),
+            Some(session_id)
+        );
+        backend.stop_dictation_session(session_id).await.unwrap();
+
+        let normal = backend.start_external_dictation().await.unwrap();
+        assert_eq!(backend.active_ghostwriter_conversation_session(), None);
         backend.stop_dictation_session(normal).await.unwrap();
 
         backend.shutdown().await.unwrap();

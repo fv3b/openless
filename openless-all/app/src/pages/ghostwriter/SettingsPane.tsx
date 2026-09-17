@@ -1,11 +1,19 @@
-// SettingsPane.tsx — 「设置」页签：候选/推荐开关＋背景落点 radio＋两枚节流间隔输入。
+// SettingsPane.tsx — 「设置」页签：候选/推荐开关＋背景落点 radio＋两枚节流间隔输入，
+// 现有内容之下为「对话」子视图（总开关/热键/回话时机/追问深度/推荐显示）。
 // 输入越界（500–10000 外）在失焦时红字提示并回弹上次合法值；合法即保存、立即生效。
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ShortcutRecorder } from '../../components/ShortcutRecorder';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
-import type { GhostwriterPreferences } from '../../lib/types';
+import type { GhostwriterPreferences, GhostwriterProbeDepth, GhostwriterReplyTiming } from '../../lib/types';
 import { THROTTLE_MAX_MS, THROTTLE_MIN_MS, parseThrottleMs } from '../../lib/ghostwriterThrottle';
+import {
+  hasConversationHotkey,
+  isModifierOnlyPrimary,
+  parseConversationHotkey,
+  serializeConversationHotkey,
+} from '../../lib/ghostwriterConversation';
 import { Card } from '../_atoms';
 import { SectionTitle, SettingRow, Toggle, inputStyle } from '../settings/shared';
 
@@ -86,7 +94,137 @@ export function SettingsPane() {
         current={prefs.ghostwriter.recommendationThrottleMs}
         onSave={(value) => void saveGhostwriter({ recommendationThrottleMs: value })}
       />
+      <ConversationSection
+        ghostwriter={prefs.ghostwriter}
+        onSave={saveGhostwriter}
+      />
     </Card>
+  );
+}
+
+/** 「对话」子视图：对话模式总开关＋一键两用热键＋回话时机/追问深度/推荐显示。
+ *  热键录制仅总开关开启后可用；热键序列化成小写串存 ghostwriter.conversationHotkey，
+ *  Tauri 宿主按同一契约解析注册全局键（见 lib/ghostwriterConversation.ts）。 */
+function ConversationSection({
+  ghostwriter,
+  onSave,
+}: {
+  ghostwriter: GhostwriterPreferences;
+  onSave: (patch: Partial<GhostwriterPreferences>) => Promise<void> | void;
+}) {
+  const { t } = useTranslation();
+
+  const saveHotkey = async (binding: { primary: string; modifiers: string[] } | null) => {
+    if (binding && isModifierOnlyPrimary(binding.primary)) {
+      throw new Error(t('ghostwriter.conversation.hotkeyModifierOnly'));
+    }
+    await onSave({
+      conversationHotkey: binding ? serializeConversationHotkey(binding) : null,
+    });
+  };
+
+  return (
+    <>
+      <SectionTitle>{t('ghostwriter.conversation.title')}</SectionTitle>
+      <SettingRow
+        label={t('ghostwriter.conversation.enable')}
+        desc={t('ghostwriter.conversation.enableDesc')}
+      >
+        <Toggle
+          on={ghostwriter.conversationEnabled}
+          onToggle={(next) => void onSave({ conversationEnabled: next })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.conversation.hotkey')}
+        desc={t('ghostwriter.conversation.hotkeyDesc')}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+          <ShortcutRecorder
+            value={parseConversationHotkey(ghostwriter.conversationHotkey)}
+            comboOnly
+            disabled={!ghostwriter.conversationEnabled}
+            onSave={saveHotkey}
+            onDisable={() => saveHotkey(null)}
+          />
+          {ghostwriter.conversationEnabled && !hasConversationHotkey(ghostwriter.conversationHotkey) ? (
+            <div style={{ fontSize: 11, color: 'var(--ol-ink-4)' }}>
+              {t('ghostwriter.conversation.hotkeyUnsetHint')}
+            </div>
+          ) : null}
+        </div>
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.conversation.timing')}
+        desc={t('ghostwriter.conversation.timingDesc')}
+      >
+        <RadioGroup
+          name="ghostwriter-conversation-timing"
+          value={ghostwriter.conversationReplyTiming}
+          options={[
+            ['pause', 'ghostwriter.conversation.timingPause'],
+            ['explicit', 'ghostwriter.conversation.timingExplicit'],
+          ]}
+          onChange={(value) => void onSave({ conversationReplyTiming: value as GhostwriterReplyTiming })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.conversation.depth')}
+        desc={t('ghostwriter.conversation.depthDesc')}
+      >
+        <RadioGroup
+          name="ghostwriter-conversation-depth"
+          value={ghostwriter.conversationProbeDepth}
+          options={[
+            ['single', 'ghostwriter.conversation.depthSingle'],
+            ['untilClear', 'ghostwriter.conversation.depthUntilClear'],
+            ['echo', 'ghostwriter.conversation.depthEcho'],
+          ]}
+          onChange={(value) => void onSave({ conversationProbeDepth: value as GhostwriterProbeDepth })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.conversation.recommendations')}
+        desc={t('ghostwriter.conversation.recommendationsDesc')}
+      >
+        <Toggle
+          on={ghostwriter.conversationRecommendations}
+          onToggle={(next) => void onSave({ conversationRecommendations: next })}
+        />
+      </SettingRow>
+    </>
+  );
+}
+
+function RadioGroup({
+  name,
+  value,
+  options,
+  onChange,
+}: {
+  name: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (value: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      {options.map(([optionValue, labelKey]) => (
+        <label
+          key={optionValue}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'default' }}
+        >
+          <input
+            type="radio"
+            name={name}
+            checked={value === optionValue}
+            onChange={() => onChange(optionValue)}
+          />
+          <span style={{ fontSize: 12.5, color: 'var(--ol-ink)' }}>{t(labelKey)}</span>
+        </label>
+      ))}
+    </div>
   );
 }
 

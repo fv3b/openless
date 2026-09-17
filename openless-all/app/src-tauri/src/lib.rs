@@ -904,6 +904,7 @@ fn run_desktop() {
                 coordinator.start_translation_hotkey_listener();
                 coordinator.start_switch_style_hotkey_listener();
                 coordinator.start_open_app_hotkey_listener();
+                coordinator.start_conversation_hotkey_listener();
                 coordinator.start_style_pack_hotkey_listeners();
             }
             #[cfg(target_os = "macos")]

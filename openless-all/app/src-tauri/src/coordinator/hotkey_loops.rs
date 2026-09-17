@@ -1548,7 +1548,40 @@ pub(super) fn handle_action_hotkey_pressed(inner: &Arc<Inner>, kind: ActionHotke
     match kind {
         ActionHotkeyKind::SwitchStyle => switch_to_previous_style(inner),
         ActionHotkeyKind::OpenApp => inner.host.show_main_window(),
+        ActionHotkeyKind::Conversation => handle_conversation_hotkey_pressed(inner),
     }
+}
+
+/// 对话热键分发（一键两用，防误触）：
+/// - 无活跃对话会话 → 开对话会话（后端按偏好冻结回话时机与追问深度）；
+/// - 有活跃对话会话且回话时机＝显式交话 → 触发一次回话（绕过冷却）；
+/// - 其余（停顿即审下的活跃对话会话、活跃普通会话、总开关关闭）→ 无操作。
+/// ghostwriter 未激活（非 Fluid 样式/翻译中）时 start 由后端静默降级为普通
+/// 听写，这里不额外处理。
+pub(super) fn handle_conversation_hotkey_pressed(inner: &Arc<Inner>) {
+    let preferences = inner.backend.get_preferences();
+    if !preferences.ghostwriter.conversation_enabled {
+        log::info!("[coord] conversation hotkey ignored: conversation mode disabled");
+        return;
+    }
+    if let Some(session_id) = inner.backend.active_ghostwriter_conversation_session() {
+        if preferences.ghostwriter.conversation_reply_timing
+            != openless_core::shared_types::ConversationReplyTiming::Explicit
+        {
+            log::info!("[coord] conversation hotkey ignored: pause timing, no-op");
+            return;
+        }
+        if let Err(error) = inner.backend.trigger_ghostwriter_reply(session_id) {
+            log::warn!("[coord] conversation trigger reply failed: {error}");
+        }
+        return;
+    }
+    let backend = Arc::clone(&inner.backend);
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = backend.start_ghostwriter_conversation().await {
+            log::warn!("[coord] conversation start failed: {error}");
+        }
+    });
 }
 
 /// 全局快捷键切风格后的轻量提示：用户多半在别的前台 app 里按键，不弹提示
@@ -1629,7 +1662,38 @@ pub(super) fn action_hotkey_slot(
     match kind {
         ActionHotkeyKind::SwitchStyle => &inner.switch_style_hotkey,
         ActionHotkeyKind::OpenApp => &inner.open_app_hotkey,
+        ActionHotkeyKind::Conversation => &inner.conversation_hotkey,
     }
+}
+
+/// 解析对话热键序列化串（前端保存格式：全小写、`+` 分隔、修饰键在前主键最后，
+/// 如 "alt+shift+d"）。空串／全是修饰键（modifier-only 不支持）／含未知 token
+/// → None（视为未配置，监听器不装）。
+pub(super) fn parse_conversation_hotkey(raw: &str) -> Option<crate::types::ShortcutBinding> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut modifiers = Vec::new();
+    let mut primary: Option<String> = None;
+    for token in trimmed.split('+') {
+        let token = token.trim().to_ascii_lowercase();
+        match token.as_str() {
+            "cmd" | "command" | "super" | "meta" | "win" => modifiers.push("cmd".into()),
+            "ctrl" | "control" => modifiers.push("ctrl".into()),
+            "alt" | "option" | "opt" => modifiers.push("alt".into()),
+            "shift" => modifiers.push("shift".into()),
+            "" => return None,
+            other => {
+                if primary.is_some() {
+                    return None;
+                }
+                primary = Some(other.to_string());
+            }
+        }
+    }
+    let primary = primary?;
+    Some(crate::types::ShortcutBinding { primary, modifiers })
 }
 
 pub(super) fn action_hotkey_binding(
@@ -1640,6 +1704,10 @@ pub(super) fn action_hotkey_binding(
     match kind {
         ActionHotkeyKind::SwitchStyle => target.switch_style,
         ActionHotkeyKind::OpenApp => target.open_app,
+        ActionHotkeyKind::Conversation => target
+            .conversation
+            .as_deref()
+            .and_then(parse_conversation_hotkey),
     }
 }
 
@@ -1661,6 +1729,7 @@ pub(super) fn action_hotkey_bridge_thread_name(kind: ActionHotkeyKind) -> &'stat
     match kind {
         ActionHotkeyKind::SwitchStyle => "openless-switch-style-hotkey-bridge",
         ActionHotkeyKind::OpenApp => "openless-open-app-hotkey-bridge",
+        ActionHotkeyKind::Conversation => "openless-conversation-hotkey-bridge",
     }
 }
 
