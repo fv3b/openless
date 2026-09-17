@@ -30,12 +30,14 @@ pub struct TaskBriefStore {
     state: Mutex<HashMap<String, String>>,
 }
 
-/// 固定四份的注册表顺序（list() 与界面列表都按这个序）。
-const ALL_IDS: [TaskBriefId; 4] = [
+/// 固定六份的注册表顺序（list() 与界面列表都按这个序）。
+const ALL_IDS: [TaskBriefId; 6] = [
     TaskBriefId::InstructionPolish,
     TaskBriefId::Candidates,
     TaskBriefId::Recommendations,
     TaskBriefId::SedimentExtraction,
+    TaskBriefId::ConversationReply,
+    TaskBriefId::ConversationFinalize,
 ];
 
 impl TaskBriefStore {
@@ -110,7 +112,7 @@ impl TaskBriefStore {
             .unwrap_or(false)
     }
 
-    /// 全部五份任务书快照，固定注册表顺序。
+    /// 全部六份任务书快照，固定注册表顺序。
     pub fn list(&self) -> Vec<TaskBriefInfo> {
         match self.lock() {
             Ok(overrides) => ALL_IDS.iter().map(|id| self.info(*id, &overrides)).collect(),
@@ -278,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_four_in_fixed_order() {
+    fn list_returns_six_in_fixed_order() {
         let store = TaskBriefStore::in_memory();
         let briefs = store.list();
         assert_eq!(
@@ -291,9 +293,11 @@ mod tests {
                 "candidates",
                 "recommendations",
                 "sediment_extraction",
+                "conversation_reply",
+                "conversation_finalize",
             ]
         );
-        assert_eq!(briefs.len(), 4);
+        assert_eq!(briefs.len(), 6);
         assert!(briefs.iter().all(|brief| !brief.modified));
         assert!(briefs.iter().all(|brief| !brief.title.is_empty()));
         assert!(briefs.iter().all(|brief| !brief.description.is_empty()));
@@ -309,7 +313,7 @@ mod tests {
     #[test]
     fn unknown_stored_keys_are_skipped() {
         // 退役任务书的旧覆写键（如 sediment_notice）留在文件里不影响加载：
-        // 未知键被静默忽略，已知键照常读回，list 仍是固定四份。
+        // 未知键被静默忽略，已知键照常读回，list 仍是固定六份。
         let dir = std::env::temp_dir().join(format!(
             "openless-core-ghostwriter-briefs-stale-{}",
             uuid::Uuid::new_v4().simple()
@@ -328,7 +332,7 @@ mod tests {
             store.body(TaskBriefId::SedimentExtraction),
             TaskBriefId::SedimentExtraction.default_body()
         );
-        assert_eq!(store.list().len(), 4);
+        assert_eq!(store.list().len(), 6);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

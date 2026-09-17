@@ -10919,6 +10919,8 @@ mod tests {
                 "candidates",
                 "recommendations",
                 "sediment_extraction",
+                "conversation_reply",
+                "conversation_finalize",
             ]
         );
         assert!(briefs.iter().all(|brief| !brief.modified));

@@ -10,7 +10,10 @@ pub const GHOSTWRITER_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。
 /// 实时助手一次调用协同产出（候选/推荐）的输出契约，逐字拼接，界面只读展示。
 pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|naming\",\"items\":[{\"name\":\"名字\",\"note\":\"注释或理由\"},…]}],\"recommendations\":[\"常用语id\",…]}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。";
 
-/// 任务书身份：Ghostwriter 的四个 LLM 功能各对应一份任务书。
+/// 对话会话一次调用双产出（回话＋推荐）的输出契约，逐字拼接，界面只读展示。
+pub const CONVERSATION_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"reply\":\"给说话人的一句话，或 null\",\"recommendations\":[\"常用语id\",…]}\nreply 为 null 表示这次闭嘴；推荐最多 3 个 id；没有的键给空数组或 null。";
+
+/// 任务书身份：Ghostwriter 的六个 LLM 功能各对应一份任务书。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskBriefId {
     /// 段润色：把口语转写整理成指令。
@@ -21,6 +24,10 @@ pub enum TaskBriefId {
     Recommendations,
     /// 提取常用语：从语音记录批量提取候选常用语（常用语管理页按需触发）。
     SedimentExtraction,
+    /// 对话回话：管对话会话里 AI 什么时候说什么、怎么校准怎么追问。
+    ConversationReply,
+    /// 对话出稿：把整份聊天记录润写成最终指令。
+    ConversationFinalize,
 }
 
 impl TaskBriefId {
@@ -31,6 +38,8 @@ impl TaskBriefId {
             Self::Candidates => "candidates",
             Self::Recommendations => "recommendations",
             Self::SedimentExtraction => "sediment_extraction",
+            Self::ConversationReply => "conversation_reply",
+            Self::ConversationFinalize => "conversation_finalize",
         }
     }
 
@@ -41,6 +50,8 @@ impl TaskBriefId {
             "candidates" => Some(Self::Candidates),
             "recommendations" => Some(Self::Recommendations),
             "sediment_extraction" => Some(Self::SedimentExtraction),
+            "conversation_reply" => Some(Self::ConversationReply),
+            "conversation_finalize" => Some(Self::ConversationFinalize),
             _ => None,
         }
     }
@@ -52,6 +63,8 @@ impl TaskBriefId {
             Self::Candidates => "命名校准",
             Self::Recommendations => "常用语推荐",
             Self::SedimentExtraction => "提取常用语",
+            Self::ConversationReply => "对话回话",
+            Self::ConversationFinalize => "对话出稿",
         }
     }
 
@@ -65,6 +78,12 @@ impl TaskBriefId {
             Self::Recommendations => "管从常用语库里挑哪些条目推荐，改了会影响推荐区。",
             Self::SedimentExtraction => {
                 "管从语音记录提取候选常用语，改了会影响提取结果。"
+            }
+            Self::ConversationReply => {
+                "管对话会话里 AI 什么时候说什么、怎么校准怎么追问，改了会影响回话。"
+            }
+            Self::ConversationFinalize => {
+                "管聊天记录怎么润写成指令，改了会影响最终贴出的指令。"
             }
         }
     }
@@ -88,6 +107,22 @@ impl TaskBriefId {
             Self::SedimentExtraction => {
                 "你是语音常用语助手。下面是从用户历史语音记录里选出的若干段口语转写。从这些转写里找出值得存成常用语的说法：说法固定、以后还会口头用到、贴着用户自己的措辞习惯。每条给出：整理好的说法（phrase）、一个便于口头触发的短触发词（suggestedTrigger）、一句原话例句（example）。没有值得收的就返回空数组。"
             }
+            Self::ConversationReply => {
+                "你是语音对话助手。用户在用语音跟你对一场话，目的是把一件他想交办的事说清。\n\
+                 下面是你们目前的聊天记录和他的最新发言。\n\
+                 你的职责：理解他的真实意图；发现说不清、没说全、用词含糊的地方，用一句短话回他（指出歧义、给出本行叫法并配一句外行能懂的解释、或补一句他没想到的要点）。\n\
+                 一次只说一句，不超过 80 字；他没有问题你就闭嘴（reply 给 null）；拿不准他的意思就问，但同一个点他回应过就不再纠缠。\n\
+                 不要替他做决定，不要复述他的话，不要客套。"
+            }
+            Self::ConversationFinalize => {
+                "你是语音指令整理器。下面是一段用户与助手的对话记录：【我】开头的都是用户说的话，【助手】开头的是助手为了消歧而说的话。\n\
+                 把用户的真实意图整理成清晰、直接、结构清楚的指令：\n\
+                 - 只整理【我】的内容；【助手】的内容只当已澄清的上下文，里面的措辞不得当成需求写进指令\n\
+                 - 对话里已经说清的决定（叫法、方案、边界）要体现在指令里\n\
+                 - 去掉口语、重复、语气词；原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n\
+                 - 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n\
+                 只输出整理后的指令文本，不要任何解释或前缀。"
+            }
         }
     }
 }
@@ -103,7 +138,10 @@ mod tests {
             (TaskBriefId::Candidates, "candidates", "命名校准"),
             (TaskBriefId::Recommendations, "recommendations", "常用语推荐"),
             (TaskBriefId::SedimentExtraction, "sediment_extraction", "提取常用语"),
+            (TaskBriefId::ConversationReply, "conversation_reply", "对话回话"),
+            (TaskBriefId::ConversationFinalize, "conversation_finalize", "对话出稿"),
         ];
+        assert_eq!(expected.len(), 6);
         for (id, key, title) in expected {
             assert_eq!(id.key(), key);
             assert_eq!(TaskBriefId::from_key(key), Some(id));
@@ -111,6 +149,15 @@ mod tests {
             assert!(!id.description().is_empty());
             assert!(!id.default_body().is_empty());
         }
+        // 新增两份的描述逐字钉住（界面文案同步用）。
+        assert_eq!(
+            TaskBriefId::ConversationReply.description(),
+            "管对话会话里 AI 什么时候说什么、怎么校准怎么追问，改了会影响回话。"
+        );
+        assert_eq!(
+            TaskBriefId::ConversationFinalize.description(),
+            "管聊天记录怎么润写成指令，改了会影响最终贴出的指令。"
+        );
         // 退役的任务书身份：旧键不再可解析。
         assert_eq!(TaskBriefId::from_key("sediment_notice"), None);
         assert_eq!(TaskBriefId::from_key("unknown"), None);
@@ -141,12 +188,47 @@ mod tests {
     }
 
     #[test]
+    fn conversation_output_contract_is_verbatim() {
+        assert!(CONVERSATION_OUTPUT_CONTRACT.starts_with("只输出 JSON，不要任何解释或代码块标记："));
+        assert!(CONVERSATION_OUTPUT_CONTRACT.contains(
+            "{\"reply\":\"给说话人的一句话，或 null\",\"recommendations\":[\"常用语id\",…]}"
+        ));
+        assert!(CONVERSATION_OUTPUT_CONTRACT
+            .contains("reply 为 null 表示这次闭嘴；推荐最多 3 个 id"));
+        assert!(CONVERSATION_OUTPUT_CONTRACT.ends_with("没有的键给空数组或 null。"));
+    }
+
+    #[test]
+    fn conversation_default_bodies_are_verbatim() {
+        assert_eq!(
+            TaskBriefId::ConversationReply.default_body(),
+            "你是语音对话助手。用户在用语音跟你对一场话，目的是把一件他想交办的事说清。\n\
+             下面是你们目前的聊天记录和他的最新发言。\n\
+             你的职责：理解他的真实意图；发现说不清、没说全、用词含糊的地方，用一句短话回他（指出歧义、给出本行叫法并配一句外行能懂的解释、或补一句他没想到的要点）。\n\
+             一次只说一句，不超过 80 字；他没有问题你就闭嘴（reply 给 null）；拿不准他的意思就问，但同一个点他回应过就不再纠缠。\n\
+             不要替他做决定，不要复述他的话，不要客套。"
+        );
+        assert_eq!(
+            TaskBriefId::ConversationFinalize.default_body(),
+            "你是语音指令整理器。下面是一段用户与助手的对话记录：【我】开头的都是用户说的话，【助手】开头的是助手为了消歧而说的话。\n\
+             把用户的真实意图整理成清晰、直接、结构清楚的指令：\n\
+             - 只整理【我】的内容；【助手】的内容只当已澄清的上下文，里面的措辞不得当成需求写进指令\n\
+             - 对话里已经说清的决定（叫法、方案、边界）要体现在指令里\n\
+             - 去掉口语、重复、语气词；原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n\
+             - 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n\
+             只输出整理后的指令文本，不要任何解释或前缀。"
+        );
+    }
+
+    #[test]
     fn default_bodies_do_not_leak_prompt_wording() {
         for id in [
             TaskBriefId::InstructionPolish,
             TaskBriefId::Candidates,
             TaskBriefId::Recommendations,
             TaskBriefId::SedimentExtraction,
+            TaskBriefId::ConversationReply,
+            TaskBriefId::ConversationFinalize,
         ] {
             assert!(!id.default_body().contains("提示词"));
             assert!(!id.description().contains("提示词"));
