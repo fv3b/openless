@@ -176,6 +176,8 @@ export const ja: typeof zhCN = {
       recommendLabel: '定型句',
       candidateLabel: '候補',
       saveFailedDuplicate: 'トリガーが既に存在します。Ghostwriter ページで変更してください',
+      conversationBadge: '会話',
+      replyPrefix: 'アシスタント',
     },
     snippets: {
       title: '定型句',

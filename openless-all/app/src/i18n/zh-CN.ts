@@ -176,6 +176,8 @@ export const zhCN = {
       recommendLabel: '常用语',
       candidateLabel: '候选',
       saveFailedDuplicate: '触发词已存在，去 Ghostwriter 页改一个',
+      conversationBadge: '对话',
+      replyPrefix: '助手',
     },
     snippets: {
       title: '常用语',

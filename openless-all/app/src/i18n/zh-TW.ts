@@ -178,6 +178,8 @@ export const zhTW: typeof zhCN = {
       recommendLabel: '常用語',
       candidateLabel: '候選',
       saveFailedDuplicate: '觸發詞已存在，去 Ghostwriter 頁改一個',
+      conversationBadge: '對話',
+      replyPrefix: '助手',
     },
     snippets: {
       title: '常用語',

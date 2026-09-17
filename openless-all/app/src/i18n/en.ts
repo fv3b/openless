@@ -199,6 +199,8 @@ export const en: typeof zhCN & {
       recommendLabel: 'Snippets',
       candidateLabel: 'Candidate',
       saveFailedDuplicate: 'Trigger already exists — edit it on the Ghostwriter page',
+      conversationBadge: 'Conversation',
+      replyPrefix: 'Assistant',
     },
     snippets: {
       title: 'Snippets',

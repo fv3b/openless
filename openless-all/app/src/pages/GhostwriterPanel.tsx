@@ -4,6 +4,7 @@ import { isTauri } from '../lib/ipc';
 import {
   applyTranscriptEvent,
   type BackendEvent,
+  type TranscriptReplyLine,
   type TranscriptViewState,
 } from '../lib/backendEvent';
 import {
@@ -30,8 +31,11 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作，浮框唯一
  * 按钮＝✕）、候选区（候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
  * 候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，看中哪个常用语
- * 直接读它的触发词，命中机制自然接住，2026-09-17 裁决）、
- * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
+ * 直接读它的触发词，命中机制自然接住，2026-09-17 裁决；对话会话下推荐行
+ * sticky 常驻，空批次不塌行）、
+ * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照；
+ * 对话会话的 AI 回话以「助手」前缀行按到达顺序追加其后，多行文本原样保留）。
+ * 对话会话在标题区带「对话」标识（dictation_state_changed 载荷 conversational）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
  * 定位固定当前显示器底部居中（Rust 侧未感知光标所在屏；跟随光标屏未实现）。
@@ -142,6 +146,8 @@ export function GhostwriterPanel() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [text, setText] = useState('');
+  const [replyLines, setReplyLines] = useState<TranscriptReplyLine[]>([]);
+  const [conversational, setConversational] = useState(false);
   const [preview, setPreview] = useState<GhostwriterPreviewState>(emptyGhostwriterPreviewState());
   const [assist, setAssist] = useState<GhostwriterAssistState>(emptyGhostwriterAssistState());
   // 候选区渲染快照：内容清空时保留最后一帧到收起动画结束（见下 effect）。
@@ -149,6 +155,8 @@ export function GhostwriterPanel() {
   const [notice, setNotice] = useState<FallbackNotice | null>(null);
   const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
+  // 事件监听只挂一次，conversational 经 ref 供 assist reducer 读取（sticky 推荐行）。
+  const conversationalRef = useRef(false);
   const timersRef = useRef<number[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -243,11 +251,12 @@ export function GhostwriterPanel() {
         const next = applyTranscriptEvent(transcriptRef.current, e);
         transcriptRef.current = next;
         setText(next.text);
+        setReplyLines(next.replyLines ?? []);
 
         if (e.kind.type === 'ghostwriter_preview_changed' || e.kind.type === 'ghostwriter_snippets_hit') {
           setPreview(state => ghostwriterPreviewReducer(state, e.kind));
         } else if (e.kind.type === 'ghostwriter_assist_changed') {
-          setAssist(state => ghostwriterAssistReducer(state, e.kind));
+          setAssist(state => ghostwriterAssistReducer(state, e.kind, conversationalRef.current));
         } else if (e.kind.type === 'ghostwriter_notice') {
           const payload = e.kind.payload as { message?: string; level?: string } | undefined;
           if (payload?.level === 'error' && typeof payload.message === 'string' && payload.message) {
@@ -255,9 +264,12 @@ export function GhostwriterPanel() {
           }
         } else if (e.kind.type === 'dictation_state_changed') {
           const payload = e.kind.payload as
-            | { phase?: string; level?: number }
+            | { phase?: string; level?: number; conversational?: boolean }
             | undefined;
           const phase = payload?.phase;
+          const sessionConversational = payload?.conversational === true;
+          conversationalRef.current = sessionConversational;
+          setConversational(sessionConversational);
           if (phase === 'starting') {
             setRecording(false);
             setPreview(emptyGhostwriterPreviewState());
@@ -322,13 +334,13 @@ export function GhostwriterPanel() {
     };
   }, []);
 
-  // 转写流新文本到达时贴底滚动；用户上翻查看时停在原位。
+  // 转写流新文本/新回话行到达时贴底滚动；用户上翻查看时停在原位。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [text]);
+  }, [text, replyLines]);
 
   // 候选区（候选组／推荐行）任一为空整行不渲染，全空整区收起。
   const assistHasContent =
@@ -429,6 +441,24 @@ export function GhostwriterPanel() {
             >
               {recording ? t('ghostwriter.panel.recording') : t('ghostwriter.panel.preparing')}
             </span>
+            {conversational ? (
+              <span
+                style={{
+                  padding: '1px 8px',
+                  borderRadius: 999,
+                  background: 'rgba(96, 165, 250, 0.14)',
+                  border: '1px solid rgba(96, 165, 250, 0.38)',
+                  color: '#93c5fd',
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: '0.06em',
+                  lineHeight: 1.6,
+                  flexShrink: 0,
+                }}
+              >
+                {t('ghostwriter.panel.conversationBadge')}
+              </span>
+            ) : null}
             <div style={{ flex: 1 }} />
             <div
               style={{
@@ -579,6 +609,32 @@ export function GhostwriterPanel() {
               ) : null}
               {recording && !text ? t('ghostwriter.panel.listening') : null}
             </p>
+            {replyLines.map((line) => (
+              <p
+                key={line.seq}
+                style={{
+                  margin: '4px 0 0',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  color: 'rgba(147, 197, 253, 0.82)',
+                  fontStyle: 'italic',
+                }}
+              >
+                <span
+                  style={{
+                    fontStyle: 'normal',
+                    fontWeight: 600,
+                    color: '#93c5fd',
+                    marginRight: 6,
+                  }}
+                >
+                  {t('ghostwriter.panel.replyPrefix')}
+                </span>
+                {line.text}
+              </p>
+            ))}
           </div>
         </div>
       ) : null}

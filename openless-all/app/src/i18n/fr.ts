@@ -185,6 +185,8 @@ export const fr: typeof zhCN = {
       recommendLabel: 'Formules',
       candidateLabel: 'Candidat',
       saveFailedDuplicate: 'Ce déclencheur existe déjà — modifiez-le dans la page Ghostwriter',
+      conversationBadge: 'Conversation',
+      replyPrefix: 'Assistant',
     },
     snippets: {
       title: 'Formules',

@@ -174,6 +174,8 @@ export const ko: typeof zhCN = {
       recommendLabel: '짧은 구문',
       candidateLabel: '후보',
       saveFailedDuplicate: '트리거가 이미 있습니다. Ghostwriter 페이지에서 수정하세요',
+      conversationBadge: '대화',
+      replyPrefix: '어시스턴트',
     },
     snippets: {
       title: '짧은 구문',

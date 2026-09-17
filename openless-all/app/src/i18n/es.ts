@@ -187,6 +187,8 @@ export const es: typeof zhCN = {
       recommendLabel: 'Frases',
       candidateLabel: 'Candidato',
       saveFailedDuplicate: 'El disparador ya existe; cámbialo en la página de Ghostwriter',
+      conversationBadge: 'Conversación',
+      replyPrefix: 'Asistente',
     },
     snippets: {
       title: 'Frases',
