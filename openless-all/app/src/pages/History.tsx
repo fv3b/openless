@@ -22,6 +22,7 @@ import {
   packDisplayName,
   resolveRepolishRetryPackIdWithFallback,
 } from '../lib/history-repolish';
+import { parseChatTranscript } from '../lib/ghostwriterChatTranscript';
 import { useMobileLayout } from '../lib/useMobileLayout';
 import type { DictationSession, PolishMode, StylePack } from '../lib/types';
 import { countCodePoints } from '../lib/unicode';
@@ -615,7 +616,8 @@ export function History() {
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {((item.ghostwriterHits?.length ?? 0) > 0 ||
-                      (item.ghostwriterSelections?.length ?? 0) > 0) && (
+                      (item.ghostwriterSelections?.length ?? 0) > 0 ||
+                      Boolean(item.ghostwriterChat?.trim())) && (
                       <Btn
                         icon="ghostwriter"
                         variant="ghost"
@@ -917,14 +919,16 @@ export function History() {
   );
 }
 
-/** Ghostwriter 历史明细面板：stop 时仍生效的常用语命中（✓ 标题·贴位）与仍选中的
- *  候选/推荐（类型标签＋文本）。两个明细字段都为空（或旧记录无字段）不渲染；
- *  展开态由父级持有（按钮在上方按钮组里），这里只管内容。 */
+/** Ghostwriter 历史明细面板：stop 时仍生效的常用语命中（✓ 标题·贴位）、仍选中的
+ *  候选/推荐（类型标签＋文本）、对话会话的整份聊天记录（【我】/【助手】逐行）。
+ *  三个明细字段都为空（或旧记录无字段）不渲染；展开态由父级持有（按钮在上方
+ *  按钮组里），这里只管内容。 */
 function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
   const { t } = useTranslation();
   const hits = item.ghostwriterHits ?? [];
   const selections = item.ghostwriterSelections ?? [];
-  if (hits.length === 0 && selections.length === 0) return null;
+  const chatLines = parseChatTranscript(item.ghostwriterChat);
+  if (hits.length === 0 && selections.length === 0 && chatLines.length === 0) return null;
   return (
     <div
       style={{
@@ -937,7 +941,7 @@ function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
       }}
     >
       {hits.length > 0 && (
-        <div style={selections.length > 0 ? { marginBottom: 10 } : undefined}>
+        <div style={selections.length > 0 || chatLines.length > 0 ? { marginBottom: 10 } : undefined}>
           <div style={{ color: 'var(--ol-ink-4)', marginBottom: 6 }}>
             {t('history.ghostwriterHits')}
           </div>
@@ -962,7 +966,7 @@ function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
         </div>
       )}
       {selections.length > 0 && (
-        <div>
+        <div style={chatLines.length > 0 ? { marginBottom: 10 } : undefined}>
           <div style={{ color: 'var(--ol-ink-4)', marginBottom: 6 }}>
             {t('history.ghostwriterSelections')}
           </div>
@@ -986,6 +990,48 @@ function GhostwriterDetailPanel({ item }: { item: DictationSession }) {
                   </span>
                 )}
                 <span style={{ overflowWrap: 'anywhere' }}>{selection.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {chatLines.length > 0 && (
+        <div>
+          <div style={{ color: 'var(--ol-ink-4)', marginBottom: 6 }}>
+            {t('history.ghostwriterChat')}
+          </div>
+          {chatLines.map((line, index) => {
+            // 回话行样式照浮框的手法（Task 9）：角色前缀加重着色＋助手正文斜体，
+            // 与用户行拉开区分；plain 行（未知前缀）无角色标签，正文照常渲染。
+            const assistant = line.role === 'assistant';
+            return (
+              <div
+                key={`chat-${index}`}
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'baseline',
+                  color: 'var(--ol-ink-2)',
+                }}
+              >
+                {line.role !== 'plain' && (
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      fontWeight: 600,
+                      color: assistant ? 'var(--ol-blue)' : 'var(--ol-ink-3)',
+                    }}
+                  >
+                    {assistant
+                      ? t('history.ghostwriterChatRoleAssistant')
+                      : t('history.ghostwriterChatRoleUser')}
+                  </span>
+                )}
+                <span
+                  style={{ overflowWrap: 'anywhere', fontStyle: assistant ? 'italic' : undefined }}
+                >
+                  {line.text}
+                </span>
               </div>
             );
           })}

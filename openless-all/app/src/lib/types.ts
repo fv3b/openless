@@ -95,6 +95,9 @@ export interface DictationSession {
   ghostwriterHits?: GhostwriterHistoryHit[] | null;
   /** stop 时仍选中的候选/推荐（Ghostwriter 会话才有；旧记录无此字段）。 */
   ghostwriterSelections?: GhostwriterHistorySelection[] | null;
+  /** 整份聊天记录，行语法【我】/【助手】逐行混排（代码固定，见后端 chat_transcript）。
+   *  仅对话会话写入；普通会话与旧记录为 null/缺省。 */
+  ghostwriterChat?: string | null;
 }
 
 export interface DictionaryEntry {
