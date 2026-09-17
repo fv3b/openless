@@ -110,6 +110,26 @@ pub fn reset_ghostwriter_task_brief(
     core: CoreState<'_>,
     id: String,
 ) -> Result<TaskBriefInfo, String> {
-    core.reset_ghostwriter_task_brief(&id)
+    core.reset_ghostwriter_task_brief(&id).map_err(|e| e.to_string())
+}
+
+/// 对话热键入口（会话未开时按下）：与普通代笔会话同路径开局，回话时机与
+/// 追问深度由后端按偏好冻结；返回新会话 id。
+#[tauri::command]
+pub async fn ghostwriter_start_conversation(core: CoreState<'_>) -> Result<String, String> {
+    super::dictation::ensure_core_started(&core).await?;
+    let session_id = core
+        .start_ghostwriter_conversation()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(session_id.to_string())
+}
+
+/// 对话热键入口（会话开着且回话时机＝显式交话时按下）：显式交话一次，
+/// 后端校验会话存在且为对话会话，绕过冷却。
+#[tauri::command]
+pub fn ghostwriter_trigger_reply(core: CoreState<'_>, session_id: String) -> Result<(), String> {
+    let parsed = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    core.trigger_ghostwriter_reply(openless_core::SessionId::from_uuid(parsed))
         .map_err(|e| e.to_string())
 }
