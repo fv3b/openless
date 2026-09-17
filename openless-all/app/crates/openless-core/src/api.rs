@@ -2360,9 +2360,6 @@ impl OpenLessBackend {
                 Arc::new(crate::ghostwriter::task_brief_store::TaskBriefStore::at_data_dir(
                     &config.data_dir,
                 )),
-                Arc::new(crate::ghostwriter::recurrence_store::RecurrenceStore::at_data_dir(
-                    &config.data_dir,
-                )),
                 Arc::clone(&clock),
             ))
         });
@@ -5378,20 +5375,6 @@ impl OpenLessBackend {
                 apply_correction_rules(&engine_result.polished_text, &correction_rules);
         }
 
-        // 会话后提取常用语（stop 点）：assembled 已定格，fire-and-forget 合入重复档；
-        // 非 Ghostwriter 会话没有幽灵缓冲，跳过。
-        let extraction_dispatcher = {
-            let state = self.state.read().expect("backend state lock poisoned");
-            if state.ghostwriter_sessions.contains_key(&session_id) {
-                state.ghostwriter_dispatcher.clone()
-            } else {
-                None
-            }
-        };
-        if let Some(dispatcher) = extraction_dispatcher {
-            dispatcher.trigger_extraction(&session_id, &engine_result.polished_text);
-        }
-
         // Cancellation may happen while ASR/LLM work is in flight. Never
         // insert a result after the session has been cancelled or replaced.
         {
@@ -5971,58 +5954,60 @@ impl OpenLessBackend {
         Ok(Some((action, revision)))
     }
 
-    /// 沉淀建议存为常用语（trigger＝建议触发词、表述类·落点文末、无附件、启用）：
-    /// 取走建议 → 建条目（触发词重复 → Err 原样返回前端提示，建议放回可重试）→
-    /// 重复档移除该说法（mark 沿用建议槽里的库内规范原文，dispatcher 侧解析后写入）→
-    /// 刷新候选区事件。无建议/无 dispatcher 返回 Ok(None)。
-    pub fn save_ghostwriter_suggestion(
+
+
+    /// 按需批量提取候选常用语（常用语管理页触发）：校验 id 都在历史里、
+    /// 收集原始转写（空文本跳过；全空则报错；按 createdAt 新到旧排），调
+    /// dispatcher 提取。3 天窗由前端限制，服务端不做时间校验。
+    pub async fn extract_ghostwriter_snippet_candidates(
         &self,
-        session_id: SessionId,
-    ) -> Result<Option<crate::ghostwriter::snippet_store::Snippet>, BackendError> {
-        let Some(dispatcher) = self.ghostwriter_dispatcher_handle() else {
-            return Ok(None);
-        };
-        let Some(suggestion) = dispatcher.take_suggestion(&session_id) else {
-            return Ok(None);
-        };
-        let created = self
+        session_ids: Vec<String>,
+    ) -> Result<Vec<crate::ghostwriter::types::SnippetDraft>, BackendError> {
+        if session_ids.is_empty() {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidArgument,
+                "no history sessions selected",
+            ));
+        }
+        let history = self.history.list()?;
+        let mut picked: Vec<&DictationSession> = Vec::with_capacity(session_ids.len());
+        for session_id in &session_ids {
+            let session = history
+                .iter()
+                .find(|session| &session.id == session_id)
+                .ok_or_else(|| {
+                    BackendError::new(
+                        BackendErrorCode::InvalidArgument,
+                        format!("history session not found: {session_id}"),
+                    )
+                })?;
+            picked.push(session);
+        }
+        picked.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let transcripts: Vec<String> = picked
+            .into_iter()
+            .map(|session| session.raw_transcript.clone())
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        if transcripts.is_empty() {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidArgument,
+                "selected history sessions have no transcripts",
+            ));
+        }
+        let dispatcher = self
             .state
             .read()
             .expect("backend state lock poisoned")
-            .ghostwriter_snippets
-            .create(crate::ghostwriter::snippet_store::Snippet {
-                id: String::new(),
-                trigger: suggestion.suggested_trigger.clone(),
-                aliases: Vec::new(),
-                text: suggestion.phrase.clone(),
-                kind: crate::ghostwriter::snippet_store::SnippetKind::Phrasing,
-                attachments: Vec::new(),
-                enabled: true,
-            });
-        let snippet = match created {
-            Ok(snippet) => snippet,
-            Err(error) => {
-                dispatcher.restore_suggestion(&session_id, suggestion);
-                return Err(error);
-            }
-        };
-        dispatcher.recurrence_store().mark_saved(&suggestion.phrase);
-        dispatcher.refresh_assist_event(&session_id);
-        Ok(Some(snippet))
-    }
-
-    /// 忽略沉淀建议：取走建议（清槽）→ 重复档标记已提示（本次会话不再提；
-    /// mark 沿用建议槽里的库内规范原文，与 mark_prompted 的标记键对得上）→
-    /// 刷新候选区事件。无建议/无 dispatcher 也刷新（状态即空）。
-    pub fn dismiss_ghostwriter_suggestion(&self, session_id: SessionId) -> Result<(), BackendError> {
-        let Some(dispatcher) = self.ghostwriter_dispatcher_handle() else {
-            return Ok(());
-        };
-        if let Some(suggestion) = dispatcher.take_suggestion(&session_id) {
-            dispatcher.recurrence_store().mark_prompted(&suggestion.phrase);
-        }
-        dispatcher.refresh_assist_event(&session_id);
-        Ok(())
+            .ghostwriter_dispatcher
+            .clone()
+            .ok_or_else(|| {
+                BackendError::new(
+                    BackendErrorCode::Internal,
+                    "ghostwriter dispatcher unavailable",
+                )
+            })?;
+        dispatcher.extract_snippet_candidates(transcripts).await
     }
 
     /// 五份任务书快照（固定注册表顺序；命令层列表入口）。
@@ -10496,7 +10481,7 @@ mod tests {
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本")
                 .with_assist_json(
-                    r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"},{"name":"精准词乙"}]},{"kind":"naming","items":[{"name":"命名丙","note":"理由丙"}]}],"recommendations":["s-rec"],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+                    r#"{"candidateGroups":[{"kind":"term","items":[{"name":"精准词甲","note":"就是你说的那个甲"},{"name":"精准词乙"}]},{"kind":"naming","items":[{"name":"命名丙","note":"理由丙"}]}],"recommendations":["s-rec"]}"#,
                 ),
         );
         let transcription = Arc::new(FixturePartialTranscripts::new(
@@ -10524,17 +10509,6 @@ mod tests {
                 "推荐常用语的完整表述文本",
             ),
         );
-        // 重复档先有该说法：沉淀回填按注入集解析规范键，命中才进建议槽。
-        let dispatcher = backend
-            .state
-            .read()
-            .expect("backend state lock poisoned")
-            .ghostwriter_dispatcher
-            .clone()
-            .expect("ghostwriter dispatcher");
-        dispatcher
-            .recurrence_store()
-            .apply_extraction(vec![("把日志清一下".to_string(), "例句".to_string())]);
         let mut events = backend.subscribe();
 
         let session_id = backend.start_external_dictation().await.unwrap();
@@ -10552,11 +10526,6 @@ mod tests {
         assert_eq!(assist.recommendations.len(), 1);
         assert_eq!(assist.recommendations[0].snippet_id, "s-rec");
         assert_eq!(assist.recommendations[0].title, "推荐触发词");
-        // 常用语提醒随同批次发布。
-        let sediment = assist.sediment.expect("sediment suggestion");
-        assert_eq!(sediment.phrase, "把日志清一下");
-        assert_eq!(sediment.count, 2);
-        assert_eq!(sediment.suggested_trigger, "清日志");
 
         // 段润色流不受影响：已润段照常合回并出预览。
         let preview = wait_for_ghostwriter_preview(&mut events, "润后文本").await;
@@ -10629,7 +10598,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"]}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
@@ -10678,7 +10647,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"],"sediment":null}"#,
+                r#"{"candidateGroups":[{"kind":"term","items":["精准词甲"]}],"recommendations":["s-rec"]}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
@@ -10728,7 +10697,7 @@ mod tests {
         ));
         let polisher = Arc::new(
             crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[{"kind":"term","items":["停顿候选"]}],"recommendations":[],"sediment":null}"#,
+                r#"{"candidateGroups":[{"kind":"term","items":["停顿候选"]}],"recommendations":[]}"#,
             ),
         );
         let transcription = Arc::new(PumpedTranscripts::new("还在说那个继续说别的"));
@@ -10799,143 +10768,94 @@ mod tests {
 
 
     /// 沉淀建议一键入库：存 → 常用语列表出现新条目（trigger＝建议触发词、
-    /// inline、启用）、重复档移除该说法、常用语提醒随刷新事件消失。
+    /// stop 点提取常用语：assembled 定格后 fire-and-forget 调抽取（fixture 收到固定
+    /// 任务书命令往返：列表五份（固定序）→ 覆写正文（dispatcher 现取即新正文，
+    /// 按需批量提取候选常用语（管理页入口）：选中的历史转写给 LLM 提取，
+    /// 返回可编辑草稿；未知 id 与全空转写分别报错。
     #[tokio::test]
-    async fn ghostwriter_save_suggestion_creates_snippet() {
+    async fn ghostwriter_extract_snippet_candidates_from_history() {
         let data_dir = std::env::temp_dir().join(format!(
-            "openless-ghostwriter-save-suggestion-{}",
+            "openless-ghostwriter-extract-candidates-{}",
             uuid::Uuid::new_v4().simple()
         ));
         let polisher = Arc::new(
-            crate::testing::FixtureTextPolisher::successful("润后文本").with_assist_json(
-                r#"{"candidateGroups":[],"recommendations":[],"sediment":{"phrase":"把日志清一下","count":2,"suggestedTrigger":"清日志"}}"#,
+            crate::testing::FixtureTextPolisher::successful("unused").with_extraction_json(
+                r#"[{"phrase":"把日志清一下","suggestedTrigger":"清日志","example":"把那个日志清一下就是那种缓存"},{"phrase":"用测试环境跑","example":"以后都用测试环境跑"}]"#,
             ),
         );
-        let transcription = Arc::new(PumpedTranscripts::new("把日志清一下。"));
         let engine = ghostwriter_engine_with(
-            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
+            Arc::new(crate::testing::FixtureTranscriptionEngine::successful("raw", 125)),
             Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
         );
-        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
         backend.start().await.unwrap();
-        let mut preferences = backend.get_preferences();
-        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
-        backend.set_preferences(preferences).unwrap();
-        // 重复档先有该说法：保存后必须从中移除（mark_saved 生效的依据）。
-        let dispatcher = backend
-            .state
-            .read()
-            .expect("backend state lock poisoned")
-            .ghostwriter_dispatcher
-            .clone()
-            .expect("ghostwriter dispatcher");
-        dispatcher
-            .recurrence_store()
-            .apply_extraction(vec![("把日志清一下".to_string(), "例句".to_string())]);
-        let mut events = backend.subscribe();
 
-        let session_id = backend.start_external_dictation().await.unwrap();
-        transcription.pump("把日志清一下。继续");
-        let assist = wait_for_ghostwriter_assist(&mut events).await;
+        let mut newer = history_session("h-new");
+        newer.created_at = "2026-09-17T10:00:00Z".to_string();
+        newer.raw_transcript = "把那个日志清一下就是那种缓存".to_string();
+        let mut older = history_session("h-old");
+        older.created_at = "2026-09-16T10:00:00Z".to_string();
+        older.raw_transcript = "以后都用测试环境跑".to_string();
+        let mut blank = history_session("h-blank");
+        blank.created_at = "2026-09-17T11:00:00Z".to_string();
+        blank.raw_transcript = "  ".to_string();
+        backend.append_history(newer, 30, None).unwrap();
+        backend.append_history(older, 30, None).unwrap();
+        backend.append_history(blank, 30, None).unwrap();
+
+        // 未知 id 报错。
+        let error = backend
+            .extract_ghostwriter_snippet_candidates(vec!["h-missing".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
+        // 只选空转写条目报错。
+        let error = backend
+            .extract_ghostwriter_snippet_candidates(vec!["h-blank".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
+
+        // 正常提取：空转写条目跳过；转写按时间新到旧拼接（标注来源序号）。
+        let drafts = backend
+            .extract_ghostwriter_snippet_candidates(vec![
+                "h-blank".to_string(),
+                "h-old".to_string(),
+                "h-new".to_string(),
+            ])
+            .await
+            .unwrap();
         assert_eq!(
-            assist.sediment.as_ref().map(|sediment| sediment.phrase.as_str()),
-            Some("把日志清一下")
+            drafts,
+            vec![
+                crate::ghostwriter::types::SnippetDraft {
+                    phrase: "把日志清一下".to_string(),
+                    suggested_trigger: "清日志".to_string(),
+                    example: Some("把那个日志清一下就是那种缓存".to_string()),
+                },
+                crate::ghostwriter::types::SnippetDraft {
+                    phrase: "用测试环境跑".to_string(),
+                    suggested_trigger: "用测试环境跑".to_string(),
+                    example: Some("以后都用测试环境跑".to_string()),
+                },
+            ]
         );
-
-        let saved = backend
-            .save_ghostwriter_suggestion(session_id)
-            .unwrap()
-            .expect("suggestion should be saveable");
-        assert_eq!(saved.trigger, "清日志");
-        assert_eq!(saved.text, "把日志清一下");
+        // 调用走固定提取会话 id（fixture 路由契约）；输入是拼接后的转写文本。
         assert_eq!(
-            saved.kind,
-            crate::ghostwriter::snippet_store::SnippetKind::Phrasing
+            polisher.session_ids(),
+            vec![crate::ghostwriter::snippet_extractor::extraction_session_id()]
         );
-        assert!(saved.attachments.is_empty());
-        assert!(saved.enabled);
-        assert!(backend
-            .list_snippets()
-            .iter()
-            .any(|snippet| snippet.id == saved.id));
-        assert!(!dispatcher
-            .recurrence_store()
-            .pending_matches()
-            .iter()
-            .any(|entry| entry.phrase == "把日志清一下"));
-
-        let refreshed =
-            wait_for_ghostwriter_assist_matching(&mut events, |assist| assist.sediment.is_none())
-                .await;
-        assert!(refreshed.sediment.is_none());
-
-        backend.stop_dictation_session(session_id).await.unwrap();
-        backend.shutdown().await.unwrap();
-        let _ = std::fs::remove_dir_all(data_dir);
-    }
-
-    /// stop 点提取常用语：assembled 定格后 fire-and-forget 调抽取（fixture 收到固定
-    /// 抽取会话 id 的调用；每次 stop 恰好一次）。
-    #[tokio::test]
-    async fn ghostwriter_stop_triggers_extraction() {
-        let data_dir = std::env::temp_dir().join(format!(
-            "openless-ghostwriter-extract-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let polisher = Arc::new(
-            crate::testing::FixtureTextPolisher::successful("润后文本").with_extraction_json("[]"),
-        );
-        let transcription = Arc::new(PumpedTranscripts::new("第一句。"));
-        let engine = ghostwriter_engine_with(
-            Arc::clone(&transcription) as Arc<dyn crate::ports::TranscriptionEngine>,
-            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
-        );
-        let backend = backend_with_ghostwriter_polisher(
-            data_dir.clone(),
-            Arc::new(engine),
-            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
-        );
-        backend.start().await.unwrap();
-        let mut preferences = backend.get_preferences();
-        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
-        backend.set_preferences(preferences).unwrap();
-
-        let session_id = backend.start_external_dictation().await.unwrap();
-        transcription.pump("第一句。");
-        backend.stop_dictation_session(session_id).await.unwrap();
-
-        let extraction_id = crate::ghostwriter::sediment_extractor::extraction_session_id();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while polisher
-            .session_ids()
-            .iter()
-            .filter(|id| **id == extraction_id)
-            .count()
-            == 0
-        {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "extraction call did not arrive in time"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        // 留出余量确认没有第二次抽取调用（每次 stop 恰好一次）。
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(
-            polisher
-                .session_ids()
-                .iter()
-                .filter(|id| **id == extraction_id)
-                .count(),
-            1,
-            "extraction must fire exactly once per stop"
-        );
+        let raw = &polisher.inputs()[0];
+        let pos_new = raw.find("把那个日志清一下就是那种缓存").expect("newer transcript");
+        let pos_old = raw.find("以后都用测试环境跑").expect("older transcript");
+        assert!(pos_new < pos_old, "newer transcript must come first");
+        assert!(raw.contains("【来源 1】"));
+        assert!(raw.contains("【来源 2】"));
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// 任务书命令往返：列表五份（固定序）→ 覆写正文（dispatcher 现取即新正文，
     /// 保存即生效）→ 恢复默认 → 未知 id 原样报错。
     #[tokio::test]
     async fn ghostwriter_task_brief_commands_roundtrip() {
@@ -10961,7 +10881,6 @@ mod tests {
                 "instruction_polish",
                 "candidates",
                 "recommendations",
-                "sediment_notice",
                 "sediment_extraction",
             ]
         );

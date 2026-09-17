@@ -648,7 +648,7 @@ impl FixtureTextPolisher {
     }
 
     /// 提取常用语调用（会话后提取）返回预置 JSON 数组——按控制器裁决路由：
-    /// session_id 精确等于 [`crate::ghostwriter::sediment_extractor::extraction_session_id()`]
+    /// session_id 精确等于 [`crate::ghostwriter::snippet_extractor::extraction_session_id()`]
     /// （uuid5 确定性 id，Task 6 dispatcher 传同一 helper 的值）即认抽取调用。
     pub fn with_extraction_json(mut self, json: impl Into<String>) -> Self {
         self.extraction_json = Some(json.into());
@@ -690,7 +690,7 @@ impl TextPolisher for FixtureTextPolisher {
         partials: Arc<dyn TextStreamSink>,
     ) -> BoxFuture<'static, Result<crate::ports::PolishOutput, BackendError>> {
         let is_extraction =
-            session_id == crate::ghostwriter::sediment_extractor::extraction_session_id();
+            session_id == crate::ghostwriter::snippet_extractor::extraction_session_id();
         let result = if is_extraction {
             match &self.extraction_json {
                 Some(extraction_json) => {

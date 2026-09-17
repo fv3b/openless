@@ -7,10 +7,10 @@
 /// 段润色的指令化 system prompt（逐字使用，勿改动）。
 pub const GHOSTWRITER_INSTRUCTION_PROMPT: &str = "你是语音指令整理器。用户在用语音给 AI 助手下指令，下面是一段口语转写。\n把它整理成清晰、直接、结构清楚的指令：\n- 去掉口头语、重复、语气词（嗯、啊、就是那种、类似什么的）\n- 理顺语句顺序，需要时整理成简短要点\n- 把口语化的说法换成准确表述，但绝不改变用户的意思，绝不添加用户没说的要求\n- 原话里的具体信息（名字、数字、路径、代码、命令）一字不改\n- 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n只输出整理后的指令文本，不要任何解释或前缀。";
 
-/// 实时助手一次调用协同产出（候选/推荐/常用语提醒）的输出契约，逐字拼接，界面只读展示。
-pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|naming\",\"items\":[{\"name\":\"名字\",\"note\":\"注释或理由\"},…]}],\"recommendations\":[\"常用语id\",…],\"sediment\":{\"phrase\":\"说法\",\"count\":出现次数,\"suggestedTrigger\":\"触发词\"}}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。";
+/// 实时助手一次调用协同产出（候选/推荐）的输出契约，逐字拼接，界面只读展示。
+pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"candidateGroups\":[{\"kind\":\"term|naming\",\"items\":[{\"name\":\"名字\",\"note\":\"注释或理由\"},…]}],\"recommendations\":[\"常用语id\",…]}\n没有的键给空数组或 null；候选最多 2 组、每组最多 5 条、总数最多 8 条；推荐最多 3 个 id；kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。";
 
-/// 任务书身份：Ghostwriter 的五个 LLM 功能各对应一份任务书。
+/// 任务书身份：Ghostwriter 的四个 LLM 功能各对应一份任务书。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskBriefId {
     /// 段润色：把口语转写整理成指令。
@@ -19,9 +19,7 @@ pub enum TaskBriefId {
     Candidates,
     /// 常用语推荐：从常用语库挑与当前内容相关的条目。
     Recommendations,
-    /// 常用语提醒：判断当前内容是否在重复某个未入库说法。
-    SedimentNotice,
-    /// 提取常用语：从说话内容里提取值得存成常用语的说法。
+    /// 提取常用语：从语音记录批量提取候选常用语（常用语管理页按需触发）。
     SedimentExtraction,
 }
 
@@ -32,7 +30,6 @@ impl TaskBriefId {
             Self::InstructionPolish => "instruction_polish",
             Self::Candidates => "candidates",
             Self::Recommendations => "recommendations",
-            Self::SedimentNotice => "sediment_notice",
             Self::SedimentExtraction => "sediment_extraction",
         }
     }
@@ -43,7 +40,6 @@ impl TaskBriefId {
             "instruction_polish" => Some(Self::InstructionPolish),
             "candidates" => Some(Self::Candidates),
             "recommendations" => Some(Self::Recommendations),
-            "sediment_notice" => Some(Self::SedimentNotice),
             "sediment_extraction" => Some(Self::SedimentExtraction),
             _ => None,
         }
@@ -55,7 +51,6 @@ impl TaskBriefId {
             Self::InstructionPolish => "指令化润色",
             Self::Candidates => "命名校准",
             Self::Recommendations => "常用语推荐",
-            Self::SedimentNotice => "常用语提醒",
             Self::SedimentExtraction => "提取常用语",
         }
     }
@@ -68,9 +63,8 @@ impl TaskBriefId {
                 "管把说话里说不清的点校准成叫法/命名，改了会影响候选区。"
             }
             Self::Recommendations => "管从常用语库里挑哪些条目推荐，改了会影响推荐区。",
-            Self::SedimentNotice => "管判断当前内容是否在重复未入库说法，改了会影响常用语提醒。",
             Self::SedimentExtraction => {
-                "管从说话内容里提取哪些说法存成常用语，改了会影响之后提醒你存的说法。"
+                "管从语音记录提取候选常用语，改了会影响提取结果。"
             }
         }
     }
@@ -91,15 +85,8 @@ impl TaskBriefId {
                  从库里挑出与当前内容真正相关的常用语：意图或用词对得上、马上就能用上的才推荐，最多 3 个。\n\
                  只回常用语 id，按相关程度从高到低排；没有相关的就返回空数组，宁缺毋滥。"
             }
-            Self::SedimentNotice => {
-                "你是语音说话助手。用户在用语音给 AI 助手下指令，下面是说话人最近的口语转写和历史重复记录。\n\
-                 判断说话人当前是否又在说某条还没入库的说法：拿本次转写和重复记录逐条比对，语义一致才算重复，只是用词相近不算。\n\
-                 确认重复时给出说法原文、累计出现次数，和一个便于以后口头触发的短触发词；没有重复就留空。"
-            }
             Self::SedimentExtraction => {
-                "你是语音说话助手。用户在用语音给 AI 助手下指令，下面是说话人最近的口语转写。\n\
-                 从转写里找出值得存成常用语的说法：反复出现、说法固定、以后还会用到的表述才值得收。\n\
-                 每条给出整理好的说法和一句原话例句；没有值得收的就返回空数组。"
+                "你是语音常用语助手。下面是从用户历史语音记录里选出的若干段口语转写。从这些转写里找出值得存成常用语的说法：说法固定、以后还会口头用到、贴着用户自己的措辞习惯。每条给出：整理好的说法（phrase）、一个便于口头触发的短触发词（suggestedTrigger）、一句原话例句（example）。没有值得收的就返回空数组。"
             }
         }
     }
@@ -115,7 +102,6 @@ mod tests {
             (TaskBriefId::InstructionPolish, "instruction_polish", "指令化润色"),
             (TaskBriefId::Candidates, "candidates", "命名校准"),
             (TaskBriefId::Recommendations, "recommendations", "常用语推荐"),
-            (TaskBriefId::SedimentNotice, "sediment_notice", "常用语提醒"),
             (TaskBriefId::SedimentExtraction, "sediment_extraction", "提取常用语"),
         ];
         for (id, key, title) in expected {
@@ -125,6 +111,8 @@ mod tests {
             assert!(!id.description().is_empty());
             assert!(!id.default_body().is_empty());
         }
+        // 退役的任务书身份：旧键不再可解析。
+        assert_eq!(TaskBriefId::from_key("sediment_notice"), None);
         assert_eq!(TaskBriefId::from_key("unknown"), None);
     }
 
@@ -144,9 +132,8 @@ mod tests {
         ));
         assert!(ASSIST_OUTPUT_CONTRACT
             .contains("\"recommendations\":[\"常用语id\",…]"));
-        assert!(ASSIST_OUTPUT_CONTRACT.contains(
-            "\"sediment\":{\"phrase\":\"说法\",\"count\":出现次数,\"suggestedTrigger\":\"触发词\"}"
-        ));
+        // 常用语提醒已退役：契约里不再有 sediment 槽。
+        assert!(!ASSIST_OUTPUT_CONTRACT.contains("sediment"));
         assert!(ASSIST_OUTPUT_CONTRACT.contains("没有的键给空数组或 null"));
         assert!(ASSIST_OUTPUT_CONTRACT.ends_with(
             "kind：term=叫法（note=大白话解释，回指说话人的说法）、naming=命名（note=起名理由）。"
@@ -159,7 +146,6 @@ mod tests {
             TaskBriefId::InstructionPolish,
             TaskBriefId::Candidates,
             TaskBriefId::Recommendations,
-            TaskBriefId::SedimentNotice,
             TaskBriefId::SedimentExtraction,
         ] {
             assert!(!id.default_body().contains("提示词"));

@@ -10,11 +10,19 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import {
   createGhostwriterSnippet,
   deleteGhostwriterSnippet,
+  extractGhostwriterCandidates,
   listGhostwriterSnippets,
+  listHistory,
   saveGhostwriterSnippet,
   setGhostwriterSnippetEnabled,
 } from '../lib/ipc';
-import type { Snippet, SnippetAttachment, SnippetKind } from '../lib/types';
+import type {
+  DictationSession,
+  GhostwriterSnippetDraft,
+  Snippet,
+  SnippetAttachment,
+  SnippetKind,
+} from '../lib/types';
 import { Btn, Card, PageHeader, Pill } from './_atoms';
 import { Icon } from '../components/Icon';
 import { SavedToast, type SaveToastState } from '../components/SavedToast';
@@ -24,6 +32,19 @@ import { useMobileLayout } from '../lib/useMobileLayout';
 type BusyAction = 'loading' | 'saving' | 'deleting' | null;
 /** 种类筛选分段控件的取值。 */
 type KindFilter = 'all' | SnippetKind;
+
+/** 提取向导的相对时间标签：<24h → x 小时前；24–48h → 昨天；之后 → x 天前。 */
+function relativeAgeLabel(
+  createdAt: string,
+  t: (key: string, params?: Record<string, unknown>) => string,
+): string {
+  const time = new Date(createdAt).getTime();
+  if (!Number.isFinite(time)) return '';
+  const hours = Math.floor((Date.now() - time) / 3_600_000);
+  if (hours < 24) return t('ghostwriter.snippets.hoursAgo', { n: Math.max(1, hours) });
+  if (hours < 48) return t('ghostwriter.snippets.yesterday');
+  return t('ghostwriter.snippets.daysAgo', { n: Math.floor(hours / 24) });
+}
 
 const BLANK_SNIPPET: Snippet = {
   id: '',
@@ -111,6 +132,143 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
         statusTimer.current = null;
       }, delay);
     }
+  };
+
+  // 「从语音记录提取」向导：pick＝选历史语音记录，review＝编辑/勾选候选后保存。
+  const [extractView, setExtractView] = useState<'closed' | 'pick' | 'review'>('closed');
+  const [voiceRecords, setVoiceRecords] = useState<DictationSession[]>([]);
+  const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
+  const [drafts, setDrafts] = useState<GhostwriterSnippetDraft[]>([]);
+  const [draftChecks, setDraftChecks] = useState<boolean[]>([]);
+  const [failedIdx, setFailedIdx] = useState<Set<number>>(new Set());
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [savingExtract, setSavingExtract] = useState(false);
+
+  const openExtract = async () => {
+    try {
+      const all = await listHistory();
+      const cutoff = Date.now() - 3 * 24 * 3_600_000;
+      const records = all
+        .filter(
+          (record) =>
+            record.rawTranscript.trim().length > 0 &&
+            new Date(record.createdAt).getTime() >= cutoff,
+        )
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setVoiceRecords(records);
+      setPickedIds(new Set(records.map((record) => record.id)));
+      setExtractView('pick');
+    } catch (loadError) {
+      showSaveStatus('failed', t('ghostwriter.snippets.loadFailed', { error: String(loadError) }));
+    }
+  };
+
+  const closeExtract = () => {
+    setExtractView('closed');
+    setVoiceRecords([]);
+    setPickedIds(new Set());
+    setDrafts([]);
+    setDraftChecks([]);
+    setFailedIdx(new Set());
+  };
+
+  const togglePick = (id: string) => {
+    setPickedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const startExtraction = async () => {
+    if (pickedIds.size === 0 || extractBusy) return;
+    setExtractBusy(true);
+    try {
+      const result = await extractGhostwriterCandidates([...pickedIds]);
+      if (result.length === 0) {
+        showSaveStatus('failed', t('ghostwriter.snippets.extractEmpty'), true);
+        return;
+      }
+      setDrafts(result);
+      setDraftChecks(result.map(() => true));
+      setFailedIdx(new Set());
+      setExtractView('review');
+    } catch (error) {
+      showSaveStatus('failed', t('ghostwriter.snippets.extractFailed', { error: String(error) }));
+    } finally {
+      setExtractBusy(false);
+    }
+  };
+
+  const patchExtractDraft = (index: number, patch: Partial<GhostwriterSnippetDraft>) => {
+    setDrafts((current) =>
+      current.map((draft, i) => (i === index ? { ...draft, ...patch } : draft)),
+    );
+  };
+
+  const toggleDraftCheck = (index: number) => {
+    setDraftChecks((current) => current.map((checked, i) => (i === index ? !checked : checked)));
+  };
+
+  const toggleAllDrafts = () => {
+    const allChecked = draftChecks.every(Boolean);
+    setDraftChecks(drafts.map(() => !allChecked));
+  };
+
+  // 保存所选：逐条 create（表述类、启用）；成功的移出列表，触发词重复的
+  // 留在原地标红可改；全部处理完 toast 汇总，全存完即关向导。
+  const saveSelected = async () => {
+    if (savingExtract) return;
+    setSavingExtract(true);
+    const failures = new Set<number>();
+    const remaining: GhostwriterSnippetDraft[] = [];
+    const remainingChecks: boolean[] = [];
+    let saved = 0;
+    for (let index = 0; index < drafts.length; index++) {
+      if (!draftChecks[index]) {
+        remaining.push(drafts[index]);
+        remainingChecks.push(true);
+        continue;
+      }
+      const draft = drafts[index];
+      try {
+        await createGhostwriterSnippet({
+          id: '',
+          trigger: draft.suggestedTrigger.trim(),
+          text: draft.phrase.trim(),
+          kind: 'phrasing',
+          aliases: [],
+          attachments: [],
+          enabled: true,
+        });
+        saved += 1;
+      } catch {
+        failures.add(remaining.length);
+        remaining.push(draft);
+        remainingChecks.push(draftChecks[index]);
+      }
+    }
+    setDrafts(remaining);
+    setDraftChecks(remainingChecks);
+    setFailedIdx(failures);
+    if (saved > 0) {
+      try {
+        setSnippets(await listGhostwriterSnippets());
+      } catch {
+        // 汇总 toast 已提示保存结果；列表刷新失败不打断收尾。
+      }
+    }
+    if (saved > 0 && failures.size === 0) {
+      closeExtract();
+      showSaveStatus('saved', t('ghostwriter.snippets.extractSavedSummary', { count: saved }), true);
+    } else if (failures.size > 0) {
+      showSaveStatus(
+        'failed',
+        t('ghostwriter.snippets.extractPartialSummary', { count: saved, failed: failures.size }),
+      );
+    }
+    setSavingExtract(false);
   };
 
   const loadSnippets = async () => {
@@ -303,8 +461,235 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
       >
         {t('ghostwriter.snippets.create')}
       </Btn>
+      <Btn
+        variant="soft"
+        icon="sparkle"
+        size={embedded ? 'sm' : 'md'}
+        onClick={() => void openExtract()}
+        disabled={busy === 'loading'}
+      >
+        {t('ghostwriter.snippets.extract')}
+      </Btn>
     </div>
   );
+
+  if (extractView !== 'closed') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        {!embedded && (
+          <PageHeader
+            kicker={t('ghostwriter.snippets.kicker')}
+            title={t('ghostwriter.snippets.extractTitle')}
+            right={
+              <Btn variant="ghost" icon="close" onClick={closeExtract}>
+                {t('ghostwriter.snippets.close')}
+              </Btn>
+            }
+          />
+        )}
+
+        <SavedToast saveState={saveState} message={saveMessage} />
+
+        <Card
+          padding={0}
+          style={{
+            overflow: 'hidden',
+            flex: '1 1 0',
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div
+            style={{
+              padding: '14px 18px',
+              borderBottom: '0.5px solid var(--ol-line)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
+              {extractView === 'pick'
+                ? t('ghostwriter.snippets.extractPickTitle')
+                : t('ghostwriter.snippets.extractReviewTitle')}
+            </div>
+            {extractView === 'pick' ? (
+              <Pill tone="outline">
+                {t('ghostwriter.snippets.extractSelectedCount', { count: pickedIds.size })}
+              </Pill>
+            ) : (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ol-ink-3)' }}>
+                <input type="checkbox" checked={draftChecks.every(Boolean)} onChange={toggleAllDrafts} />
+                {t('ghostwriter.snippets.extractSelectedCount', { count: draftChecks.filter(Boolean).length })}
+              </label>
+            )}
+          </div>
+
+          <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>
+            {extractView === 'pick' ? (
+              voiceRecords.length === 0 ? (
+                <div style={{ padding: 48, textAlign: 'center', fontSize: 13, color: 'var(--ol-ink-3)' }}>
+                  {t('ghostwriter.snippets.extractEmpty')}
+                </div>
+              ) : (
+                voiceRecords.map((record) => (
+                  <label
+                    key={record.id}
+                    style={{
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'flex-start',
+                      padding: '10px 18px',
+                      borderBottom: '0.5px solid var(--ol-line)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={pickedIds.has(record.id)}
+                      onChange={() => togglePick(record.id)}
+                      style={{ marginTop: 3 }}
+                    />
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 13,
+                        color: 'var(--ol-ink)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {record.rawTranscript.length > 80
+                        ? `${record.rawTranscript.slice(0, 80)}…`
+                        : record.rawTranscript}
+                    </span>
+                    <span style={{ flexShrink: 0, fontSize: 12, color: 'var(--ol-ink-4)' }}>
+                      {relativeAgeLabel(record.createdAt, t)}
+                    </span>
+                  </label>
+                ))
+              )
+            ) : drafts.length === 0 ? (
+              <div style={{ padding: 48, textAlign: 'center', fontSize: 13, color: 'var(--ol-ink-3)' }}>
+                {t('ghostwriter.snippets.extractEmpty')}
+              </div>
+            ) : (
+              drafts.map((draft, index) => (
+                <div
+                  key={index}
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                    padding: '12px 18px',
+                    borderBottom: '0.5px solid var(--ol-line)',
+                    borderLeft: failedIdx.has(index)
+                      ? '3px solid var(--ol-danger, #e5484d)'
+                      : '3px solid transparent',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={draftChecks[index] ?? false}
+                    onChange={() => toggleDraftCheck(index)}
+                    style={{ marginTop: 4 }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
+                    <input
+                      value={draft.suggestedTrigger}
+                      onChange={(event) => patchExtractDraft(index, { suggestedTrigger: event.target.value })}
+                      placeholder={t('ghostwriter.snippets.trigger')}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 8,
+                        border: '0.5px solid var(--ol-line-strong)',
+                        background: 'var(--ol-surface)',
+                        color: 'var(--ol-ink)',
+                        fontSize: 13,
+                        fontFamily: 'inherit',
+                      }}
+                    />
+                    <textarea
+                      value={draft.phrase}
+                      onChange={(event) => patchExtractDraft(index, { phrase: event.target.value })}
+                      rows={2}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 8,
+                        border: '0.5px solid var(--ol-line-strong)',
+                        background: 'var(--ol-surface)',
+                        color: 'var(--ol-ink)',
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        fontFamily: 'inherit',
+                        resize: 'vertical',
+                      }}
+                    />
+                    {draft.example ? (
+                      <span style={{ fontSize: 12, color: 'var(--ol-ink-4)' }}>{draft.example}</span>
+                    ) : null}
+                    {failedIdx.has(index) ? (
+                      <span style={{ fontSize: 12, color: 'var(--ol-danger, #e5484d)' }}>
+                        {t('ghostwriter.snippets.saveFailedDuplicate')}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div
+            style={{
+              padding: '10px 18px',
+              borderTop: '0.5px solid var(--ol-line)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+            }}
+          >
+            <Btn
+              variant="ghost"
+              icon="chevLeft"
+              onClick={extractView === 'review' ? () => setExtractView('pick') : closeExtract}
+            >
+              {extractView === 'review'
+                ? t('ghostwriter.snippets.extractBack')
+                : t('ghostwriter.snippets.close')}
+            </Btn>
+            {extractView === 'pick' ? (
+              <Btn
+                variant="primary"
+                icon="sparkle"
+                onClick={() => void startExtraction()}
+                disabled={pickedIds.size === 0 || extractBusy}
+              >
+                {extractBusy
+                  ? t('ghostwriter.snippets.extractExtracting')
+                  : t('ghostwriter.snippets.extractStart')}
+              </Btn>
+            ) : (
+              <Btn
+                variant="primary"
+                icon="check"
+                onClick={() => void saveSelected()}
+                disabled={savingExtract || !draftChecks.some(Boolean)}
+              >
+                {t('ghostwriter.snippets.extractSave')}
+              </Btn>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>

@@ -17,12 +17,7 @@ import {
   shouldUseGhostwriterCapsule,
   type GhostwriterPreviewState,
 } from '../lib/ghostwriterCapsule';
-import {
-  getSettings,
-  ghostwriterCancelLast,
-  ghostwriterDismissSuggestion,
-  ghostwriterSaveSuggestion,
-} from '../lib/ipc';
+import { getSettings, ghostwriterCancelLast } from '../lib/ipc';
 import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/types';
 
 /**
@@ -32,8 +27,8 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
- * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作）、候选区
- * （常用语提醒条／候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
+ * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作，浮框唯一
+ * 按钮＝✕）、候选区（候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
  * 候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，看中哪个常用语
  * 直接读它的触发词，命中机制自然接住，2026-09-17 裁决）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照）。
@@ -92,19 +87,6 @@ const ICON_BUTTON_STYLE: CSSProperties = {
   pointerEvents: 'auto',
 };
 
-const ACTION_BUTTON_STYLE: CSSProperties = {
-  padding: '2px 10px',
-  borderRadius: 999,
-  background: 'rgba(255, 255, 255, 0.08)',
-  border: '1px solid rgba(255, 255, 255, 0.12)',
-  color: '#e4e4e7',
-  fontSize: 12,
-  fontWeight: 500,
-  lineHeight: 1.5,
-  cursor: 'pointer',
-  flexShrink: 0,
-  pointerEvents: 'auto',
-};
 
 // 候选/推荐 chip 纯展示样式（2026-09-17 裁决）：不可点选、只读提示；
 // 需要哪个常用语，直接读它的触发词，命中机制自然接住。
@@ -250,25 +232,6 @@ export function GhostwriterPanel() {
     })();
   };
 
-  // 沉淀建议存为常用语：成功后后端刷新候选区事件（提醒条随消失）；
-  // 失败（触发词重复等）走现有 notice 药丸。
-  const saveSuggestion = () => {
-    const sessionId = transcriptRef.current.sessionId;
-    if (!sessionId) return;
-    void ghostwriterSaveSuggestion(sessionId).catch(error => {
-      console.warn('[ghostwriter] save suggestion failed', error);
-      showNotice(tRef.current('ghostwriter.panel.saveFailedDuplicate'));
-    });
-  };
-
-  const dismissSuggestion = () => {
-    const sessionId = transcriptRef.current.sessionId;
-    if (!sessionId) return;
-    void ghostwriterDismissSuggestion(sessionId).catch(error => {
-      console.warn('[ghostwriter] dismiss suggestion failed', error);
-    });
-  };
-
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
@@ -367,9 +330,8 @@ export function GhostwriterPanel() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [text]);
 
-  // 候选区三行（沉淀条／候选组／推荐行）任一为空整行不渲染，全空整区收起。
+  // 候选区（候选组／推荐行）任一为空整行不渲染，全空整区收起。
   const assistHasContent =
-    assist.sediment !== null ||
     assist.candidateGroups.some(group => group.items.length > 0) ||
     assist.recommendations.length > 0;
 
@@ -533,42 +495,6 @@ export function GhostwriterPanel() {
               opacity: assistHasContent ? 1 : 0,
             }}
           >
-            {assistView.sediment ? (
-              <div style={ASSIST_ROW_STYLE}>
-                <span
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                    color: '#e4e4e7',
-                    letterSpacing: '0.02em',
-                  }}
-                >
-                  {t('ghostwriter.panel.sedimentSuggest', {
-                    phrase: assistView.sediment.phrase,
-                    count: assistView.sediment.count,
-                  })}
-                </span>
-                <div style={{ flex: 1 }} />
-                <button
-                  type="button"
-                  onClick={saveSuggestion}
-                  className="ghostwriter-chip-action"
-                  style={ACTION_BUTTON_STYLE}
-                >
-                  {t('ghostwriter.panel.saveSuggestion')}
-                </button>
-                <button
-                  type="button"
-                  aria-label={t('ghostwriter.panel.dismiss')}
-                  title={t('ghostwriter.panel.dismiss')}
-                  onClick={dismissSuggestion}
-                  className="ghostwriter-cancel-btn"
-                  style={ICON_BUTTON_STYLE}
-                >
-                  ✕
-                </button>
-              </div>
-            ) : null}
             {assistView.candidateGroups.map((group, groupIndex) =>
               group.items.length > 0 ? (
                 <div key={`${group.kind}-${groupIndex}`} style={ASSIST_ROW_STYLE}>

@@ -30,12 +30,11 @@ pub struct TaskBriefStore {
     state: Mutex<HashMap<String, String>>,
 }
 
-/// 固定五份的注册表顺序（list() 与界面列表都按这个序）。
-const ALL_IDS: [TaskBriefId; 5] = [
+/// 固定四份的注册表顺序（list() 与界面列表都按这个序）。
+const ALL_IDS: [TaskBriefId; 4] = [
     TaskBriefId::InstructionPolish,
     TaskBriefId::Candidates,
     TaskBriefId::Recommendations,
-    TaskBriefId::SedimentNotice,
     TaskBriefId::SedimentExtraction,
 ];
 
@@ -214,13 +213,13 @@ mod tests {
         let dir = temp_dir("persist");
         let file_store = TaskBriefStore::at_data_dir(&dir);
         file_store
-            .set_body(TaskBriefId::SedimentNotice, "常用语提醒覆写")
+            .set_body(TaskBriefId::SedimentExtraction, "提取常用语覆写")
             .unwrap();
         let path = dir.join("ghostwriter-prompts.json");
         assert!(path.exists());
         let reopened = TaskBriefStore::at_data_dir(&dir);
-        assert_eq!(reopened.body(TaskBriefId::SedimentNotice), "常用语提醒覆写");
-        assert!(reopened.is_modified(TaskBriefId::SedimentNotice));
+        assert_eq!(reopened.body(TaskBriefId::SedimentExtraction), "提取常用语覆写");
+        assert!(reopened.is_modified(TaskBriefId::SedimentExtraction));
         assert_eq!(
             reopened.body(TaskBriefId::Recommendations),
             TaskBriefId::Recommendations.default_body()
@@ -279,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn list_returns_five_in_fixed_order() {
+    fn list_returns_four_in_fixed_order() {
         let store = TaskBriefStore::in_memory();
         let briefs = store.list();
         assert_eq!(
@@ -291,11 +290,10 @@ mod tests {
                 "instruction_polish",
                 "candidates",
                 "recommendations",
-                "sediment_notice",
                 "sediment_extraction",
             ]
         );
-        assert_eq!(briefs.len(), 5);
+        assert_eq!(briefs.len(), 4);
         assert!(briefs.iter().all(|brief| !brief.modified));
         assert!(briefs.iter().all(|brief| !brief.title.is_empty()));
         assert!(briefs.iter().all(|brief| !brief.description.is_empty()));
@@ -306,5 +304,31 @@ mod tests {
             briefs[0].body,
             crate::ghostwriter::prompts::GHOSTWRITER_INSTRUCTION_PROMPT
         );
+    }
+
+    #[test]
+    fn unknown_stored_keys_are_skipped() {
+        // 退役任务书的旧覆写键（如 sediment_notice）留在文件里不影响加载：
+        // 未知键被静默忽略，已知键照常读回，list 仍是固定四份。
+        let dir = std::env::temp_dir().join(format!(
+            "openless-core-ghostwriter-briefs-stale-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ghostwriter-prompts.json");
+        std::fs::write(
+            &path,
+            r#"{"sediment_notice":"旧提醒覆写","candidates":"旧候选覆写"}"#,
+        )
+        .unwrap();
+        let store = TaskBriefStore::at_data_dir(&dir);
+        assert_eq!(store.body(TaskBriefId::Candidates), "旧候选覆写");
+        assert!(store.is_modified(TaskBriefId::Candidates));
+        assert_eq!(
+            store.body(TaskBriefId::SedimentExtraction),
+            TaskBriefId::SedimentExtraction.default_body()
+        );
+        assert_eq!(store.list().len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

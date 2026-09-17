@@ -754,18 +754,17 @@ export interface GhostwriterRecommendationItem {
   title: string;
 }
 
-/** 常用语提醒：说话中重复到的可复用说法，可一键存为常用语或忽略。 */
-export interface GhostwriterSedimentSuggestion {
-  phrase: string;
-  count: number;
-  suggestedTrigger: string;
-}
-
 /** 浮框候选区共享状态：事件到达即整体替换（批次无修订号，事件总线保序）。 */
 export interface GhostwriterAssistState {
   candidateGroups: GhostwriterCandidateGroup[];
   recommendations: GhostwriterRecommendationItem[];
-  sediment: GhostwriterSedimentSuggestion | null;
+}
+
+/** 按需批量提取产出的一条候选常用语草稿（管理页编辑勾选后才入库）。 */
+export interface GhostwriterSnippetDraft {
+  phrase: string;
+  suggestedTrigger: string;
+  example?: string;
 }
 
 export interface CapsulePayload {

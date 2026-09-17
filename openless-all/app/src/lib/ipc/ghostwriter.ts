@@ -12,6 +12,13 @@ export interface GhostwriterCancelLastResult {
   revision: number;
 }
 
+/** 按需批量提取产出的一条候选常用语草稿（编辑勾选后由前端逐条 create 入库）。 */
+export interface GhostwriterSnippetDraft {
+  phrase: string;
+  suggestedTrigger: string;
+  example?: string;
+}
+
 /** 任务书快照：身份＋用途说明＋是否已被用户覆写＋当前生效正文。 */
 export interface GhostwriterTaskBrief {
   id: string;
@@ -21,7 +28,7 @@ export interface GhostwriterTaskBrief {
   body: string;
 }
 
-// 非 Tauri 环境的内存 mock：五份任务书的覆写表（无持久化），仅供浏览器内开发。
+// 非 Tauri 环境的内存 mock：四份任务书的覆写表（无持久化），仅供浏览器内开发。
 const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
   {
     id: 'instruction_polish',
@@ -42,16 +49,10 @@ const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
     body: '从常用语库里挑出与当前内容真正相关的条目。（浏览器 mock：真实正文由后端提供）',
   },
   {
-    id: 'sediment_notice',
-    title: '常用语提醒',
-    description: '管判断当前内容是否在重复未入库说法，改了会影响常用语提醒。',
-    body: '判断说话人是否又在说某条还没入库的说法。（浏览器 mock：真实正文由后端提供）',
-  },
-  {
     id: 'sediment_extraction',
     title: '提取常用语',
-    description: '管从说话内容里提取哪些说法存成常用语，改了会影响之后提醒你存的说法。',
-    body: '从转写里找出值得存成常用语的说法。（浏览器 mock：真实正文由后端提供）',
+    description: '管从语音记录提取候选常用语，改了会影响提取结果。',
+    body: '从历史语音转写里找出值得存成常用语的说法。（浏览器 mock：真实正文由后端提供）',
   },
 ];
 
@@ -124,17 +125,22 @@ export function ghostwriterCancelLast(sessionId: string): Promise<GhostwriterCan
   }));
 }
 
-/** 沉淀建议存为常用语；无建议时后端返回 null。触发词重复时 reject（调用方提示）。 */
-export function ghostwriterSaveSuggestion(sessionId: string): Promise<Snippet | null> {
-  return invokeOrMock('ghostwriter_save_suggestion', { sessionId }, () => null);
+/** 按需批量提取候选常用语：选中历史语音记录 id，LLM 提取可编辑草稿（不落库）。 */
+export function extractGhostwriterCandidates(sessionIds: string[]): Promise<GhostwriterSnippetDraft[]> {
+  return invokeOrMock('ghostwriter_extract_snippet_candidates', { sessionIds }, () => [
+    {
+      phrase: '以后都用测试环境跑',
+      suggestedTrigger: '测试环境',
+      example: '以后都用测试环境跑，别直接上生产',
+    },
+    {
+      phrase: '发版前先看灰度数据',
+      suggestedTrigger: '看灰度',
+    },
+  ]);
 }
 
-/** 忽略沉淀建议（本次会话不再提）。 */
-export function ghostwriterDismissSuggestion(sessionId: string): Promise<void> {
-  return invokeOrMock('ghostwriter_dismiss_suggestion', { sessionId }, () => undefined);
-}
-
-/** 五份任务书的列表（固定顺序由后端注册表决定）。 */
+/** 四份任务书的列表（固定顺序由后端注册表决定）。 */
 export function listGhostwriterTaskBriefs(): Promise<GhostwriterTaskBrief[]> {
   return invokeOrMock('list_ghostwriter_task_briefs', undefined, () =>
     mockTaskBriefDefaults.map((brief) => mockTaskBriefInfo(brief.id)),

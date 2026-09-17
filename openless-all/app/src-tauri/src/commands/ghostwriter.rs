@@ -1,5 +1,5 @@
 //! Ghostwriter 层命令：常用语（snippet）CRUD、浮框撤销最近动作、
-//! 沉淀建议存取与任务书管理。
+//! 候选常用语按需提取与任务书管理。
 //! 候选与推荐纯展示（2026-09-17 裁决），点选命令已移除。
 
 use super::*;
@@ -76,27 +76,17 @@ pub fn ghostwriter_cancel_last(
     })
 }
 
-/// 沉淀建议存为常用语；无建议时返回 null。
-#[tauri::command]
-pub fn ghostwriter_save_suggestion(
-    core: CoreState<'_>,
-    session_id: String,
-) -> Result<Option<Snippet>, String> {
-    let parsed = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let session_id = openless_core::SessionId::from_uuid(parsed);
-    core.save_ghostwriter_suggestion(session_id)
-        .map_err(|e| e.to_string())
-}
 
-/// 忽略沉淀建议（本次会话不再提）。
+
+/// 按需批量提取候选常用语（管理页触发）：选中的历史会话 id 交给 Core 提取，
+/// 返回可编辑草稿（不落库，保存由前端逐条 create）。
 #[tauri::command]
-pub fn ghostwriter_dismiss_suggestion(
+pub async fn ghostwriter_extract_snippet_candidates(
     core: CoreState<'_>,
-    session_id: String,
-) -> Result<(), String> {
-    let parsed = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
-    let session_id = openless_core::SessionId::from_uuid(parsed);
-    core.dismiss_ghostwriter_suggestion(session_id)
+    session_ids: Vec<String>,
+) -> Result<Vec<openless_core::ghostwriter::types::SnippetDraft>, String> {
+    core.extract_ghostwriter_snippet_candidates(session_ids)
+        .await
         .map_err(|e| e.to_string())
 }
 

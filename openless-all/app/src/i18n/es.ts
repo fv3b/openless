@@ -1,10 +1,8 @@
 import type { zhCN } from './zh-CN';
 
-// es needs plural variants (_one/_other) for the count-bearing panel strings;
-// zh-CN and the other non-Latin locales keep the flat {{count}} key.
-export const es: typeof zhCN & {
-  ghostwriter: { panel: { sedimentSuggest_one: string; sedimentSuggest_other: string } };
-} = {
+// es keeps the flat {{count}} keys; zh-CN and the other non-Latin locales do
+// the same (no plural forms).
+export const es: typeof zhCN = {
   cloudSync: {
     title: 'Sincronización en la nube',
     description:
@@ -184,11 +182,6 @@ export const es: typeof zhCN & {
       noticeCopiedFallback: 'Copiado: pega manualmente',
       noticeNotRequested: 'Terminado',
       noticeInserted: '{{count}} caracteres insertados',
-      sedimentSuggest: 'Has dicho «{{phrase}}» {{count}} veces últimamente',
-      sedimentSuggest_one: 'Has dicho «{{phrase}}» {{count}} vez últimamente',
-      sedimentSuggest_other: 'Has dicho «{{phrase}}» {{count}} veces últimamente',
-      saveSuggestion: 'Guardar como frase',
-      dismiss: 'Ignorar',
       kindTerm: 'Término',
       kindNaming: 'Nombre',
       recommendLabel: 'Frases',
@@ -253,6 +246,23 @@ export const es: typeof zhCN & {
       saveFailed: 'No se pudo guardar: {{error}}',
       updateFailed: 'No se pudo actualizar: {{error}}',
       deleteFailed: 'No se pudo eliminar: {{error}}',
+      extract: 'Extraer de grabaciones de voz',
+      extractTitle: 'Extraer frases de grabaciones de voz',
+      extractPickTitle: 'Elige grabaciones',
+      extractReviewTitle: 'Edita candidatas',
+      extractWindowNote: 'Solo se muestran grabaciones de voz de los últimos 3 días con transcripción',
+      extractEmpty: 'No hay grabaciones extraíbles en los últimos 3 días',
+      extractStart: 'Iniciar extracción',
+      extractSave: 'Guardar selección',
+      extractSelectedCount: '{{count}} seleccionadas',
+      extractSavedSummary: '{{count}} guardadas',
+      extractPartialSummary: '{{count}} guardadas; {{failed}} omitidas (disparador duplicado)',
+      extractExtracting: 'Extrayendo…',
+      extractFailed: 'Error al extraer: {{error}}',
+      extractBack: 'Volver a la lista',
+      hoursAgo: 'hace {{n}} horas',
+      yesterday: 'ayer',
+      daysAgo: 'hace {{n}} días',
     },
     briefs: {
       listTitle: 'Instrucciones',

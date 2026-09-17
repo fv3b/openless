@@ -218,13 +218,12 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
   assert(s3.hits.length === 0, '旧响应缺 action 时按命中撤销兜底（与历史行为一致）');
 }
 
-// --- ghostwriterAssistReducer：候选区（候选组/推荐/沉淀）的纯状态机 ---
+// --- ghostwriterAssistReducer：候选区（候选组/推荐）的纯状态机 ---
 
 const EMPTY_ASSIST = emptyGhostwriterAssistState();
 assert(
   EMPTY_ASSIST.candidateGroups.length === 0 &&
-    EMPTY_ASSIST.recommendations.length === 0 &&
-    EMPTY_ASSIST.sediment === null,
+    EMPTY_ASSIST.recommendations.length === 0,
   'assist 空状态应为零值',
 );
 
@@ -238,7 +237,6 @@ assert(
         { kind: 'naming', items: [{ index: 2, text: '先在小范围试运行' }] },
       ],
       recommendations: [{ snippetId: 's1', title: '项目背景' }],
-      sediment: { phrase: '风险控制', count: 3, suggestedTrigger: '风控' },
     },
   });
   assert(s1.candidateGroups.length === 2, 'assist_event_replaces_state: 候选组应整体换上');
@@ -250,18 +248,13 @@ assert(
     s1.recommendations.length === 1 && s1.recommendations[0].snippetId === 's1',
     'assist_event_replaces_state: 推荐应整体换上',
   );
-  assert(
-    s1.sediment?.phrase === '风险控制' && s1.sediment?.count === 3,
-    'assist_event_replaces_state: 沉淀建议应整体换上',
-  );
-
-  // 新批次整体覆盖旧批次（沉淀 null 清掉旧建议）
+  // 新批次整体覆盖旧批次
   const s2 = ghostwriterAssistReducer(s1, {
     type: 'ghostwriter_assist_changed',
-    payload: { candidateGroups: [], recommendations: [], sediment: null },
+    payload: { candidateGroups: [], recommendations: [] },
   });
   assert(
-    s2.candidateGroups.length === 0 && s2.recommendations.length === 0 && s2.sediment === null,
+    s2.candidateGroups.length === 0 && s2.recommendations.length === 0,
     '新批次应整体替换旧批次',
   );
 }
@@ -270,7 +263,7 @@ assert(
 {
   const base = ghostwriterAssistReducer(EMPTY_ASSIST, {
     type: 'ghostwriter_assist_changed',
-    payload: { candidateGroups: [], recommendations: [], sediment: null },
+    payload: { candidateGroups: [], recommendations: [] },
   });
   const s1 = ghostwriterAssistReducer(base, {
     type: 'ghostwriter_preview_changed',
@@ -290,7 +283,6 @@ assert(
     payload: {
       candidateGroups: [{ kind: 'term', items: [{ index: 1, text: '灰度发布' }] }],
       recommendations: [{ snippetId: 's1', title: '项目背景' }],
-      sediment: null,
     },
   });
   assert(!ghostwriterHasUndoAction(preview, assistWithChips), '候选/推荐纯展示，不构成可撤销');

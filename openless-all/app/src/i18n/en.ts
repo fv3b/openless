@@ -1,7 +1,7 @@
 // English resources — translated from zh-CN.ts. Keep keys in sync.
-// Exception: `noticeInserted` and `sedimentSuggest` split into i18next plural
-// keys (_one/_other) here; zh-CN and the other locales have no plural forms and
-// keep the flat {{count}} key.
+// Exception: `noticeInserted` splits into i18next plural keys (_one/_other)
+// here; zh-CN and the other locales have no plural forms and keep the flat
+// {{count}} key.
 
 import type { zhCN } from './zh-CN';
 
@@ -11,8 +11,6 @@ export const en: typeof zhCN & {
     panel: {
       noticeInserted_one: string;
       noticeInserted_other: string;
-      sedimentSuggest_one: string;
-      sedimentSuggest_other: string;
     };
   };
 } = {
@@ -196,11 +194,6 @@ export const en: typeof zhCN & {
       noticeInserted: 'Inserted {{count}} characters',
       noticeInserted_one: 'Inserted {{count}} character',
       noticeInserted_other: 'Inserted {{count}} characters',
-      sedimentSuggest: 'You said “{{phrase}}” {{count}} times recently',
-      sedimentSuggest_one: 'You said “{{phrase}}” {{count}} time recently',
-      sedimentSuggest_other: 'You said “{{phrase}}” {{count}} times recently',
-      saveSuggestion: 'Save as snippet',
-      dismiss: 'Ignore',
       kindTerm: 'Term',
       kindNaming: 'Name',
       recommendLabel: 'Snippets',
@@ -265,6 +258,23 @@ export const en: typeof zhCN & {
       saveFailed: 'Failed to save: {{error}}',
       updateFailed: 'Failed to update: {{error}}',
       deleteFailed: 'Failed to delete: {{error}}',
+      extract: 'Extract from voice records',
+      extractTitle: 'Extract snippets from voice records',
+      extractPickTitle: 'Pick voice records',
+      extractReviewTitle: 'Review candidates',
+      extractWindowNote: 'Only voice records from the last 3 days with transcripts are shown',
+      extractEmpty: 'No extractable voice records in the last 3 days',
+      extractStart: 'Start extraction',
+      extractSave: 'Save selected',
+      extractSelectedCount: '{{count}} selected',
+      extractSavedSummary: 'Saved {{count}}',
+      extractPartialSummary: 'Saved {{count}}; {{failed}} skipped (duplicate trigger)',
+      extractExtracting: 'Extracting…',
+      extractFailed: 'Extraction failed: {{error}}',
+      extractBack: 'Back to list',
+      hoursAgo: '{{n}} hours ago',
+      yesterday: 'yesterday',
+      daysAgo: '{{n}} days ago',
     },
     briefs: {
       listTitle: 'Task briefs',

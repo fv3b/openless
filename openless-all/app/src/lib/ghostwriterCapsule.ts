@@ -153,11 +153,11 @@ export function ghostwriterPreviewReducer(
 
 /** 浮框候选区的空状态（无批次＝三行全空）。 */
 export function emptyGhostwriterAssistState(): GhostwriterAssistState {
-  return { candidateGroups: [], recommendations: [], sediment: null };
+  return { candidateGroups: [], recommendations: [] };
 }
 
 /**
- * 候选区纯状态机：只认 ghostwriter_assist_changed，payload 三块整体替换
+ * 候选区纯状态机：只认 ghostwriter_assist_changed，payload 两块整体替换
  * （批次无修订号，事件总线保序，无乱序丢弃逻辑）；payload 缺失/形状不对
  * 与未知事件一律原样返回。
  */
@@ -177,7 +177,6 @@ export function ghostwriterAssistReducer(
   return {
     candidateGroups: payload.candidateGroups,
     recommendations: payload.recommendations,
-    sediment: payload.sediment ?? null,
   };
 }
 

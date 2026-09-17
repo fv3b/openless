@@ -122,13 +122,12 @@ pub struct GhostwriterNotice {
     pub level: String,
 }
 
-/// 实时助手批次变化事件：候选组＋推荐＋常用语提醒，浮框候选区整体替换渲染。
+/// 实时助手批次变化事件：候选组＋推荐，浮框候选区整体替换渲染。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhostwriterAssistChanged {
     pub candidate_groups: Vec<GhostwriterCandidateGroup>,
     pub recommendations: Vec<GhostwriterRecommendationItem>,
-    pub sediment: Option<GhostwriterSedimentSuggestion>,
 }
 
 /// 事件载荷里的一组同类候选。
@@ -158,13 +157,16 @@ pub struct GhostwriterRecommendationItem {
     pub title: String,
 }
 
-/// 常用语提醒：说话人正在重复某条值得收进常用语的说法。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// 按需批量提取产出的一条候选常用语草稿（编辑与勾选都在管理页，确认后才入库）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GhostwriterSedimentSuggestion {
+pub struct SnippetDraft {
+    /// 整理好的说法。
     pub phrase: String,
-    pub count: u32,
+    /// 便于口头触发的短触发词（提取侧缺省回落 phrase）。
     pub suggested_trigger: String,
+    /// 原话例句。
+    pub example: Option<String>,
 }
 
 #[cfg(test)]
@@ -188,15 +190,9 @@ mod tests {
                 snippet_id: "s2".into(),
                 title: "触发词".into(),
             }],
-            sediment: Some(GhostwriterSedimentSuggestion {
-                phrase: "说法".into(),
-                count: 3,
-                suggested_trigger: "触发".into(),
-            }),
         };
         let v: serde_json::Value = serde_json::to_value(&a).unwrap();
         assert_eq!(v["candidateGroups"][0]["items"][0]["index"], 1);
         assert_eq!(v["recommendations"][0]["snippetId"], "s2");
-        assert_eq!(v["sediment"]["suggestedTrigger"], "触发");
     }
 }
