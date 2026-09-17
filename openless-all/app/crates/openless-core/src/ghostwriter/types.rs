@@ -157,6 +157,14 @@ pub struct GhostwriterRecommendationItem {
     pub title: String,
 }
 
+/// 对话回话事件：AI 在对话会话里的一句话（前端按到达顺序追加进转写流，
+/// 事件保序即时间序；回话不产生生效动作）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterReplyChanged {
+    pub text: String,
+}
+
 /// 按需批量提取产出的一条候选常用语草稿（编辑与勾选都在管理页，确认后才入库）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -227,5 +235,8 @@ mod tests {
         let v: serde_json::Value = serde_json::to_value(&a).unwrap();
         assert_eq!(v["candidateGroups"][0]["items"][0]["index"], 1);
         assert_eq!(v["recommendations"][0]["snippetId"], "s2");
+        let r = GhostwriterReplyChanged { text: "你说的是哪个日志？".into() };
+        let v: serde_json::Value = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["text"], "你说的是哪个日志？");
     }
 }

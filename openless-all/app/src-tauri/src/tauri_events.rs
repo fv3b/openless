@@ -390,6 +390,7 @@ async fn forward_legacy_event(
         BackendEventKind::GhostwriterPreviewChanged(_)
         | BackendEventKind::GhostwriterSnippetsHit(_)
         | BackendEventKind::GhostwriterAssistChanged(_)
+        | BackendEventKind::GhostwriterReplyChanged(_)
         | BackendEventKind::GhostwriterNotice(_) => {}
     }
 }

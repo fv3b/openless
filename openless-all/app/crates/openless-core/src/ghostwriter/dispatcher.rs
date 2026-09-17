@@ -7,10 +7,14 @@
 //! 失败时告警并发布 [`GhostwriterNotice`]。会话可能已被取消/重置移除：找不到会话＝静默丢弃。
 //! 尾段补润在 stop 路径同步 await：贴出前必须完成，失败回落尾巴原文（兜底追加仍在）。
 //!
-//! 实时助手（[`Self::maybe_trigger_assist`]）：prefs 门（候选/推荐全关直接返回）→
-//! 候选节流（两次 assist 间隔 ≥ candidate_throttle_ms）→ 在飞防叠（AtomicBool）→
-//! spawn 组装输入（缓冲尾部 [`ASSIST_CONTEXT_CHARS`]、启用常用语、任务书正文）
-//! 并调 [`crate::ghostwriter::assist::run_assist`]。推荐节流独立
+//! 实时助手（[`Self::maybe_trigger_assist`]）：对话会话优先分流——自动回话
+//! 路径按会话回话门控决定是否抑制（冷却/封顶时代码注入抑制行，reply 由
+//! assist 侧强制剥除），显式交话入口 [`Self::trigger_reply`] 绕过冷却；
+//! 两者共用节流/在飞单飞机制，回话以 [`GhostwriterReplyChanged`] 落事件。
+//! 普通会话照旧：prefs 门（候选/推荐全关直接返回）→ 候选节流（两次 assist
+//! 间隔 ≥ candidate_throttle_ms）→ 在飞防叠（AtomicBool）→ spawn 组装输入
+//! （缓冲尾部 [`ASSIST_CONTEXT_CHARS`]、启用常用语、任务书正文）并调
+//! [`crate::ghostwriter::assist::run_assist`]。推荐节流独立
 //! （recommendation_throttle_ms）且受推荐开关门控：开关关着不现取也不写锚点，
 //! 未到点复用上次推荐填批次（推荐行不闪失），到点则现取并更新缓存（单槽即可
 //! ——assist 天然单飞）。批次随 [`GhostwriterAssistChanged`] 发布，失败发
@@ -28,17 +32,19 @@ use crate::config::Clock;
 use crate::credentials::CredentialStore;
 use crate::events::{BackendEventKind, EventBus};
 use crate::ports::TextPolisher;
+use crate::shared_types::ConversationReplyTiming;
 use crate::types::SessionId;
 
-use super::assist::{AssistInput, run_assist};
+use super::assist::{AssistInput, ConversationAssistContext, run_assist};
 use super::prompts::TaskBriefId;
 use super::segment_polisher::{SegmentPolishRequest, polish_segment};
 use super::session::PolishableSegment;
+use super::snippet_store::Snippet;
 use super::task_brief_store::TaskBriefStore;
 use super::types::{
     AssistSnapshot, GhostwriterAssistChanged, GhostwriterCandidateGroup, GhostwriterCandidateItem,
     GhostwriterNotice, GhostwriterPreviewChanged, GhostwriterRecommendationItem,
-    LiveRecommendation, SnippetDraft,
+    GhostwriterReplyChanged, LiveRecommendation, ReplyGate, SnippetDraft,
 };
 
 /// 静默触发阈值毫秒数：说话纯静默（无新增量）达到该值视为一次停顿
@@ -178,11 +184,26 @@ impl GhostwriterPolishDispatcher {
         }
     }
 
-    /// 触发一次实时助手（停顿/句毕调用）：prefs 门 → 候选节流 → 在飞防叠 →
-    /// spawn 跑 [`run_assist`] 并合回批次。收尾（成败都走）更新节流锚点、
-    /// 复位在飞标记并发布 [`GhostwriterAssistChanged`]（失败改发错误提示）。
+    /// 触发一次实时助手（停顿/句毕调用）：对话会话走对话分支（自动回话路径，
+    /// 回话门控决定是否抑制）；普通会话走 prefs 门（候选/推荐全关直接返回）→
+    /// 候选节流 → 在飞防叠 → spawn 跑 [`run_assist`] 并合回批次。收尾（成败
+    /// 都走）更新节流锚点、复位在飞标记并发布 [`GhostwriterAssistChanged`]。
     pub fn maybe_trigger_assist(&self, session_id: &SessionId, reason: AssistTrigger) {
         let prefs = self.preferences.get().ghostwriter;
+        let conversational = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            state
+                .ghostwriter_sessions
+                .get(session_id)
+                .map(|session| session.conversational())
+                .unwrap_or(false)
+        };
+        if conversational {
+            // 对话会话：候选/推荐流开关只管代笔会话，不在此门控；
+            // 停顿/句毕触发＝自动回话路径（显式交话时机下仅刷推荐）。
+            self.spawn_conversation_assist(session_id, prefs, true);
+            return;
+        }
         if !prefs.candidates_enabled && !prefs.recommendations_enabled {
             return;
         }
@@ -217,6 +238,148 @@ impl GhostwriterPolishDispatcher {
                 }
             }
         });
+    }
+
+    /// 显式交话入口（api 命令层调用）：会话须存在且为对话会话；auto=false
+    /// 绕过冷却（封顶也只数自动回话）。同样发布回话事件/推荐事件。
+    pub fn trigger_reply(&self, session_id: &SessionId) {
+        let prefs = self.preferences.get().ghostwriter;
+        let conversational = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            state
+                .ghostwriter_sessions
+                .get(session_id)
+                .map(|session| session.conversational())
+                .unwrap_or(false)
+        };
+        if !conversational {
+            log::debug!("[ghostwriter] trigger_reply ignored: session missing or not conversational");
+            return;
+        }
+        self.spawn_conversation_assist(session_id, prefs, false);
+    }
+
+    /// 对话 assist 的 spawn 外壳（自动与显式共用）：节流/在飞防叠与代笔路径
+    /// 共用同一套单飞机制；成功后照常刷新 assist 事件，失败发轻提示。
+    fn spawn_conversation_assist(
+        &self,
+        session_id: &SessionId,
+        prefs: crate::shared_types::GhostwriterPreferences,
+        auto: bool,
+    ) {
+        if !self.assist_throttle_passed(prefs.candidate_throttle_ms) {
+            log::debug!("[ghostwriter] conversation assist throttled (auto={auto})");
+            return;
+        }
+        if self.assist_in_flight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let this = self.clone();
+        let session_id = *session_id;
+        tokio::spawn(async move {
+            let result = this
+                .run_conversation_assist_for_session(&session_id, &prefs, auto)
+                .await;
+            *this
+                .last_assist
+                .lock()
+                .expect("assist throttle lock poisoned") = Some(this.clock.now_utc());
+            this.assist_in_flight.store(false, Ordering::Release);
+            match result {
+                Ok(true) => this.refresh_assist_event(&session_id),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!("[ghostwriter] conversation assist failed: {error}");
+                    this.events.publish(
+                        Some(session_id),
+                        BackendEventKind::GhostwriterNotice(GhostwriterNotice {
+                            message: "实时助手暂时不可用".into(),
+                            level: "error".into(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    /// 跑一次对话 assist（回话＋推荐双产出）并合回会话。auto=true＝自动触发
+    /// （回话门控：显式交话时机不自动回话、冷却/封顶时抑制——抑制由代码注入
+    /// 行＋强制剥 reply 双保险落地）；auto=false＝显式交话（绕过冷却）。
+    /// 回话 Some 且非空 → record_reply（计 auto 计数）＋发布回话事件；
+    /// 推荐照旧合批次走 assist 事件。返回 Ok(false)＝会话已不存在（静默）。
+    async fn run_conversation_assist_for_session(
+        &self,
+        session_id: &SessionId,
+        prefs: &crate::shared_types::GhostwriterPreferences,
+        auto: bool,
+    ) -> Result<bool, crate::errors::BackendError> {
+        // 状态锁内只读聊天记录与门控判定＋启用常用语。
+        let (chat, suppress_reply, snippets) = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            let Some(session) = state.ghostwriter_sessions.get(session_id) else {
+                return Ok(false);
+            };
+            let suppress_reply = if auto {
+                // 自动触发：显式交话时机不自动回话（机器契约），冷却/封顶时抑制。
+                session.reply_timing() != ConversationReplyTiming::Pause
+                    || session.reply_gate(true) != ReplyGate::Allow
+            } else {
+                // 显式交话绕过冷却，恒放行。
+                false
+            };
+            (
+                session.chat_transcript(),
+                suppress_reply,
+                state.ghostwriter_snippets.enabled(),
+            )
+        };
+        let include_recommendations = prefs.conversation_recommendations
+            && self.recommendation_recompute_due(prefs.recommendation_throttle_ms);
+        let input = AssistInput {
+            session_id: super::assist::assist_session_id(),
+            context_text: String::new(),
+            snippets: snippets.clone(),
+            include_candidates: false,
+            include_recommendations,
+            instruction_candidates: String::new(),
+            instruction_recommendations: self.task_briefs.body(TaskBriefId::Recommendations),
+            instruction_conversation_reply: self.task_briefs.body(TaskBriefId::ConversationReply),
+            conversation: Some(ConversationAssistContext {
+                chat: chat.clone(),
+                suppress_reply,
+            }),
+        };
+        let outcome =
+            run_assist(&self.polisher, &self.credential_store, &self.active_llm_provider(), &input)
+                .await?;
+        // 回话处理：Some 且非空才动作（AI 的话不进待融、无撤销，只进聊天记录）。
+        if let Some(reply) = outcome.reply.clone().filter(|text| !text.is_empty()) {
+            {
+                let mut state = self.state.write().expect("backend state lock poisoned");
+                let Some(session) = state.ghostwriter_sessions.get_mut(session_id) else {
+                    return Ok(false);
+                };
+                session.record_reply(reply.clone(), auto);
+            }
+            self.events.publish(
+                Some(*session_id),
+                BackendEventKind::GhostwriterReplyChanged(GhostwriterReplyChanged { text: reply }),
+            );
+        }
+        let batch_recommendations = self.resolve_batch_recommendations(
+            prefs.conversation_recommendations,
+            include_recommendations,
+            &outcome.recommendation_ids,
+            &snippets,
+        );
+        {
+            let mut state = self.state.write().expect("backend state lock poisoned");
+            let Some(session) = state.ghostwriter_sessions.get_mut(session_id) else {
+                return Ok(false);
+            };
+            session.set_live_batch(Vec::new(), batch_recommendations);
+        }
+        Ok(true)
     }
 
     /// 按 session 当前快照重发 [`GhostwriterAssistChanged`]（开关切换后调用）；
@@ -296,26 +459,10 @@ impl GhostwriterPolishDispatcher {
             )
         };
         // 推荐节流独立计时＋推荐开关门（控制器裁决）：推荐开关开着且（首次
-        // 或距上次现取 ≥ recommendation_throttle_ms）才现取；现取即写锚点
-        // （窗口自本次重算起计），否则 last_rec 恒为 None、节流失效。开关关闭
-        // 时不现取也不写锚点（重新打开后按窗口语义自然现取）。
-        let include_recommendations = prefs.recommendations_enabled && {
-            let mut previous = self
-                .last_rec
-                .lock()
-                .expect("recommendation throttle lock poisoned");
-            let recompute = match *previous {
-                None => true,
-                Some(previous) => {
-                    (self.clock.now_utc() - previous).num_milliseconds()
-                        >= prefs.recommendation_throttle_ms as i64
-                }
-            };
-            if recompute {
-                *previous = Some(self.clock.now_utc());
-            }
-            recompute
-        };
+        // 或距上次现取 ≥ recommendation_throttle_ms）才现取；开关关闭时不现取
+        // 也不写锚点（重新打开后按窗口语义自然现取）。
+        let include_recommendations = prefs.recommendations_enabled
+            && self.recommendation_recompute_due(prefs.recommendation_throttle_ms);
         let input = AssistInput {
             session_id: super::assist::assist_session_id(),
             context_text,
@@ -330,9 +477,53 @@ impl GhostwriterPolishDispatcher {
         let outcome =
             run_assist(&self.polisher, &self.credential_store, &self.active_llm_provider(), &input)
                 .await?;
-        // 推荐映射：id → 库内条目（title＝触发词，批次无标题字段）；库内找不到的丢弃。
-        let recommendations: Vec<LiveRecommendation> = outcome
-            .recommendation_ids
+        let batch_recommendations = self.resolve_batch_recommendations(
+            prefs.recommendations_enabled,
+            include_recommendations,
+            &outcome.recommendation_ids,
+            &snippets,
+        );
+        // 批次合回：新批次即清上一批的选中（会话内语义）；会话可能已被移除。
+        {
+            let mut state = self.state.write().expect("backend state lock poisoned");
+            let Some(session) = state.ghostwriter_sessions.get_mut(session_id) else {
+                return Ok(false);
+            };
+            session.set_live_batch(outcome.candidate_groups, batch_recommendations);
+        }
+        Ok(true)
+    }
+
+    /// 推荐节流：首次（None）或距上次现取 ≥ throttle_ms 才现取；现取即写锚点
+    /// （窗口自本次重算起计）。
+    fn recommendation_recompute_due(&self, throttle_ms: u64) -> bool {
+        let mut previous = self
+            .last_rec
+            .lock()
+            .expect("recommendation throttle lock poisoned");
+        let recompute = match *previous {
+            None => true,
+            Some(previous) => {
+                (self.clock.now_utc() - previous).num_milliseconds() >= throttle_ms as i64
+            }
+        };
+        if recompute {
+            *previous = Some(self.clock.now_utc());
+        }
+        recompute
+    }
+
+    /// 推荐 id → 库内条目映射＋缓存决策 → 本次批次推荐（「推荐行不闪失」
+    /// 语义集中在此）：开关关闭 → 空且不回填缓存；节流未到点或现取为空 →
+    /// 沿用缓存；现取非空 → 更新缓存并采用。
+    fn resolve_batch_recommendations(
+        &self,
+        recommendations_enabled: bool,
+        include_recommendations: bool,
+        recommendation_ids: &[String],
+        snippets: &[Snippet],
+    ) -> Vec<LiveRecommendation> {
+        let recommendations: Vec<LiveRecommendation> = recommendation_ids
             .iter()
             .filter_map(|id| {
                 snippets
@@ -345,7 +536,7 @@ impl GhostwriterPolishDispatcher {
                     })
             })
             .collect();
-        let batch_recommendations = if !prefs.recommendations_enabled {
+        if !recommendations_enabled {
             // 推荐开关关闭：批次不带推荐（缓存也不回填——关了就展示为空）。
             Vec::new()
         } else if !include_recommendations {
@@ -369,16 +560,7 @@ impl GhostwriterPolishDispatcher {
                 .lock()
                 .expect("recommendation cache lock poisoned") = Some(recommendations.clone());
             recommendations
-        };
-        // 批次合回：新批次即清上一批的选中（会话内语义）；会话可能已被移除。
-        {
-            let mut state = self.state.write().expect("backend state lock poisoned");
-            let Some(session) = state.ghostwriter_sessions.get_mut(session_id) else {
-                return Ok(false);
-            };
-            session.set_live_batch(outcome.candidate_groups, batch_recommendations);
         }
-        Ok(true)
     }
 
     fn apply_segment(&self, session_id: SessionId, index: usize, text: String) {
@@ -446,9 +628,13 @@ mod tests {
     use crate::credentials::InMemoryCredentialStore;
     use crate::dictation_context::DictationContext;
     use crate::events::EventSubscription;
+    use crate::ghostwriter::session::GhostwriterSession;
     use crate::ghostwriter::snippet_store::{Snippet, SnippetKind};
+    use crate::ghostwriter::types::ReplyGate;
     use crate::ports::{PolishOutput, TextStreamSink};
-    use crate::shared_types::GhostwriterPreferences;
+    use crate::shared_types::{
+        ConversationProbeDepth, ConversationReplyTiming, GhostwriterPreferences,
+    };
     use crate::types::TranscriptDelta;
 
     /// 测试时钟：now 可推进，供节流窗口断言（不读墙钟，全走注入 clock）。
@@ -547,6 +733,24 @@ mod tests {
     }
 
     fn harness(throttles: (u64, u64), responses: Vec<&str>) -> Harness {
+        harness_with(throttles, responses, None)
+    }
+
+    /// 对话会话 harness：会话带对话标志，且已喂出一段完成段
+    /// （聊天记录有【我】行）。
+    fn conversational_harness(
+        throttles: (u64, u64),
+        responses: Vec<&str>,
+        depth: ConversationProbeDepth,
+    ) -> Harness {
+        harness_with(throttles, responses, Some(depth))
+    }
+
+    fn harness_with(
+        throttles: (u64, u64),
+        responses: Vec<&str>,
+        conversation_depth: Option<ConversationProbeDepth>,
+    ) -> Harness {
         let dir = std::env::temp_dir().join(format!(
             "openless-ghostwriter-dispatcher-{}",
             uuid::Uuid::new_v4().simple()
@@ -580,17 +784,34 @@ mod tests {
         let session_id = SessionId::new();
         {
             let mut guard = state.write().expect("state lock poisoned");
-            let mut session = crate::ghostwriter::session::GhostwriterSession::new();
-            session
-                .feed(
-                    &TranscriptDelta {
-                        text: "把日志清一下就是那种缓存".into(),
-                        offset: 0,
-                        is_final: true,
-                    },
-                    &[],
-                )
-                .unwrap();
+            let mut session = GhostwriterSession::new();
+            match conversation_depth {
+                Some(depth) => {
+                    session = session.with_conversation(ConversationReplyTiming::Pause, depth);
+                    session
+                        .feed(
+                            &TranscriptDelta {
+                                text: "把日志清一下。后面".into(),
+                                offset: 0,
+                                is_final: false,
+                            },
+                            &[],
+                        )
+                        .unwrap();
+                }
+                None => {
+                    session
+                        .feed(
+                            &TranscriptDelta {
+                                text: "把日志清一下就是那种缓存".into(),
+                                offset: 0,
+                                is_final: true,
+                            },
+                            &[],
+                        )
+                        .unwrap();
+                }
+            }
             guard.ghostwriter_sessions.insert(session_id, session);
         }
         let events = Arc::new(EventBus::new(64));
@@ -632,6 +853,198 @@ mod tests {
                 return payload;
             }
         }
+    }
+
+    async fn next_reply_changed(events: &mut EventSubscription) -> GhostwriterReplyChanged {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("reply event did not arrive in time")
+                .expect("event stream closed");
+            if let BackendEventKind::GhostwriterReplyChanged(payload) = event.kind {
+                return payload;
+            }
+        }
+    }
+
+    async fn expect_no_more_events(events: &mut EventSubscription) {
+        let probe = tokio::time::timeout(std::time::Duration::from_millis(150), events.recv()).await;
+        assert!(probe.is_err(), "不应再有事件到达");
+    }
+
+    fn chat_transcript_of(harness: &Harness) -> String {
+        harness
+            .state
+            .read()
+            .expect("state lock poisoned")
+            .ghostwriter_sessions
+            .get(&harness.session_id)
+            .expect("session exists")
+            .chat_transcript()
+    }
+
+    // ===== 对话会话触发分支与显式交话（Task 5）=====
+
+    #[tokio::test]
+    async fn conversation_pause_trigger_records_reply_and_publishes_event() {
+        let harness = conversational_harness(
+            (0, 0),
+            vec![r#"{"reply":"你说的是哪个日志？","recommendations":["s-rec"]}"#],
+            ConversationProbeDepth::Single,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let reply = next_reply_changed(&mut events).await;
+        assert_eq!(reply.text, "你说的是哪个日志？");
+        let assist = next_assist_changed(&mut events).await;
+        assert_eq!(assist.recommendations.len(), 1);
+
+        // 调用走 assistant 固定 uuid5 会话 id（fixture 路由契约）。
+        assert_eq!(
+            harness.polisher.calls()[0].0,
+            super::super::assist::assist_session_id()
+        );
+        // 会话已记【助手】行；一点一问冷却已生效。
+        assert!(chat_transcript_of(&harness).contains("【助手】你说的是哪个日志？"));
+        let state = harness.state.read().expect("state lock poisoned");
+        let session = state.ghostwriter_sessions.get(&harness.session_id).unwrap();
+        assert_eq!(session.reply_gate(true), ReplyGate::Cooldown);
+    }
+
+    #[tokio::test]
+    async fn conversation_cooldown_suppresses_reply_but_still_recommends() {
+        let harness = conversational_harness(
+            (0, 0),
+            vec![
+                r#"{"reply":"第一问","recommendations":["s-rec"]}"#,
+                r#"{"reply":"模型不听话的第二问","recommendations":["s-rec"]}"#,
+            ],
+            ConversationProbeDepth::Single,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let _ = next_reply_changed(&mut events).await;
+        let _ = next_assist_changed(&mut events).await;
+
+        harness.clock.advance_ms(1);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        // 冷却期照常调用出推荐。
+        let second = next_assist_changed(&mut events).await;
+        assert_eq!(second.recommendations.len(), 1);
+        // canned 明明带 reply：回话事件不发、会话未记。
+        expect_no_more_events(&mut events).await;
+        assert_eq!(chat_transcript_of(&harness).matches("【助手】").count(), 1);
+        // 机制级：第二次调用的 prompt 带抑制注入行。
+        assert!(harness.polisher.calls()[1]
+            .1
+            .polish
+            .style_system_prompt
+            .contains("（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）"));
+    }
+
+    #[tokio::test]
+    async fn conversation_cap_suppresses_auto_reply_but_still_recommends() {
+        let harness = conversational_harness(
+            (0, 0),
+            vec![r#"{"reply":"不该出现的第六问","recommendations":["s-rec"]}"#],
+            ConversationProbeDepth::UntilClear,
+        );
+        {
+            let mut guard = harness.state.write().expect("state lock poisoned");
+            let session = guard.ghostwriter_sessions.get_mut(&harness.session_id).unwrap();
+            for i in 0..5 {
+                session.record_reply(format!("历史第{}问", i + 1), true);
+            }
+        }
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        // 封顶照常出推荐；canned 带 reply 也不发回话事件。
+        let assist = next_assist_changed(&mut events).await;
+        assert_eq!(assist.recommendations.len(), 1);
+        expect_no_more_events(&mut events).await;
+        assert!(chat_transcript_of(&harness).contains("【助手】历史第5问"));
+        assert!(!chat_transcript_of(&harness).contains("不该出现的第六问"));
+        assert!(harness.polisher.calls()[0]
+            .1
+            .polish
+            .style_system_prompt
+            .contains("（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）"));
+    }
+
+    #[tokio::test]
+    async fn explicit_trigger_reply_bypasses_cooldown_and_skips_auto_count() {
+        // 追问到清：直接记 4 次自动回话，再显式交话——显式放行且不计入封顶，
+        // 因此下一次自动触发仍在封顶内放行。
+        let harness = conversational_harness(
+            (0, 0),
+            vec![
+                r#"{"reply":"显式交的问","recommendations":["s-rec"]}"#,
+                r#"{"reply":"第5次自动问","recommendations":["s-rec"]}"#,
+            ],
+            ConversationProbeDepth::UntilClear,
+        );
+        {
+            let mut guard = harness.state.write().expect("state lock poisoned");
+            let session = guard.ghostwriter_sessions.get_mut(&harness.session_id).unwrap();
+            for i in 0..4 {
+                session.record_reply(format!("历史第{}问", i + 1), true);
+            }
+        }
+        let mut events = harness.events.subscribe();
+
+        harness.dispatcher.trigger_reply(&harness.session_id);
+        let reply = next_reply_changed(&mut events).await;
+        assert_eq!(reply.text, "显式交的问");
+        let _ = next_assist_changed(&mut events).await;
+
+        harness.clock.advance_ms(1);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let reply = next_reply_changed(&mut events).await;
+        assert_eq!(reply.text, "第5次自动问");
+        assert_eq!(chat_transcript_of(&harness).matches("【助手】").count(), 6);
+    }
+
+    #[tokio::test]
+    async fn trigger_reply_ignores_non_conversational_session() {
+        let harness = harness((0, 0), vec![]);
+        let mut events = harness.events.subscribe();
+
+        harness.dispatcher.trigger_reply(&harness.session_id);
+        expect_no_more_events(&mut events).await;
+        assert!(harness.polisher.calls().is_empty());
+        assert_eq!(chat_transcript_of(&harness), "");
+    }
+
+    #[tokio::test]
+    async fn dictation_session_never_publishes_reply() {
+        // 普通会话回归：canned 带 reply 键也不发回话事件、聊天记录恒空。
+        let harness = harness(
+            (0, 0),
+            vec![r#"{"reply":"普通会话不该有回话","recommendations":["s-rec"]}"#],
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::SegmentEnd);
+        let assist = next_assist_changed(&mut events).await;
+        assert_eq!(assist.recommendations.len(), 1);
+        expect_no_more_events(&mut events).await;
+        assert_eq!(chat_transcript_of(&harness), "");
     }
 
     #[tokio::test]
