@@ -320,6 +320,30 @@ fn resolve_windows_sendinput_insertion_only_legacy(
     resolve_windows_insertion_mode(mode, legacy_sendinput_only) == WindowsInsertionMode::SendInput
 }
 
+/// 对话模式的回话时机：停顿即审（说话停顿自动审）或显式交话（热键交话才回）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationReplyTiming {
+    /// 停顿即审：说话停顿触发自动回话（默认）。
+    #[default]
+    Pause,
+    /// 显式交话：只由热键触发回话。
+    Explicit,
+}
+
+/// 对话模式的追问深度（机制级强制，不靠模型自觉）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationProbeDepth {
+    /// 一点一问：AI 回话后冷却，用户未产出新段前不再自动回话（默认）。
+    #[default]
+    Single,
+    /// 追问到清：无冷却，全会话自动回话总数封顶。
+    UntilClear,
+    /// 回声确认：抑制机制同一点一问。
+    Echo,
+}
+
 /// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数＋
 /// 背景落点。润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象
 /// 或对象内缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
@@ -337,6 +361,16 @@ pub struct GhostwriterPreferences {
     /// 全局背景落点：所有背景类常用语与表述附件的背景块统一附在开头或文末；
     /// 单条常用语不再各自带落点。会话创建时取值传入，偏好保存后对存活会话即时生效。
     pub background_placement: SnippetPlacement,
+    /// 对话模式总开关：默认关，开了才生效（外壳照划词追问模式）。
+    pub conversation_enabled: bool,
+    /// 对话热键：一键两用——会话未开时开对话会话，显式交话模式下交话。
+    pub conversation_hotkey: Option<String>,
+    /// 回话时机：停顿即审或显式交话，默认停顿即审。
+    pub conversation_reply_timing: ConversationReplyTiming,
+    /// 追问深度：一点一问/追问到清/回声确认，默认一点一问。
+    pub conversation_probe_depth: ConversationProbeDepth,
+    /// 对话会话的推荐显示开关（仅对话模式，不动原推荐流开关），默认开。
+    pub conversation_recommendations: bool,
 }
 
 impl Default for GhostwriterPreferences {
@@ -347,6 +381,11 @@ impl Default for GhostwriterPreferences {
             candidate_throttle_ms: 2000,
             recommendation_throttle_ms: 2000,
             background_placement: SnippetPlacement::default(),
+            conversation_enabled: false,
+            conversation_hotkey: None,
+            conversation_reply_timing: ConversationReplyTiming::Pause,
+            conversation_probe_depth: ConversationProbeDepth::Single,
+            conversation_recommendations: true,
         }
     }
 }
@@ -3511,5 +3550,53 @@ mod tests {
         let prefs: UserPreferences = serde_json::from_str(json).unwrap();
         assert!(!prefs.ghostwriter.candidates_enabled);
         assert!(prefs.ghostwriter.recommendations_enabled); // 未写回落默认
+    }
+
+    #[test]
+    fn ghostwriter_conversation_preferences_default_off() {
+        let p = GhostwriterPreferences::default();
+        assert!(!p.conversation_enabled);
+        assert_eq!(p.conversation_hotkey, None);
+        assert_eq!(p.conversation_reply_timing, ConversationReplyTiming::Pause);
+        assert_eq!(p.conversation_probe_depth, ConversationProbeDepth::Single);
+        assert!(p.conversation_recommendations);
+    }
+
+    #[test]
+    fn ghostwriter_conversation_preferences_roundtrip_camel_case() {
+        // 旧配置缺整个对话对象或缺键：逐字段回落默认
+        let p: GhostwriterPreferences = serde_json::from_str("{}").unwrap();
+        assert!(!p.conversation_enabled);
+        assert_eq!(p.conversation_reply_timing, ConversationReplyTiming::Pause);
+        assert_eq!(p.conversation_probe_depth, ConversationProbeDepth::Single);
+        assert!(p.conversation_recommendations);
+
+        // 显式写入：wire 键名 camelCase，枚举值逐字钉住，往返不丢字段
+        let json = r#"{"conversationEnabled":true,"conversationHotkey":"alt+shift+d","conversationReplyTiming":"explicit","conversationProbeDepth":"untilClear","conversationRecommendations":false}"#;
+        let p: GhostwriterPreferences = serde_json::from_str(json).unwrap();
+        assert!(p.conversation_enabled);
+        assert_eq!(p.conversation_hotkey.as_deref(), Some("alt+shift+d"));
+        assert_eq!(p.conversation_reply_timing, ConversationReplyTiming::Explicit);
+        assert_eq!(p.conversation_probe_depth, ConversationProbeDepth::UntilClear);
+        assert!(!p.conversation_recommendations);
+        let wire = serde_json::to_value(&p).unwrap();
+        assert_eq!(wire["conversationEnabled"], true);
+        assert_eq!(wire["conversationHotkey"], "alt+shift+d");
+        assert_eq!(wire["conversationReplyTiming"], "explicit");
+        assert_eq!(wire["conversationProbeDepth"], "untilClear");
+        assert_eq!(wire["conversationRecommendations"], false);
+
+        // 枚举其余取值：echo 档
+        let p: GhostwriterPreferences =
+            serde_json::from_str(r#"{"conversationProbeDepth":"echo"}"#).unwrap();
+        assert_eq!(p.conversation_probe_depth, ConversationProbeDepth::Echo);
+        assert_eq!(
+            serde_json::to_value(p.conversation_probe_depth).unwrap(),
+            "echo"
+        );
+        assert_eq!(
+            serde_json::to_value(ConversationReplyTiming::Pause).unwrap(),
+            "pause"
+        );
     }
 }

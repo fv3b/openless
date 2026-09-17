@@ -8594,6 +8594,43 @@ mod tests {
     }
 
     #[test]
+    fn conversation_preferences_roundtrip_through_settings_save() {
+        // 对话偏好走 get/set 透传（照 background_placement 的同步模式）：保存后
+        // get_preferences 原样读回，字段不丢、默认关。
+        let (backend, _) = backend();
+        assert!(!backend.get_preferences().ghostwriter.conversation_enabled);
+
+        let mut next = backend.get_preferences();
+        next.ghostwriter.conversation_enabled = true;
+        next.ghostwriter.conversation_hotkey = Some("alt+shift+c".into());
+        next.ghostwriter.conversation_reply_timing =
+            crate::shared_types::ConversationReplyTiming::Explicit;
+        next.ghostwriter.conversation_probe_depth =
+            crate::shared_types::ConversationProbeDepth::Echo;
+        next.ghostwriter.conversation_recommendations = false;
+        backend
+            .update_settings(
+                next,
+                crate::SettingsUpdateOptions::STRICT,
+                &crate::NoopSettingsRuntime,
+            )
+            .unwrap();
+
+        let saved = backend.get_preferences().ghostwriter;
+        assert!(saved.conversation_enabled);
+        assert_eq!(saved.conversation_hotkey.as_deref(), Some("alt+shift+c"));
+        assert_eq!(
+            saved.conversation_reply_timing,
+            crate::shared_types::ConversationReplyTiming::Explicit
+        );
+        assert_eq!(
+            saved.conversation_probe_depth,
+            crate::shared_types::ConversationProbeDepth::Echo
+        );
+        assert!(!saved.conversation_recommendations);
+    }
+
+    #[test]
     fn settings_runtime_failure_preserves_preferences_revision_and_events() {
         let (backend, _) = backend();
         let previous = backend.get_preferences();
