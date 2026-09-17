@@ -324,6 +324,8 @@ impl GhostwriterPolishDispatcher {
             include_recommendations,
             instruction_candidates: self.task_briefs.body(TaskBriefId::Candidates),
             instruction_recommendations: self.task_briefs.body(TaskBriefId::Recommendations),
+            instruction_conversation_reply: String::new(),
+            conversation: None,
         };
         let outcome =
             run_assist(&self.polisher, &self.credential_store, &self.active_llm_provider(), &input)

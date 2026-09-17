@@ -5,12 +5,15 @@
 //! LLM 调用模式照抄 [`crate::ghostwriter::segment_polisher::polish_segment`]：
 //! provider 照既有解析路径解析 LLM 通道，context 用 [`DictationContext::capture`]
 //! 现场捕获后逐项覆写（mode=Light、style_system_prompt=任务书拼接结果、
-//! 清空热词/前文轮次/光标上下文、关翻译）。system prompt＝候选任务书（按开关）
-//! ＋推荐任务书（按开关）＋输出契约（逐字）；user 输入＝当前内容＋常用语库。
+//! 清空热词/前文轮次/光标上下文、关翻译）。代笔路径（conversation=None）的
+//! system prompt＝候选任务书（按开关）＋推荐任务书（按开关）＋输出契约
+//! （逐字）；user 输入＝当前内容＋常用语库。对话路径（conversation=Some，
+//! 对话会话复用同一触发点）的 system prompt＝回话任务书＋（抑制注入行）＋
+//! 推荐任务书＋对话输出契约，user 输入＝聊天记录＋常用语库。
 //! 输出按契约解析为 JSON：失败/空 → 空 outcome（合法返回，表示「没什么可给」，
 //! 不报错）；解析侧强制裁剪候选 ≤2 组、每组 ≤5 条、总 ≤8 条、推荐 ≤3 个，
 //! 候选组 kind 白名单外的归一为 "term"（保内容不丢组）；解析后按输入开关
-//! 机制级清零候选/推荐产出（不依赖模型自觉遵守输出契约）。
+//! 机制级清零候选/推荐产出，对话抑制时代码强制剥掉 reply（不信任模型）。
 //!
 //! 常用语提醒与说话中自动提取已退役（2026-09-17 裁决）：批量提取改由
 //! 常用语管理页按需触发（[`crate::ghostwriter::snippet_extractor`]）。
@@ -24,7 +27,7 @@ use crate::dictation_context::{
     DictationContext, DictationProviderInvocations, DictationStartOptions, ProviderInvocation,
 };
 use crate::errors::BackendError;
-use crate::ghostwriter::prompts::ASSIST_OUTPUT_CONTRACT;
+use crate::ghostwriter::prompts::{ASSIST_OUTPUT_CONTRACT, CONVERSATION_OUTPUT_CONTRACT};
 use crate::ghostwriter::types::CandidateItem;
 use crate::ports::{TextPolisher, TextStreamChunk, TextStreamSink};
 use crate::types::{PolishMode, SessionId};
@@ -55,23 +58,42 @@ const MAX_RECOMMENDATIONS: usize = 3;
 /// "term"（保内容，不丢组）。
 const CANDIDATE_KINDS: [&str; 2] = ["term", "naming"];
 
+/// 对话会话抑制回话时的代码注入行（逐字，跟在回话正文之后）：门控判定的
+/// 机制级落地的一部分——即便如此，reply 剥除仍由代码强制（不信任模型）。
+const SUPPRESS_REPLY_NOTICE: &str =
+    "（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）";
+
+/// 对话会话的 assist 上下文：聊天记录（行语法【我】/【助手】）＋是否抑制回话
+/// （门控判定由 dispatcher 传入）。内部结构，不外序列化。
+#[derive(Debug, Clone)]
+pub struct ConversationAssistContext {
+    pub chat: String,
+    pub suppress_reply: bool,
+}
+
 /// 一次实时助手调用的输入（由调用方组装；缓冲截取与材料筛选都在调用方做）。
 #[derive(Debug, Clone)]
 pub struct AssistInput {
     /// 本次润色调用的会话 id。
     pub session_id: SessionId,
-    /// 说话缓冲尾部 ≤800 chars（截取由调用方做，这里不截）。
+    /// 说话缓冲尾部 ≤800 chars（截取由调用方做，这里不截）；对话路径不用。
     pub context_text: String,
     /// 已启用的常用语。
     pub snippets: Vec<Snippet>,
-    /// 是否产出候选。
+    /// 是否产出候选（对话路径恒 false）。
     pub include_candidates: bool,
     /// 是否产出推荐。
     pub include_recommendations: bool,
-    /// 候选任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::Candidates`]）。
+    /// 候选任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::Candidates`]；
+    /// 对话路径不用）。
     pub instruction_candidates: String,
     /// 推荐任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::Recommendations`]）。
     pub instruction_recommendations: String,
+    /// 对话回话任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::ConversationReply`]；
+    /// 对话路径用，正文来自任务书存储，可编辑）。
+    pub instruction_conversation_reply: String,
+    /// Some＝对话会话路径（回话＋推荐双产出）；None＝普通代笔路径，一切照旧。
+    pub conversation: Option<ConversationAssistContext>,
 }
 
 /// 一次实时助手调用的产出；空 outcome 合法（LLM 判定「没什么可给」）。
@@ -81,6 +103,8 @@ pub struct AssistOutcome {
     pub candidate_groups: Vec<(String, Vec<CandidateItem>)>,
     /// 推荐的常用语 id。
     pub recommendation_ids: Vec<String>,
+    /// AI 回话（对话路径；普通代笔路径恒 None；suppress 时代码强制 None）。
+    pub reply: Option<String>,
 }
 
 struct DiscardTextStream;
@@ -141,12 +165,34 @@ pub async fn run_assist(
     if !input.include_recommendations {
         outcome.recommendation_ids.clear();
     }
+    // 对话抑制的机制级落地：模型不听话回了 reply 也强制剥掉（同
+    // include_candidates 门控模式，不信任模型遵守注入行）。
+    if input
+        .conversation
+        .as_ref()
+        .is_some_and(|conversation| conversation.suppress_reply)
+    {
+        outcome.reply = None;
+    }
     Ok(outcome)
 }
 
-/// system prompt 拼装：候选任务书（include_candidates 时）＋推荐任务书
-/// （include_recommendations 时）＋输出契约（逐字，永远在末尾）。
+/// system prompt 拼装：对话路径＝回话正文＋（抑制注入行）＋推荐正文（按开关）
+/// ＋对话输出契约（逐字，永远在末尾）——不含候选/提醒任务书、不含代笔契约；
+/// 代笔路径＝候选任务书（include_candidates 时）＋推荐任务书（include_recommendations
+/// 时）＋输出契约（逐字，永远在末尾）。
 fn compose_system_prompt(input: &AssistInput) -> String {
+    if let Some(conversation) = &input.conversation {
+        let mut parts: Vec<&str> = vec![input.instruction_conversation_reply.as_str()];
+        if conversation.suppress_reply {
+            parts.push(SUPPRESS_REPLY_NOTICE);
+        }
+        if input.include_recommendations {
+            parts.push(input.instruction_recommendations.as_str());
+        }
+        parts.push(CONVERSATION_OUTPUT_CONTRACT);
+        return parts.join("\n");
+    }
     let mut parts: Vec<&str> = Vec::new();
     if input.include_candidates {
         parts.push(input.instruction_candidates.as_str());
@@ -158,9 +204,14 @@ fn compose_system_prompt(input: &AssistInput) -> String {
     parts.join("\n")
 }
 
-/// user 输入拼装：当前内容＋常用语库（有料时，每条 `id|触发词|文本`）。
+/// user 输入拼装：对话路径＝聊天记录＋常用语库（suppress 只作用于 system
+/// prompt，不改变 user 输入）；代笔路径＝当前内容＋常用语库（有料时，每条
+/// `id|触发词|文本`）。
 fn compose_user_input(input: &AssistInput) -> String {
-    let mut parts = vec![format!("当前内容：{}", input.context_text)];
+    let mut parts = match &input.conversation {
+        Some(conversation) => vec![format!("聊天记录：\n{}", conversation.chat)],
+        None => vec![format!("当前内容：{}", input.context_text)],
+    };
     if !input.snippets.is_empty() {
         let lines: Vec<String> = input
             .snippets
@@ -179,6 +230,8 @@ struct AssistJson {
     candidate_groups: Vec<CandidateGroupJson>,
     #[serde(default)]
     recommendations: Vec<String>,
+    #[serde(default)]
+    reply: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +325,7 @@ fn parse_outcome(text: &str) -> AssistOutcome {
             .into_iter()
             .take(MAX_RECOMMENDATIONS)
             .collect(),
+        reply: parsed.reply,
     }
 }
 
@@ -309,6 +363,8 @@ mod tests {
             include_recommendations: true,
             instruction_candidates: "候选任务书正文甲".to_string(),
             instruction_recommendations: "推荐任务书正文乙".to_string(),
+            instruction_conversation_reply: String::new(),
+            conversation: None,
         }
     }
 
@@ -321,6 +377,114 @@ mod tests {
         input.instruction_candidates = TaskBriefId::Candidates.default_body().to_string();
         input.instruction_recommendations = TaskBriefId::Recommendations.default_body().to_string();
         input
+    }
+
+    // ===== 对话路径（Task 4）=====
+
+    const CONVERSATION_CANNED: &str =
+        r#"{"reply":"你说的是哪个日志？","recommendations":["s1"]}"#;
+
+    fn conversation_input() -> AssistInput {
+        let mut input = input();
+        // 对话 prompt 以对话输出契约（而非代笔契约）结尾，fixture 无法按
+        // prompt 特征路由：沿用 uuid5 精确会话 id 模式（dispatcher 同样传它）。
+        input.session_id = assist_session_id();
+        input.include_candidates = false;
+        input.instruction_candidates = String::new();
+        input.instruction_conversation_reply = "对话回话任务书正文".to_string();
+        input.conversation = Some(ConversationAssistContext {
+            chat: "【我】想把日志清一下。".to_string(),
+            suppress_reply: false,
+        });
+        input
+    }
+
+    #[tokio::test]
+    async fn conversation_prompt_uses_reply_body_and_conversation_contract() {
+        let fixture =
+            FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let request = conversation_input();
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+
+        let contexts = fixture.contexts();
+        let prompt = contexts[0].polish.style_system_prompt.as_str();
+        assert!(prompt.contains("对话回话任务书正文"));
+        assert!(prompt.contains("推荐任务书正文乙"));
+        assert!(prompt.ends_with(CONVERSATION_OUTPUT_CONTRACT));
+        // 不含代笔契约与候选任务书。
+        assert!(!prompt.contains(ASSIST_OUTPUT_CONTRACT));
+        assert!(!prompt.contains("候选任务书正文甲"));
+        // user 输入：聊天记录替换「当前内容」，常用语库块保留。
+        let raw = &fixture.inputs()[0];
+        assert!(raw.contains("聊天记录：\n【我】想把日志清一下。"));
+        assert!(!raw.contains("当前内容："));
+        assert!(raw.contains("常用语库（id|触发词|文本）："));
+        assert!(raw.contains("s1|触发词甲|表述甲"));
+        // reply 解析。
+        assert_eq!(outcome.reply.as_deref(), Some("你说的是哪个日志？"));
+        assert_eq!(outcome.recommendation_ids, vec!["s1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn suppress_reply_injects_notice_and_strips_reply_mechanically() {
+        let fixture =
+            FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let mut request = conversation_input();
+        request.conversation.as_mut().unwrap().suppress_reply = true;
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+
+        // 抑制注入行逐字存在（跟在回话正文之后、推荐正文之前）。
+        let contexts = fixture.contexts();
+        let prompt = contexts[0].polish.style_system_prompt.as_str();
+        let pos_body = prompt.find("对话回话任务书正文").expect("reply body");
+        let pos_notice = prompt
+            .find("（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）")
+            .expect("suppress notice");
+        let pos_recommendations = prompt.find("推荐任务书正文乙").expect("recommendations body");
+        assert!(pos_body < pos_notice && pos_notice < pos_recommendations);
+        // 机制级剥除：模型不听话回了 reply 也强制置 None；推荐不受影响。
+        assert_eq!(outcome.reply, None);
+        assert_eq!(outcome.recommendation_ids, vec!["s1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn conversation_reply_null_parses_to_none() {
+        let fixture = FixtureTextPolisher::successful("unused")
+            .with_assist_json(r#"{"reply":null,"recommendations":[]}"#);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &conversation_input())
+            .await
+            .expect("assist should succeed");
+
+        assert_eq!(outcome.reply, None);
+        assert!(outcome.recommendation_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dictation_path_reply_stays_none() {
+        // 代笔路径回归：无对话上下文，reply 恒 None，其余产出照旧。
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(CANNED_JSON);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        let outcome = run_assist(&polisher, &store(), "test-llm", &default_bodies_input())
+            .await
+            .expect("assist should succeed");
+
+        assert_eq!(outcome.reply, None);
+        assert_eq!(outcome.candidate_groups.len(), 2);
+        assert_eq!(
+            outcome.recommendation_ids,
+            vec!["rec-1".to_string(), "rec-2".to_string(), "rec-3".to_string()]
+        );
     }
 
     #[tokio::test]
