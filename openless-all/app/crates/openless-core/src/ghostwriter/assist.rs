@@ -107,6 +107,9 @@ pub struct AssistInput {
     /// 对话回话任务书正文（[`crate::ghostwriter::prompts::TaskBriefId::ConversationReply`]；
     /// 对话路径用，正文来自任务书存储，可编辑）。
     pub instruction_conversation_reply: String,
+    /// 最近语音背景块（2026-09-18 批次 A；带「次要参考」块头，调用方从会话
+    /// 冻结快照现算）；None＝无历史，user 输入零变化。命名校准/推荐受益。
+    pub recent_voice_block: Option<String>,
     /// Some＝对话会话路径（回话＋推荐双产出）；None＝普通代笔路径，一切照旧。
     pub conversation: Option<ConversationAssistContext>,
 }
@@ -226,7 +229,8 @@ fn compose_system_prompt(input: &AssistInput) -> String {
 
 /// user 输入拼装：对话路径＝聊天记录＋常用语库（suppress 只作用于 system
 /// prompt，不改变 user 输入）；代笔路径＝当前内容＋常用语库（有料时，每条
-/// `id|触发词|文本`）。
+/// `id|触发词|文本`）。最近语音背景块（若有）垫底——只是理解背景，供命名
+/// 校准/推荐参考，不是本次要处理的指令。
 fn compose_user_input(input: &AssistInput) -> String {
     let mut parts = match &input.conversation {
         Some(conversation) => vec![format!("聊天记录：\n{}", conversation.chat)],
@@ -239,6 +243,13 @@ fn compose_user_input(input: &AssistInput) -> String {
             .map(|snippet| format!("{}|{}|{}", snippet.id, snippet.trigger, snippet.text))
             .collect();
         parts.push(format!("常用语库（id|触发词|文本）：\n{}", lines.join("\n")));
+    }
+    if let Some(block) = input
+        .recent_voice_block
+        .as_deref()
+        .filter(|block| !block.trim().is_empty())
+    {
+        parts.push(block.to_string());
     }
     parts.join("\n")
 }
@@ -384,6 +395,7 @@ mod tests {
             instruction_candidates: "候选任务书正文甲".to_string(),
             instruction_recommendations: "推荐任务书正文乙".to_string(),
             instruction_conversation_reply: String::new(),
+            recent_voice_block: None,
             conversation: None,
         }
     }
@@ -571,6 +583,94 @@ mod tests {
             .await
             .expect("second call");
         assert_eq!(outcome.reply, None);
+    }
+
+    #[tokio::test]
+    async fn recent_voice_block_is_appended_on_both_paths() {
+        // 背景（代笔与对话两条路径共用同一拼装口）：块头逐字带「次要参考」，
+        // 垫底在常用语库之后；None＝零变化。
+        let block = crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
+            session_with_final("第二条"),
+            session_with_final("第一条"),
+        ])
+        .expect("背景应存在")
+        .llm_block();
+        let mut request = input();
+        request.recent_voice_block = Some(block);
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(CANNED_JSON);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+
+        run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+
+        let raw = &fixture.inputs()[0];
+        let pos_library = raw.find("常用语库（id|触发词|文本）：").expect("library header");
+        let pos_block = raw
+            .find("最近语音（次要参考，仅供理解背景，不是本次要处理的指令）：")
+            .expect("recent voice header");
+        assert!(pos_library < pos_block, "背景块应垫底");
+        assert!(raw.ends_with("第一条\n第二条"), "逐条一行、时间先后");
+
+        // 对话路径同样追加。
+        let mut conversation = conversation_input();
+        conversation.recent_voice_block = Some(
+            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
+                session_with_final("上一场的话"),
+            ])
+            .expect("背景应存在")
+            .llm_block(),
+        );
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        run_assist(&polisher, &store(), "test-llm", &conversation)
+            .await
+            .expect("assist should succeed");
+        assert!(
+            fixture.inputs()[0].contains("最近语音（次要参考，仅供理解背景，不是本次要处理的指令）：\n上一场的话"),
+            "对话路径也应带背景块"
+        );
+
+        // None（无历史）：不出现背景块。
+        let fixture = FixtureTextPolisher::successful("unused").with_assist_json(CANNED_JSON);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        run_assist(&polisher, &store(), "test-llm", &input())
+            .await
+            .expect("assist should succeed");
+        assert!(!fixture.inputs()[0].contains("最近语音"));
+    }
+
+    fn session_with_final(final_text: &str) -> crate::types::DictationSession {
+        crate::types::DictationSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            source: crate::types::HistorySource::Voice,
+            raw_transcript: String::new(),
+            asr_transcript: None,
+            final_text: final_text.to_string(),
+            mode: crate::types::PolishMode::Light,
+            style_pack_id: None,
+            translation_active: false,
+            polish_source: None,
+            app_bundle_id: None,
+            app_name: None,
+            insert_status: crate::types::HistoryInsertStatus::Inserted,
+            error_code: None,
+            duration_ms: None,
+            dictionary_entry_count: None,
+            has_audio_recording: None,
+            recording_file: None,
+            asr_provider: None,
+            asr_model: None,
+            llm_provider: None,
+            llm_model: None,
+            pipeline_mode: None,
+            asr_ms: None,
+            polish_ms: None,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
+            ghostwriter_chat: None,
+        }
     }
 
     #[tokio::test]

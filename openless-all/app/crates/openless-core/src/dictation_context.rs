@@ -164,6 +164,10 @@ pub struct DictationContext {
     pub insertion: DictationInsertionContext,
     /// capture 时冻结的 Ghostwriter 快照：当前会话是否走 Ghostwriter 浮框。
     pub ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot,
+    /// 会话启动时冻结的最近语音背景（2026-09-18 批次 A）：火山流式 ASR 的
+    /// dialog_ctx 上下文来源；Ghostwriter 会话创建时一并冻结给 LLM 消费点。
+    /// 无可用历史（读失败/无记录）＝None，一切照旧。
+    pub recent_voice: Option<crate::ghostwriter::recent_voice::RecentVoiceBackground>,
 }
 
 impl Default for DictationContext {
@@ -310,6 +314,7 @@ impl DictationContext {
             ghostwriter: crate::ghostwriter::types::GhostwriterSnapshot {
                 active: preferences.capsule_style == CapsuleStyle::Fluid,
             },
+            recent_voice: None,
         }
     }
 

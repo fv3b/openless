@@ -8,6 +8,7 @@
 pub mod assist;
 pub mod dispatcher;
 pub mod prompts;
+pub mod recent_voice;
 pub mod segment_polisher;
 pub mod segmenter;
 pub mod snippet_extractor;

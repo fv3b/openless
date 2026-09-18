@@ -4928,7 +4928,10 @@ impl OpenLessBackend {
                     .with_background_placement(
                         self.preferences.get().ghostwriter.background_placement,
                     )
-                    .with_correction_rules(context.correction_rules.clone());
+                    .with_correction_rules(context.correction_rules.clone())
+                    // 最近语音背景随会话冻结（与会话同生命周期，流式中途不漂移）：
+                    // 段润色/对话出稿/assist 的 LLM 背景块由此取数。
+                    .with_recent_voice(context.recent_voice.clone());
                 if options.ghostwriter_conversational {
                     let conversation_prefs = self.preferences.get().ghostwriter;
                     ghostwriter_session = ghostwriter_session.with_conversation(
@@ -5376,7 +5379,7 @@ impl OpenLessBackend {
                 };
                 if let (Some(dispatcher), Some(segment)) = (ghostwriter_dispatcher.clone(), tail_input)
                 {
-                    let request = dispatcher.segment_request(&segment);
+                    let request = dispatcher.segment_request(&session_id, &segment);
                     dispatcher.dispatch_tail(session_id, request).await;
                 }
                 None
@@ -6379,6 +6382,21 @@ impl OpenLessBackend {
             .into_iter()
             .filter(|rule| rule.enabled)
             .collect();
+        // 最近语音背景（2026-09-18 批次 A）：听写会话启动时从历史冻结最近 3 条
+        // 语音转写（火山 ASR dialog_ctx ＋ Ghostwriter LLM 消费点共用来源）。
+        // 读失败/无历史 → None，一切照旧；当前会话自身此刻尚未入历史
+        // （stop 才落档），无需排除。只挂听写入口：QA/选区等其它用途零变化。
+        if purpose == DictationContextPurpose::Dictation {
+            context.recent_voice = match self.history.list() {
+                Ok(sessions) => {
+                    crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&sessions)
+                }
+                Err(error) => {
+                    log::warn!("failed to freeze recent voice background; continuing without: {error}");
+                    None
+                }
+            };
+        }
         Ok(context)
     }
 
@@ -10215,6 +10233,104 @@ mod tests {
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn recent_voice_background_is_frozen_from_history_at_session_start() {
+        // 批次 A：听写会话启动时从历史冻结最近语音背景——挂进 context（ASR
+        // dialog_ctx 的取数口）与 Ghostwriter 会话（LLM 消费点的取数口）；
+        // 无历史 → None，一切照旧零变化。
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-recent-voice-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let store = crate::history::HistoryStore::at_data_dir(data_dir.clone());
+        let mut oldest = history_session("hist-old");
+        oldest.final_text = "第一条旧指令".to_string();
+        let mut newest = history_session("hist-new");
+        newest.final_text = "第二条最新指令".to_string();
+        store.append_with_retention(oldest, 0, None).unwrap();
+        store.append_with_retention(newest, 0, None).unwrap();
+
+        let transcription = crate::testing::FixtureTranscriptionEngine::successful("raw", 125);
+        let recorder = crate::AudioRecorderRouter::new(
+            Arc::new(crate::testing::FixtureAudioRecorder::new(
+                Vec::new(),
+                Vec::new(),
+            )),
+            crate::ExternalAudioRecorder::default(),
+        );
+        let engine = crate::PipelineDictationEngine::new(
+            Arc::new(recorder),
+            Arc::new(transcription),
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        );
+        let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        let expected = ["第一条旧指令".to_string(), "第二条最新指令".to_string()];
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            let background = context.recent_voice.as_ref().expect("history present");
+            assert_eq!(background.lines(), expected.as_slice());
+            let session = state
+                .ghostwriter_sessions
+                .get(&session_id)
+                .expect("ghostwriter session created for Fluid style");
+            assert_eq!(
+                session.recent_voice().expect("frozen into session").lines(),
+                expected.as_slice()
+            );
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+
+        // 无历史：context 与会话都不带背景（旧路径零变化）。
+        let empty_dir = std::env::temp_dir().join(format!(
+            "openless-recent-voice-empty-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let transcription = crate::testing::FixtureTranscriptionEngine::successful("raw", 125);
+        let recorder = crate::AudioRecorderRouter::new(
+            Arc::new(crate::testing::FixtureAudioRecorder::new(
+                Vec::new(),
+                Vec::new(),
+            )),
+            crate::ExternalAudioRecorder::default(),
+        );
+        let engine = crate::PipelineDictationEngine::new(
+            Arc::new(recorder),
+            Arc::new(transcription),
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        );
+        let backend = backend_with_dictation_engine(empty_dir.clone(), Arc::new(engine));
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let session_id = backend.start_external_dictation().await.unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert!(context.recent_voice.is_none(), "无历史不应产出背景");
+            let session = state.ghostwriter_sessions.get(&session_id).unwrap();
+            assert!(session.recent_voice().is_none());
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(empty_dir);
     }
 
     #[tokio::test]

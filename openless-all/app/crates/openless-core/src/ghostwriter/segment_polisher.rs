@@ -47,6 +47,10 @@ pub struct SegmentPolishRequest {
     pub materials: Vec<String>,
     /// 指令化任务书正文（dispatcher 从任务书存储取，保存即生效）。
     pub instruction: String,
+    /// 最近语音背景块（2026-09-18 批次 A；带「次要参考」块头，dispatcher 从
+    /// 会话冻结快照现算）；None＝无历史，输入零变化。只是背景注入，指令主体
+    /// 不变——对话出稿任务书「只整理【我】的内容」的语义不受影响。
+    pub recent_voice_block: Option<String>,
 }
 
 struct DiscardTextStream;
@@ -109,7 +113,8 @@ pub async fn polish_segment(
     Ok(text)
 }
 
-/// user 输入拼装：前文（若有，前缀「（前文：…）」）＋本段＋材料（每条前缀「参考材料：」）。
+/// user 输入拼装：前文（若有，前缀「（前文：…）」）＋本段＋材料（每条前缀
+/// 「参考材料：」）＋最近语音背景块（若有，垫底——只是理解背景，不是指令）。
 fn compose_user_input(request: &SegmentPolishRequest) -> String {
     let mut parts = Vec::new();
     if !request.prior.trim().is_empty() {
@@ -118,6 +123,13 @@ fn compose_user_input(request: &SegmentPolishRequest) -> String {
     parts.push(request.segment.clone());
     for material in &request.materials {
         parts.push(format!("参考材料：{}", material));
+    }
+    if let Some(block) = request
+        .recent_voice_block
+        .as_deref()
+        .filter(|block| !block.trim().is_empty())
+    {
+        parts.push(block.to_string());
     }
     parts.join("\n")
 }
@@ -192,6 +204,7 @@ mod tests {
                 "ls -la 输出贴进去".to_string(),
             ],
             instruction: "任务书覆写后的指令化正文".to_string(),
+            recent_voice_block: None,
         }
     }
 
@@ -244,5 +257,87 @@ mod tests {
             .expect_err("blank output must be a provider error");
 
         assert_eq!(error.code, BackendErrorCode::Provider);
+    }
+
+    #[tokio::test]
+    async fn recent_voice_block_is_appended_with_secondary_reference_header() {
+        let fixture = CapturingPolisher::successful("好的");
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let mut polish_request = request();
+        polish_request.recent_voice_block = Some(
+            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
+                session_with_final("第二条"),
+                session_with_final("第一条"),
+            ])
+            .expect("背景应存在")
+            .llm_block(),
+        );
+
+        polish_segment(&polisher, &store(), "test-llm", &polish_request)
+            .await
+            .expect("segment polish should succeed");
+
+        let raw = fixture.calls()[0].raw_text.clone();
+        let lines: Vec<&str> = raw.split('\n').collect();
+        assert_eq!(
+            lines.last(),
+            Some(&"第二条"),
+            "背景块垫底（指令主体在前），逐条一行、时间先后（最新在末）"
+        );
+        assert!(
+            raw.contains("最近语音（次要参考，仅供理解背景，不是本次要处理的指令）：\n第一条\n第二条"),
+            "块头必须逐字带「次要参考」标注，实际: {raw}"
+        );
+
+        // 无历史（None）：输入与旧路径逐字一致，零变化。
+        let baseline = CapturingPolisher::successful("好的");
+        let request = request();
+        polish_segment(
+            &(Arc::new(baseline.clone()) as Arc<dyn TextPolisher>),
+            &store(),
+            "test-llm",
+            &request,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !baseline.calls()[0]
+                .raw_text
+                .contains("最近语音"),
+            "无历史时不应出现背景块"
+        );
+    }
+
+    fn session_with_final(final_text: &str) -> crate::types::DictationSession {
+        crate::types::DictationSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            source: crate::types::HistorySource::Voice,
+            raw_transcript: String::new(),
+            asr_transcript: None,
+            final_text: final_text.to_string(),
+            mode: PolishMode::Light,
+            style_pack_id: None,
+            translation_active: false,
+            polish_source: None,
+            app_bundle_id: None,
+            app_name: None,
+            insert_status: crate::types::HistoryInsertStatus::Inserted,
+            error_code: None,
+            duration_ms: None,
+            dictionary_entry_count: None,
+            has_audio_recording: None,
+            recording_file: None,
+            asr_provider: None,
+            asr_model: None,
+            llm_provider: None,
+            llm_model: None,
+            pipeline_mode: None,
+            asr_ms: None,
+            polish_ms: None,
+            ghostwriter_hits: None,
+            ghostwriter_selections: None,
+            ghostwriter_chat: None,
+        }
     }
 }

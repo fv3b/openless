@@ -129,6 +129,8 @@ pub struct GhostwriterSession {
     /// 纠正后的（dictation_engine 转写后润色前应用规则），此前各阶段缓冲
     /// 是原始转写。消费点据此保证同一份原话只过一次规则（规则不保证幂等）。
     final_delta_corrected: bool,
+    /// 会话启动时冻结的最近语音背景（LLM 消费点共用；None＝无历史）。
+    recent_voice: Option<super::recent_voice::RecentVoiceBackground>,
 }
 
 impl Default for GhostwriterSession {
@@ -163,6 +165,7 @@ impl GhostwriterSession {
             auto_reply_count: 0,
             correction_rules: Vec::new(),
             final_delta_corrected: false,
+            recent_voice: None,
         }
     }
 
@@ -181,6 +184,21 @@ impl GhostwriterSession {
             return raw.to_string();
         }
         apply_correction_rules(raw, &self.correction_rules)
+    }
+
+    /// 创建时冻结最近语音背景（api 从 context.recent_voice 取值传入，与会话
+    /// 同生命周期；不传＝无历史，一切照旧）。
+    pub fn with_recent_voice(
+        mut self,
+        background: Option<super::recent_voice::RecentVoiceBackground>,
+    ) -> Self {
+        self.recent_voice = background;
+        self
+    }
+
+    /// 冻结的最近语音背景（dispatcher 组装 LLM 背景块的取数口）。
+    pub fn recent_voice(&self) -> Option<&super::recent_voice::RecentVoiceBackground> {
+        self.recent_voice.as_ref()
     }
 
     /// 创建时指定全局背景落点（api 从偏好取值传入）；不传按默认文末。

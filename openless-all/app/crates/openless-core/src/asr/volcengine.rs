@@ -39,6 +39,10 @@ pub const TARGET_AUDIO_CHUNK_BYTES: usize = 6_400;
 /// 16 kHz · 16-bit · mono = 32 000 bytes/sec → 32 bytes/ms.
 const BYTES_PER_MS: f64 = 32.0;
 const HOTWORD_CAP: usize = 80;
+/// dialog_ctx（语境提示）的注入上限：官方限 800 tokens（docs/6561/1354869），
+/// 中文按 1 字符 ≈ 1 token 保守估算，总字符数截到该值内（超出丢最旧，保住
+/// 最近的话）。来源：会话启动时冻结的最近语音背景（批次 A）。
+const DIALOG_CTX_CHAR_CAP: usize = 800;
 const FINAL_RESULT_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 弱网下 TLS/WebSocket 握手可能一直挂到 OS 级 TCP 超时（几十秒），期间用户卡在
@@ -202,6 +206,9 @@ pub struct VolcengineStreamingASR {
     credentials: VolcengineCredentials,
     task_spawner: Arc<dyn TaskSpawner>,
     hotwords: Vec<DictionaryHotword>,
+    /// 会话启动时冻结的最近语音背景（新→旧）：dialog_ctx 语境提示的注入内容。
+    /// 空＝无历史，不注入（零变化）。
+    dialog_ctx: Vec<String>,
     state: ParkingMutex<SyncState>,
     /// Guards the WebSocket write half so concurrent `send` calls serialize.
     /// Stored as Arc so spawned send tasks can hold their own clone — independent
@@ -222,19 +229,25 @@ pub struct VolcengineStreamingASR {
 }
 
 impl VolcengineStreamingASR {
-    pub fn new(credentials: VolcengineCredentials, hotwords: Vec<DictionaryHotword>) -> Self {
-        Self::with_task_spawner(credentials, hotwords, Arc::new(TokioTaskSpawner))
+    pub fn new(
+        credentials: VolcengineCredentials,
+        hotwords: Vec<DictionaryHotword>,
+        dialog_ctx: Vec<String>,
+    ) -> Self {
+        Self::with_task_spawner(credentials, hotwords, dialog_ctx, Arc::new(TokioTaskSpawner))
     }
 
     pub fn with_task_spawner(
         credentials: VolcengineCredentials,
         hotwords: Vec<DictionaryHotword>,
+        dialog_ctx: Vec<String>,
         task_spawner: Arc<dyn TaskSpawner>,
     ) -> Self {
         Self {
             credentials,
             task_spawner,
             hotwords,
+            dialog_ctx,
             state: ParkingMutex::new(SyncState::default()),
             writer: Arc::new(AsyncMutex::new(None)),
             final_rx: ParkingMutex::new(None),
@@ -618,10 +631,14 @@ impl VolcengineStreamingASR {
             "show_utterances": true,
             "enable_speaker_info": true,
         });
-        if let Some(context) = hotword_context(&self.hotwords) {
+        if let Some(context) = context_payload(&self.hotwords, &self.dialog_ctx) {
             request["context"] = Value::String(context);
             let enabled_count = self.hotwords.iter().filter(|h| h.enabled).count();
-            log::info!("[asr] hotwords injected: {}", enabled_count);
+            log::info!(
+                "[asr] hotwords injected: {}; dialog_ctx entries: {}",
+                enabled_count,
+                self.dialog_ctx.len()
+            );
         }
         json!({
             "user": { "uid": connect_id },
@@ -952,7 +969,8 @@ fn is_non_retryable(err: &VolcengineASRError) -> bool {
     )
 }
 
-fn hotword_context(entries: &[DictionaryHotword]) -> Option<String> {
+/// 热词直传条目：去重（大小写折叠）、跳过停用/空白、封顶 [`HOTWORD_CAP`]。
+fn hotword_words(entries: &[DictionaryHotword]) -> Option<Vec<Value>> {
     let mut seen: Vec<String> = Vec::new();
     for entry in entries {
         if !entry.enabled {
@@ -973,9 +991,60 @@ fn hotword_context(entries: &[DictionaryHotword]) -> Option<String> {
     if seen.is_empty() {
         return None;
     }
-    let words: Vec<Value> = seen.into_iter().map(|w| json!({ "word": w })).collect();
-    let payload = json!({ "hotwords": words });
+    Some(seen.into_iter().map(|w| json!({ "word": w })).collect())
+}
+
+/// 既有热词 context JSON（`{"hotwords":[…]}`），保留给单测与可读性。
+fn hotword_context(entries: &[DictionaryHotword]) -> Option<String> {
+    let payload = json!({ "hotwords": hotword_words(entries)? });
     serde_json::to_string(&payload).ok()
+}
+
+/// dialog_ctx 语境提示条目（调用方按 新→旧 传入）：官方限 800 tokens / 20 轮、
+/// 从新到旧截断（docs/6561/1354869）。中文按 1 字符 ≈ 1 token 保守估算，
+/// 总字符数超 [`DIALOG_CTX_CHAR_CAP`] 丢弃更旧的条目（保住最近的话）。
+fn dialog_ctx_entries(lines: &[String]) -> Option<Vec<String>> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if used + trimmed.chars().count() > DIALOG_CTX_CHAR_CAP {
+            break;
+        }
+        used += trimmed.chars().count();
+        kept.push(trimmed.to_string());
+    }
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept)
+    }
+}
+
+/// 首帧 request.context 的组装：热词直传（既有）＋ dialog_ctx 语境提示
+/// （批次 A，同一 context 对象内并列）。两者皆空 → None（不携带 context，
+/// 旧路径零变化）。沿用既有 string 化 JSON 形态（与线上的热词注入一致）。
+fn context_payload(hotwords: &[DictionaryHotword], dialog_ctx: &[String]) -> Option<String> {
+    let hotwords = hotword_words(hotwords);
+    let dialog_ctx = dialog_ctx_entries(dialog_ctx);
+    if hotwords.is_none() && dialog_ctx.is_none() {
+        return None;
+    }
+    let mut object = serde_json::Map::new();
+    if let Some(words) = hotwords {
+        object.insert("hotwords".into(), Value::Array(words));
+    }
+    if let Some(entries) = dialog_ctx {
+        object.insert("context_type".into(), Value::String("dialog_ctx".into()));
+        object.insert(
+            "context_data".into(),
+            Value::Array(entries.into_iter().map(Value::String).collect()),
+        );
+    }
+    serde_json::to_string(&Value::Object(object)).ok()
 }
 
 #[cfg(test)]
@@ -1028,6 +1097,56 @@ mod tests {
             enabled: false,
         }];
         assert!(hotword_context(&entries).is_none());
+    }
+
+    #[test]
+    fn context_payload_carries_dialog_ctx_entries_newest_first() {
+        // dialog_ctx 语境提示（批次 A）：context_type=dialog_ctx + context_data[]，
+        // 条目按调用方顺序（新→旧）原样入列。
+        let payload = context_payload(&[], &vec!["最新一句".into(), "更早一句".into()])
+            .expect("有 dialog_ctx 应产出 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["context_type"], "dialog_ctx");
+        assert_eq!(
+            parsed["context_data"],
+            serde_json::json!(["最新一句", "更早一句"])
+        );
+        assert!(parsed.get("hotwords").is_none(), "无热词不应带 hotwords 键");
+    }
+
+    #[test]
+    fn context_payload_merges_hotwords_and_dialog_ctx() {
+        let hotwords = vec![DictionaryHotword {
+            phrase: "OpenLess".into(),
+            enabled: true,
+        }];
+        let payload = context_payload(&hotwords, &vec!["最近语音一句".into()])
+            .expect("热词＋dialog_ctx 应共存于同一 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["context_type"], "dialog_ctx");
+        assert_eq!(parsed["context_data"], serde_json::json!(["最近语音一句"]));
+        assert_eq!(parsed["hotwords"][0]["word"], "OpenLess");
+    }
+
+    #[test]
+    fn dialog_ctx_entries_cap_total_chars_dropping_oldest() {
+        // 官方 dialog_ctx 限 800 tokens：总字符数超限丢弃更旧的条目（保住最新）。
+        let long = "y".repeat(500);
+        let lines = vec![long.clone(), long.clone(), long.clone()];
+        let kept = dialog_ctx_entries(&lines).expect("应保留至少一条");
+        assert_eq!(kept.len(), 1, "500×3>800：只保住最新一条");
+        assert_eq!(kept[0], long);
+        // 预算内（800 chars）原样保留；空白条目跳过。
+        let short = vec!["第三条".into(), "  ".into(), "第一条".into()];
+        let kept = dialog_ctx_entries(&short).expect("预算内应全留");
+        assert_eq!(kept, vec!["第三条".to_string(), "第一条".to_string()]);
+        // 全空 → None。
+        assert!(dialog_ctx_entries(&["  ".to_string()]).is_none());
+    }
+
+    #[test]
+    fn context_payload_returns_none_without_hotwords_or_dialog_ctx() {
+        assert!(context_payload(&[], &Vec::new()).is_none());
     }
 
     #[test]
@@ -1138,6 +1257,7 @@ mod tests {
                     resource_id: VolcengineCredentials::default_resource_id().into(),
                 },
                 vec![],
+                Vec::new(),
             );
             let req = asr
                 .build_connect_request("connect-id", "request-id")
@@ -1258,6 +1378,7 @@ mod tests {
                 access_token: "token".into(),
                 resource_id: VolcengineCredentials::default_resource_id().into(),
             },
+            Vec::new(),
             Vec::new(),
         );
         let (tx, rx) = oneshot::channel();

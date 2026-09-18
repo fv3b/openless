@@ -108,8 +108,20 @@ impl GhostwriterPolishDispatcher {
     }
 
     /// 由段材料组装一次段润色请求；段会话 id 由 dispatcher 生成唯一新值，
-    /// 指令化任务书正文现取自任务书存储（保存即生效）。
-    pub fn segment_request(&self, segment: &PolishableSegment) -> SegmentPolishRequest {
+    /// 指令化任务书正文现取自任务书存储（保存即生效）；最近语音背景块从
+    /// 会话冻结快照现算（无历史＝None，输入零变化）。
+    pub fn segment_request(
+        &self,
+        session_id: &SessionId,
+        segment: &PolishableSegment,
+    ) -> SegmentPolishRequest {
+        let recent_voice_block = {
+            let state = self.state.read().expect("backend state lock poisoned");
+            state
+                .ghostwriter_sessions
+                .get(session_id)
+                .and_then(|session| session.recent_voice().map(|background| background.llm_block()))
+        };
         SegmentPolishRequest {
             session_id: SessionId::new(),
             segment_index: segment.index,
@@ -117,13 +129,14 @@ impl GhostwriterPolishDispatcher {
             segment: segment.text.clone(),
             materials: segment.materials.clone(),
             instruction: self.task_briefs.body(TaskBriefId::InstructionPolish),
+            recent_voice_block,
         }
     }
 
     /// 派润一批说话中完成的段：每段一个 tokio 任务，结果合回会话。
     pub fn dispatch_segments(&self, session_id: SessionId, segments: Vec<PolishableSegment>) {
         for segment in segments {
-            let request = self.segment_request(&segment);
+            let request = self.segment_request(&session_id, &segment);
             let index = segment.index;
             let this = self.clone();
             tokio::spawn(async move {
@@ -188,13 +201,21 @@ impl GhostwriterPolishDispatcher {
 
     /// 对话终稿出稿（stop 路径同步调用）：整份聊天记录交对话出稿任务书
     /// 润写成指令，命中材料照旧以「参考材料：」并入（含已被段润色取走的
-    /// ——出稿以聊天记录重新出稿，所有生效材料必须在场）。会话不存在或
-    /// 聊天记录为空返回 None；润色失败告警并返回 None（调用方回落拼装缓冲）。
+    /// ——出稿以聊天记录重新出稿，所有生效材料必须在场），最近语音背景块
+    /// 垫底（次要参考；只整理【我】的内容的任务书语义不受影响）。会话不
+    /// 存在或聊天记录为空返回 None；润色失败告警并返回 None（调用方回落
+    /// 拼装缓冲）。
     pub async fn finalize_conversation(&self, session_id: SessionId) -> Option<String> {
-        let (chat, materials) = {
+        let (chat, materials, recent_voice_block) = {
             let state = self.state.read().expect("backend state lock poisoned");
             let session = state.ghostwriter_sessions.get(&session_id)?;
-            (session.chat_transcript(), session.active_materials())
+            (
+                session.chat_transcript(),
+                session.active_materials(),
+                session
+                    .recent_voice()
+                    .map(|background| background.llm_block()),
+            )
         };
         if chat.trim().is_empty() {
             return None;
@@ -206,6 +227,7 @@ impl GhostwriterPolishDispatcher {
             segment: chat,
             materials,
             instruction: self.task_briefs.body(TaskBriefId::ConversationFinalize),
+            recent_voice_block,
         };
         match polish_segment(
             &self.polisher,
@@ -356,7 +378,7 @@ impl GhostwriterPolishDispatcher {
         auto: bool,
     ) -> Result<bool, crate::errors::BackendError> {
         // 状态锁内只读聊天记录、门控判定、冻结深度与启用常用语。
-        let (chat, suppress_reply, probe_depth, snippets) = {
+        let (chat, suppress_reply, probe_depth, snippets, recent_voice_block) = {
             let state = self.state.read().expect("backend state lock poisoned");
             let Some(session) = state.ghostwriter_sessions.get(session_id) else {
                 return Ok(false);
@@ -374,6 +396,9 @@ impl GhostwriterPolishDispatcher {
                 suppress_reply,
                 session.conversation_depth(),
                 state.ghostwriter_snippets.enabled(),
+                session
+                    .recent_voice()
+                    .map(|background| background.llm_block()),
             )
         };
         let include_recommendations = prefs.conversation_recommendations
@@ -387,6 +412,7 @@ impl GhostwriterPolishDispatcher {
             instruction_candidates: String::new(),
             instruction_recommendations: self.task_briefs.body(TaskBriefId::Recommendations),
             instruction_conversation_reply: self.task_briefs.body(TaskBriefId::ConversationReply),
+            recent_voice_block,
             conversation: Some(ConversationAssistContext {
                 chat: chat.clone(),
                 suppress_reply,
@@ -495,7 +521,7 @@ impl GhostwriterPolishDispatcher {
         prefs: &crate::shared_types::GhostwriterPreferences,
     ) -> Result<bool, crate::errors::BackendError> {
         // 组装输入：状态锁内只读会话缓冲与启用常用语，截取在 dispatcher 做。
-        let (context_text, snippets) = {
+        let (context_text, snippets, recent_voice_block) = {
             let state = self.state.read().expect("backend state lock poisoned");
             let Some(session) = state.ghostwriter_sessions.get(session_id) else {
                 return Ok(false);
@@ -505,6 +531,9 @@ impl GhostwriterPolishDispatcher {
             (
                 text.chars().skip(skip).collect::<String>(),
                 state.ghostwriter_snippets.enabled(),
+                session
+                    .recent_voice()
+                    .map(|background| background.llm_block()),
             )
         };
         // 推荐节流独立计时＋推荐开关门（控制器裁决）：推荐开关开着且（首次
@@ -521,6 +550,7 @@ impl GhostwriterPolishDispatcher {
             instruction_candidates: self.task_briefs.body(TaskBriefId::Candidates),
             instruction_recommendations: self.task_briefs.body(TaskBriefId::Recommendations),
             instruction_conversation_reply: String::new(),
+            recent_voice_block,
             conversation: None,
         };
         let outcome =
