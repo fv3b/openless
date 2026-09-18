@@ -254,7 +254,10 @@ impl DictationContext {
                 microphone_device_name: non_blank(&preferences.microphone_device_name),
                 mute_during_recording: preferences.mute_during_recording,
                 archive_enabled: true,
-                archive_successful_recording: preferences.record_audio_for_debug,
+                // 成功会话录音保留＝调试开关或「历史保留录音」任一打开；两者都关
+                // 才回到插入后丢弃的旧行为。失败会话的录音始终保留（重新转录用）。
+                archive_successful_recording: preferences.record_audio_for_debug
+                    || preferences.retain_recordings_in_history,
                 retention_days: preferences.history_retention_days,
                 // Recordings and transcript history have independent caps in
                 // the UI; only the age limit is shared with history.
@@ -542,5 +545,42 @@ mod tests {
         let prompt = build_asr_prompt(&[over_budget, "OpenLess".to_string()]).unwrap();
         assert_eq!(prompt, "OpenLess.");
         assert!(prompt.chars().count() <= ASR_PROMPT_CHAR_BUDGET);
+    }
+
+    fn capture_recording_plan(preferences: &UserPreferences) -> crate::dictation_context::RecordingPlan {
+        let pack = builtin_style_pack_for_mode(PolishMode::Light);
+        DictationContext::capture(
+            preferences,
+            &pack,
+            DictationProviderInvocations::new(
+                ProviderInvocation::for_provider(preferences.active_asr_provider.clone()),
+                ProviderInvocation::for_provider(preferences.active_llm_provider.clone()),
+                ProviderInvocation::for_provider("omni"),
+            ),
+            Vec::new(),
+            Vec::new(),
+            &DictationStartOptions::default(),
+        )
+        .recording
+    }
+
+    #[test]
+    fn successful_recording_retention_follows_history_and_debug_switches() {
+        // 默认（历史保留录音开）→ 保留。
+        assert!(capture_recording_plan(&UserPreferences::default()).archive_successful_recording);
+        // 两者都关 → 回到插入后丢弃的旧行为。
+        let both_off = UserPreferences {
+            retain_recordings_in_history: false,
+            record_audio_for_debug: false,
+            ..UserPreferences::default()
+        };
+        assert!(!capture_recording_plan(&both_off).archive_successful_recording);
+        // 调试开关是独立逃生口：历史保留关了，调试开着仍保留。
+        let debug_only = UserPreferences {
+            retain_recordings_in_history: false,
+            record_audio_for_debug: true,
+            ..UserPreferences::default()
+        };
+        assert!(capture_recording_plan(&debug_only).archive_successful_recording);
     }
 }

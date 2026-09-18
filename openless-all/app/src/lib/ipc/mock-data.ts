@@ -136,6 +136,7 @@ export let mockSettings: UserPreferences = {
   autoUpdateCheck: true,
   historyMaxEntries: null,
   recordAudioForDebug: false,
+  retainRecordingsInHistory: true,
   audioRecordingMaxEntries: null,
   marketplaceBaseUrl: 'https://apic.openless.top',
   marketplaceDevLogin: '',

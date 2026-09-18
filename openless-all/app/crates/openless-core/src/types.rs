@@ -112,6 +112,11 @@ pub struct DictationSession {
     pub dictionary_entry_count: Option<u32>,
     #[serde(default)]
     pub has_audio_recording: Option<bool>,
+    /// 条目绑定的录音文件，相对数据目录的路径（如 "recordings/<id>.wav"，与
+    /// host 归档和远程输入归档共用的命名规约一致）。仅保留录音时写入；旧 JSON
+    /// 无字段照读为 None，None 时不写出该键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_file: Option<String>,
     #[serde(default)]
     pub asr_provider: Option<String>,
     #[serde(default)]

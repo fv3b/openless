@@ -1376,7 +1376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_transcription_discards_archive_when_debug_recording_is_disabled() {
+    async fn successful_transcription_discards_archive_when_retention_is_disabled() {
         let fixture = fixture_engine(
             false,
             Ok(crate::ports::PolishOutput::text("polished text")),
@@ -1384,13 +1384,12 @@ mod tests {
             None,
         );
         let session_id = SessionId::new();
+        // 「历史保留录音」与调试开关都关＝回到插入后丢弃的旧行为。
+        let mut context = DictationContext::default();
+        context.recording.archive_successful_recording = false;
         fixture
             .engine
-            .start(
-                session_id,
-                Arc::new(DictationContext::default()),
-                fixture.progress.clone(),
-            )
+            .start(session_id, Arc::new(context), fixture.progress.clone())
             .await
             .unwrap();
 

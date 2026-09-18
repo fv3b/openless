@@ -1258,6 +1258,9 @@ export const zhCN = {
       recordAudioForDebugDesc: '保存原始麦克风音频为 wav，便于排查识别问题。',
       audioRecordingMaxEntriesLabel: '原始录音保留条数',
       audioRecordingMaxEntriesDesc: '本地保留 wav 文件数上限，留空 = 200。',
+      retainRecordingsLabel: '历史保留录音（可回放）',
+      retainRecordingsDesc:
+        '成功听写的录音随历史保留，可在历史页回放对照原文。关闭后成功会话的录音插入即删；失败会话的录音不受影响。',
       startupGroupTitle: '启动',
       startMinimizedLabel: '启动时静默运行',
       startMinimizedDesc: '所有启动路径都不弹主窗口，仅菜单栏 / 托盘运行。',

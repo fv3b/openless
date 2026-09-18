@@ -1342,6 +1342,9 @@ export const de: typeof zhCN = {
         'Speichert das rohe Mikrofonaudio als WAV, um Erkennungsprobleme zu untersuchen.',
       audioRecordingMaxEntriesLabel: 'Maximale Rohaufnahmen',
       audioRecordingMaxEntriesDesc: 'Maximale Anzahl lokal gespeicherter WAV-Dateien. Leer = 200.',
+      retainRecordingsLabel: 'Aufnahmen im Verlauf behalten (abspielbar)',
+      retainRecordingsDesc:
+        'Erfolgreiche Diktate behalten ihre Aufnahme, um sie im Verlauf abzuspielen und die ursprüngliche Aussprache zu prüfen. Bei Ausgabe wird die Aufnahme nach dem Einfügen gelöscht; fehlgeschlagene Sitzungen behalten ihre Aufnahme.',
       startupGroupTitle: 'Startverhalten',
       startMinimizedLabel: 'Minimiert starten (ohne Hauptfenster)',
       startMinimizedDesc:

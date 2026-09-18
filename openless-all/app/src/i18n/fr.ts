@@ -1352,6 +1352,9 @@ export const fr: typeof zhCN = {
       audioRecordingMaxEntriesLabel: 'Nombre maximal d’enregistrements bruts',
       audioRecordingMaxEntriesDesc:
         'Nombre maximal de fichiers WAV conservés localement. Vide = 200.',
+      retainRecordingsLabel: "Conserver les enregistrements dans l'historique (réécoutables)",
+      retainRecordingsDesc:
+        "Les dictées réussies conservent leur audio pour le réécouter depuis l'historique et vérifier la formulation d'origine. Désactivé, l'audio est supprimé après insertion ; les sessions échouées le conservent.",
       startupGroupTitle: 'Démarrage',
       startMinimizedLabel: 'Démarrer réduit (sans fenêtre principale)',
       startMinimizedDesc:

@@ -728,6 +728,11 @@ pub struct UserPreferences {
     /// 受 `history_retention_days` 同样的清理策略约束。
     #[serde(default)]
     pub record_audio_for_debug: bool,
+    /// 历史是否保留成功会话的录音（历史页可回放对照原文）。默认 true。
+    /// 关闭后回到旧行为：成功会话插入后即丢弃录音；失败会话的录音不受影响，
+    /// 仍保留用于重新转录。`record_audio_for_debug` 打开时无论本开关如何都保留。
+    #[serde(default = "default_true")]
+    pub retain_recordings_in_history: bool,
     /// `recordings/` 里保留的最近 wav 文件数（按 mtime 倒序保留最新的）。
     /// `None` = 跟随 `HISTORY_CAP` (200)；`Some(n)` 时 clamp 到 1..=200。
     /// 调用点：每次开新会话前裁旧。让用户在「文本历史保留 200 条但 wav 只留最近 5 条」
@@ -1007,6 +1012,8 @@ struct UserPreferencesWire {
     history_max_entries: Option<u32>,
     #[serde(default)]
     record_audio_for_debug: bool,
+    #[serde(default = "default_true")]
+    retain_recordings_in_history: bool,
     #[serde(default)]
     audio_recording_max_entries: Option<u32>,
     #[serde(default)]
@@ -1165,6 +1172,7 @@ impl Default for UserPreferencesWire {
             auto_update_check: prefs.auto_update_check,
             history_max_entries: prefs.history_max_entries,
             record_audio_for_debug: prefs.record_audio_for_debug,
+            retain_recordings_in_history: prefs.retain_recordings_in_history,
             audio_recording_max_entries: prefs.audio_recording_max_entries,
             marketplace_base_url: prefs.marketplace_base_url,
             marketplace_dev_login: prefs.marketplace_dev_login,
@@ -1333,6 +1341,7 @@ impl<'de> Deserialize<'de> for UserPreferences {
             auto_update_check: wire.auto_update_check,
             history_max_entries: wire.history_max_entries,
             record_audio_for_debug: wire.record_audio_for_debug,
+            retain_recordings_in_history: wire.retain_recordings_in_history,
             audio_recording_max_entries: wire.audio_recording_max_entries,
             marketplace_base_url: wire.marketplace_base_url,
             marketplace_dev_login: wire.marketplace_dev_login,
@@ -1676,6 +1685,7 @@ impl Default for UserPreferences {
             auto_update_check: true,
             history_max_entries: None,
             record_audio_for_debug: false,
+            retain_recordings_in_history: true,
             audio_recording_max_entries: None,
             marketplace_base_url: String::new(),
             marketplace_dev_login: String::new(),
@@ -3032,6 +3042,27 @@ mod tests {
     }
 
     #[test]
+    fn retain_recordings_pref_defaults_on_and_round_trips_explicit_off() {
+        // 历史保留录音默认开（成功会话可回放对照原文）；老 preferences.json 没有
+        // 该字段时也视为开。用户显式关闭后存盘→读回必须仍是 false。
+        let prefs: UserPreferences = serde_json::from_str("{}").unwrap();
+        assert!(prefs.retain_recordings_in_history);
+        assert!(UserPreferences::default().retain_recordings_in_history);
+
+        let off = UserPreferences {
+            retain_recordings_in_history: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(
+            json.contains("\"retainRecordingsInHistory\":false"),
+            "序列化应输出 camelCase 字段，实际: {json}"
+        );
+        let restored: UserPreferences = serde_json::from_str(&json).unwrap();
+        assert!(!restored.retain_recordings_in_history);
+    }
+
+    #[test]
     fn action_hotkeys_default_to_enabled() {
         // issue #576：默认仍开启（Some 默认键），对老用户零行为变化。
         let prefs = UserPreferences::default();
@@ -3494,6 +3525,7 @@ mod tests {
             duration_ms: Some(1200),
             dictionary_entry_count: None,
             has_audio_recording: None,
+            recording_file: None,
             asr_provider: Some("bailian".into()),
             asr_model: Some("fun-asr-realtime".into()),
             llm_provider: Some("ark".into()),

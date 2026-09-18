@@ -522,6 +522,7 @@ impl QaService {
             duration_ms: completion.duration_ms,
             dictionary_entry_count: None,
             has_audio_recording: None,
+            recording_file: None,
             asr_provider: None,
             asr_model: None,
             llm_provider: None,

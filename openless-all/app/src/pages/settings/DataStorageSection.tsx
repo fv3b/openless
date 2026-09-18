@@ -69,6 +69,18 @@ export function DataStorageSection() {
           style={{ ...inputStyle, width: 80, textAlign: 'right' }}
         />
       </SettingRow>
+      {/* 「历史保留录音」放在数据存储组而不是调试组：它不是排障工具，而是历史数据的
+          保留策略——决定历史条目是否连带保留可回放的原始录音，与上面两条 retention
+          一起构成「历史留什么、留多久」的完整控制面。 */}
+      <SettingRow
+        label={t('settings.recording.retainRecordingsLabel')}
+        desc={t('settings.recording.retainRecordingsDesc')}
+      >
+        <Toggle
+          on={prefs.retainRecordingsInHistory}
+          onToggle={(next) => void savePrefs({ ...prefs, retainRecordingsInHistory: next })}
+        />
+      </SettingRow>
       <SettingRow label={t('settings.recording.polishContextWindowLabel')}>
         <input
           type="number"

@@ -33,6 +33,7 @@ fn history_session(id: &str) -> DictationSession {
         duration_ms: Some(1000),
         dictionary_entry_count: None,
         has_audio_recording: None,
+        recording_file: None,
         asr_provider: None,
         asr_model: None,
         llm_provider: None,

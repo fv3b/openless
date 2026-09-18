@@ -5675,6 +5675,9 @@ impl OpenLessBackend {
             duration_ms: Some(result.duration_ms),
             dictionary_entry_count,
             has_audio_recording: engine_result.has_audio_recording,
+            recording_file: engine_result.has_audio_recording.filter(|has| *has).map(|_| {
+                format!("recordings/{}.wav", result.session_id)
+            }),
             asr_provider: attribution.asr_provider,
             asr_model: attribution.asr_model,
             llm_provider: attribution.llm_provider,
@@ -5752,6 +5755,9 @@ impl OpenLessBackend {
             duration_ms,
             dictionary_entry_count: None,
             has_audio_recording,
+            recording_file: has_audio_recording
+                .filter(|has| *has)
+                .map(|_| format!("recordings/{session_id}.wav")),
             asr_provider: attribution.asr_provider,
             asr_model: attribution.asr_model,
             llm_provider: attribution.llm_provider,
@@ -8019,6 +8025,7 @@ mod tests {
             duration_ms: Some(1000),
             dictionary_entry_count: None,
             has_audio_recording: None,
+            recording_file: None,
             asr_provider: None,
             asr_model: None,
             llm_provider: None,
@@ -11499,9 +11506,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_audio_saves_failed_recordings_for_history_retry_and_prunes_successful_audio()
+    async fn external_audio_saves_failed_recordings_and_follows_retention_switch()
     {
-        for fail in [false, true] {
+        // 失败会话的录音始终保留（重新转录用）；成功会话的录音按「历史保留录音」
+        // 开关决定去留：默认保留，显式关闭后回到插入后丢弃的旧行为。
+        for (fail, retain) in [(false, true), (false, false), (true, true), (true, false)] {
             let data_dir = std::env::temp_dir()
                 .join(format!("openless-remote-history-{}", uuid::Uuid::new_v4()));
             let transcription = if fail {
@@ -11523,6 +11532,9 @@ mod tests {
             );
             let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
             backend.start().await.unwrap();
+            let mut preferences = backend.get_preferences();
+            preferences.retain_recordings_in_history = retain;
+            backend.set_preferences(preferences).unwrap();
             let session = backend.start_external_dictation().await.unwrap();
             let path = data_dir.join("recordings").join(format!("{session}.wav"));
             for second in 0..120 {
@@ -11537,12 +11549,22 @@ mod tests {
             let history = backend.list_history().unwrap();
             assert_eq!(history.len(), 1);
             assert_eq!(history[0].id, session.to_string());
-            assert_eq!(history[0].has_audio_recording, Some(fail));
+            let kept = fail || retain;
+            assert_eq!(history[0].has_audio_recording, Some(kept));
+            assert_eq!(
+                history[0].recording_file.as_deref(),
+                kept.then(|| format!("recordings/{session}.wav"))
+                    .as_deref()
+            );
             if fail {
                 assert_eq!(history[0].error_code.as_deref(), Some("transcribeFailed"));
-                assert_eq!(&std::fs::read(path).unwrap()[44..], expected);
+                assert_eq!(&std::fs::read(&path).unwrap()[44..], expected);
             } else {
                 assert_eq!(history[0].final_text, "complete transcription");
+            }
+            if kept {
+                assert!(path.exists());
+            } else {
                 assert!(!path.exists());
             }
             backend.shutdown().await.unwrap();
@@ -12037,7 +12059,13 @@ mod tests {
         assert_eq!(history[0].error_code.as_deref(), Some("polishFailed"));
         assert!(history[0].asr_ms.is_some());
         assert!(history[0].polish_ms.is_some());
-        assert_eq!(history[0].has_audio_recording, Some(false));
+        // 润色失败正是「需要对照录音排查」的场景：历史保留录音默认开，录音应留存
+        // 且条目带相对路径引用。
+        assert_eq!(history[0].has_audio_recording, Some(true));
+        assert_eq!(
+            history[0].recording_file.as_deref(),
+            Some(format!("recordings/{}.wav", history[0].id).as_str())
+        );
 
         let _ = std::fs::remove_dir_all(data_dir);
     }

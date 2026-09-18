@@ -1340,6 +1340,9 @@ export const es: typeof zhCN = {
       audioRecordingMaxEntriesLabel: 'Máximo de grabaciones originales',
       audioRecordingMaxEntriesDesc:
         'Máximo de archivos WAV guardados en el dispositivo. Vacío = 200.',
+      retainRecordingsLabel: 'Conservar grabaciones en el historial (reproducibles)',
+      retainRecordingsDesc:
+        'Los dictados exitosos conservan su audio para reproducirlo desde el historial y revisar el discurso original. Al desactivar, las grabaciones se eliminan tras insertar; las sesiones fallidas las conservan.',
       startupGroupTitle: 'Inicio',
       startMinimizedLabel: 'Iniciar minimizado (sin ventana principal)',
       startMinimizedDesc:

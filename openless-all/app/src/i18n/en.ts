@@ -1326,6 +1326,9 @@ export const en: typeof zhCN & {
         'Save raw microphone audio as wav for diagnosing recognition issues.',
       audioRecordingMaxEntriesLabel: 'Max raw recordings',
       audioRecordingMaxEntriesDesc: 'Max wav files retained locally. Blank = 200.',
+      retainRecordingsLabel: 'Keep recordings in history (replayable)',
+      retainRecordingsDesc:
+        'Successful dictations keep their audio so you can replay it from History and check the original speech. When off, recordings are deleted after insertion; failed sessions keep theirs.',
       startupGroupTitle: 'Startup',
       startMinimizedLabel: 'Start minimized (no main window)',
       startMinimizedDesc: 'No main window on any launch path — menu bar / tray only.',

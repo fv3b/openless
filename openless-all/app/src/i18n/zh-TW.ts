@@ -1260,6 +1260,9 @@ export const zhTW: typeof zhCN = {
       recordAudioForDebugDesc: '保存原始麥克風音訊為 wav，便於排查識別問題。',
       audioRecordingMaxEntriesLabel: '原始錄音保留條數',
       audioRecordingMaxEntriesDesc: '本地保留 wav 檔案數上限，留空 = 200。',
+      retainRecordingsLabel: '歷史保留錄音（可回放）',
+      retainRecordingsDesc:
+        '成功聽寫的錄音隨歷史保留，可在歷史頁回放對照原文。關閉後成功會話的錄音插入即刪；失敗會話的錄音不受影響。',
       startupGroupTitle: '啟動',
       startMinimizedLabel: '啓動時靜默運行',
       startMinimizedDesc: '所有啓動路徑都不彈主窗口，僅選單欄 / 托盤運行。',

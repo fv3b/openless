@@ -125,7 +125,8 @@ export function DebugToolsSection() {
             value={prefs.audioRecordingMaxEntries ?? ''}
             onChange={(e) => onAudioRecordingMaxEntriesChange(e.target.value)}
             style={{ ...inputStyle, width: mobile ? '100%' : 80, textAlign: 'right' }}
-            disabled={!prefs.recordAudioForDebug}
+            // 历史保留录音（默认开）与调试录音任一在用，这个上限都实际生效。
+            disabled={!prefs.recordAudioForDebug && !prefs.retainRecordingsInHistory}
           />
           {mobile && (
             <span style={{ fontSize: 11, color: 'var(--ol-ink-4)', lineHeight: 1.45 }}>

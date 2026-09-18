@@ -74,9 +74,11 @@ export interface DictationSession {
   errorCode: string | null;
   durationMs: number | null;
   dictionaryEntryCount: number | null;
-  /** 该会话是否在录音时归档了原始 wav（取决于当时 prefs.recordAudioForDebug）。
+  /** 该会话是否在录音时归档了原始 wav（取决于当时的录音保留开关）。
    *  true 时前端在 History 渲染播放按钮，凭 id 通过 read_audio_recording IPC 拿字节流。 */
   hasAudioRecording: boolean | null;
+  /** 条目绑定的录音文件相对路径（如 "recordings/<id>.wav"）。旧历史无该字段。 */
+  recordingFile?: string;
   /** 本次转写用的 ASR provider id（如 "volcengine" / "local-qwen3"）。旧历史为 null。 */
   asrProvider: string | null;
   /** 本次转写用的 ASR 模型 id。provider 无模型概念时为 null。 */
@@ -558,6 +560,9 @@ export interface UserPreferences {
   /** 是否为每次会话保留原始麦克风音频文件（wav），用于排查 ASR 误识别 / 麦克风灵敏度。
    *  默认 false。开启后会占磁盘空间，受 historyRetentionDays 同样的清理策略约束。 */
   recordAudioForDebug: boolean;
+  /** 历史是否保留成功会话的录音（历史页可回放对照原文）。默认 true；关闭后成功
+   *  会话的录音在插入后即删除。recordAudioForDebug 打开时无论本开关如何都保留。 */
+  retainRecordingsInHistory: boolean;
   /** recordings/ 里保留的最近 wav 文件数。null = 跟随 200 硬上限；1..=200 之间为用户自定义。
    *  跟 historyMaxEntries 解耦——「文本档案多但 wav 只留最近 5 条」是合法组合。 */
   audioRecordingMaxEntries: number | null;

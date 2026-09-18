@@ -1294,6 +1294,9 @@ export const ko: typeof zhCN = {
       recordAudioForDebugDesc: '원시 마이크 오디오를 wav 로 저장하여 인식 문제 진단.',
       audioRecordingMaxEntriesLabel: '원본 녹음 보관 개수',
       audioRecordingMaxEntriesDesc: '로컬 보관 wav 파일 상한. 빈칸 = 200.',
+      retainRecordingsLabel: '기록에 녹음 보관(재생 가능)',
+      retainRecordingsDesc:
+        '성공한 받아쓰기 녹음을 기록에 보관하여 기록 페이지에서 재생하며 원래 발화를 확인할 수 있습니다. 끄면 삽입 후 삭제됩니다(실패한 세션의 녹음은 유지).',
       startupGroupTitle: '시작',
       startMinimizedLabel: '시작 시 메인 창 숨기기',
       startMinimizedDesc:

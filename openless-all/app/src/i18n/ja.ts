@@ -1302,6 +1302,9 @@ export const ja: typeof zhCN = {
       recordAudioForDebugDesc: '生のマイク音声を wav で保存し、認識問題の診断に利用。',
       audioRecordingMaxEntriesLabel: '元音声の保持件数',
       audioRecordingMaxEntriesDesc: 'ローカル保持 wav ファイル上限。空欄 = 200。',
+      retainRecordingsLabel: '履歴に録音を残す（再生可能）',
+      retainRecordingsDesc:
+        '成功した音声入力の録音を履歴に残し、履歴ページで再生して元の発話を確認できます。オフにすると挿入後に削除されます（失敗セッションの録音は残ります）。',
       startupGroupTitle: '起動',
       startMinimizedLabel: '起動時にメインウィンドウを表示しない',
       startMinimizedDesc:
