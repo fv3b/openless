@@ -5,7 +5,11 @@
  * 具体译文在 i18n 的 ghostwriter.panel.* key。
  */
 
-import type { GhostwriterAssistState } from './types';
+import type {
+  GhostwriterAssistState,
+  GhostwriterCandidateGroup,
+  GhostwriterCandidateKind,
+} from './types';
 
 const DONE_NOTICE_KEYS: Record<string, string> = {
   pasteSent: 'ghostwriter.panel.noticePastedConfirm',
@@ -156,14 +160,57 @@ export function emptyGhostwriterAssistState(): GhostwriterAssistState {
   return { candidateGroups: [], recommendations: [] };
 }
 
+/** 候选区总量上限：并入后超出按 FIFO 淘汰最旧。 */
+export const GHOSTWRITER_CANDIDATE_CAP = 8;
+
 /**
- * 候选区纯状态机：只认 ghostwriter_assist_changed，payload 两块整体替换
- * （批次无修订号，事件总线保序，无乱序丢弃逻辑）；payload 缺失/形状不对
- * 与未知事件一律原样返回。
- *
- * conversational=true（对话会话）时推荐行常驻：某次批次推荐为空则保留上一批
- * 的非空推荐（整场只此一份、可刷新不消失），候选组照旧整体替换；会话结束由
- * 调用方重置整个 assist 状态（复位 sticky）。普通会话（false，缺省）行为不变。
+ * 候选并入（2026-09-18 批次 A 裁决）：新批次条目并入现有集合，按 text 去重
+ * ——已存在的条目原样不动（note 也不改），不重复入列；空批次不清空既有条目。
+ * 总量超上限按 FIFO 淘汰最旧（最早出现的先走）。返回按 kind 重新分组的集合：
+ * kind 首现顺序即组序，index 为跨组全局 1..N 连续重排（纯展示序号）。
+ */
+export function mergeCandidateGroups(
+  existing: GhostwriterCandidateGroup[],
+  incoming: GhostwriterCandidateGroup[],
+): GhostwriterCandidateGroup[] {
+  const entries: Array<{ kind: GhostwriterCandidateKind; text: string; note?: string }> = [];
+  for (const group of [...existing, ...incoming]) {
+    for (const item of group.items) {
+      if (entries.some(entry => entry.text === item.text)) continue;
+      entries.push({ kind: group.kind, text: item.text, note: item.note });
+    }
+  }
+  const kept = entries.slice(Math.max(0, entries.length - GHOSTWRITER_CANDIDATE_CAP));
+  const groups: GhostwriterCandidateGroup[] = [];
+  for (const entry of kept) {
+    let group = groups.find(candidate => candidate.kind === entry.kind);
+    if (!group) {
+      group = { kind: entry.kind, items: [{ index: 0, text: entry.text, note: entry.note }] };
+      groups.push(group);
+      continue;
+    }
+    group.items.push({ index: 0, text: entry.text, note: entry.note });
+  }
+  // 序号按显示顺序（组序＋组内序）跨组重排 1..N。
+  let index = 0;
+  for (const group of groups) {
+    for (const item of group.items) {
+      index += 1;
+      item.index = index;
+    }
+  }
+  return groups;
+}
+
+/**
+ * 候选区纯状态机：只认 ghostwriter_assist_changed。候选组改为**累积合并**
+ * （2026-09-18 批次 A 裁决：新批次条目并入现有集合，按 text 去重，空批次
+ * 不清空，上限 8 条 FIFO 淘汰最旧，见 mergeCandidateGroups）——空批次会把
+ * 上一批非空提示冲掉的实测痛点由此修复；普通代笔与对话会话都适用。推荐行
+ * 照旧整体替换；conversational=true（对话会话）时推荐行常驻：某次批次推荐
+ * 为空则保留上一批的非空推荐（整场只此一份、可刷新不消失）。会话结束/
+ * 新会话由调用方用 emptyGhostwriterAssistState() 复位（既有清空路径）。
+ * payload 缺失/形状不对与未知事件一律原样返回。
  */
 export function ghostwriterAssistReducer(
   state: GhostwriterAssistState,
@@ -182,7 +229,7 @@ export function ghostwriterAssistReducer(
   const keepStaleRecommendations =
     conversational && payload.recommendations.length === 0 && state.recommendations.length > 0;
   return {
-    candidateGroups: payload.candidateGroups,
+    candidateGroups: mergeCandidateGroups(state.candidateGroups, payload.candidateGroups),
     recommendations: keepStaleRecommendations ? state.recommendations : payload.recommendations,
   };
 }

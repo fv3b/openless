@@ -777,7 +777,8 @@ export interface GhostwriterRecommendationItem {
   title: string;
 }
 
-/** 浮框候选区共享状态：事件到达即整体替换（批次无修订号，事件总线保序）。 */
+/** 浮框候选区共享状态：候选组跨批次累积合并（按 text 去重，上限 8 条 FIFO），
+ *  推荐行照批次整体替换（对话会话 sticky）。批次无修订号，事件总线保序。 */
 export interface GhostwriterAssistState {
   candidateGroups: GhostwriterCandidateGroup[];
   recommendations: GhostwriterRecommendationItem[];

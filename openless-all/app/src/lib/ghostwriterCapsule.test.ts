@@ -220,6 +220,8 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
 }
 
 // --- ghostwriterAssistReducer：候选区（候选组/推荐）的纯状态机 ---
+// 候选组改为累积合并（2026-09-18 批次 A 裁决）：新批次并入现有集合、按 text
+// 去重、空批次不清空、上限 8 条 FIFO 淘汰最旧；推荐照旧整体替换。
 
 const EMPTY_ASSIST = emptyGhostwriterAssistState();
 assert(
@@ -228,7 +230,7 @@ assert(
   'assist 空状态应为零值',
 );
 
-// assist_event_replaces_state：整体替换（无修订号比较，事件总线保序）
+// 候选并入：新批次条目并入现有集合，不同批次共存；推荐照旧整体替换
 {
   const s1 = ghostwriterAssistReducer(EMPTY_ASSIST, {
     type: 'ghostwriter_assist_changed',
@@ -240,23 +242,111 @@ assert(
       recommendations: [{ snippetId: 's1', title: '项目背景' }],
     },
   });
-  assert(s1.candidateGroups.length === 2, 'assist_event_replaces_state: 候选组应整体换上');
-  assert(
-    s1.candidateGroups[1].items[0].index === 2,
-    '候选序号（跨组全局）应原样保留',
-  );
+  assert(s1.candidateGroups.length === 2, '首批候选应入列');
   assert(
     s1.recommendations.length === 1 && s1.recommendations[0].snippetId === 's1',
-    'assist_event_replaces_state: 推荐应整体换上',
+    '推荐照旧整体替换',
   );
-  // 新批次整体覆盖旧批次
+  // 新批次含重复 text（灰度发布）与新条目：重复不重排、新条目追加，序号跨组重排连续
   const s2 = ghostwriterAssistReducer(s1, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [
+        { kind: 'term', items: [{ index: 1, text: '灰度发布' }, { index: 2, text: '金丝雀发布' }] },
+      ],
+      recommendations: [],
+    },
+  });
+  const flat = s2.candidateGroups.flatMap(group => group.items.map(item => item.text));
+  // 组序按 kind 首现；组内既有条目原位不动、新条目追加在组尾。
+  assert(
+    JSON.stringify(flat) === JSON.stringify(['灰度发布', '金丝雀发布', '先在小范围试运行']),
+    '并入应按 text 去重，新条目并入同 kind 组尾',
+  );
+  assert(
+    s2.candidateGroups.map(group => group.kind).join(',') === 'term,naming',
+    'kind 首现顺序即组序',
+  );
+  assert(
+    s2.candidateGroups.flatMap(group => group.items.map(item => item.index)).join(',') === '1,2,3',
+    '并入后 index 应跨组重排 1..N',
+  );
+  // 空批次不清空既有条目（用户实测痛点：整批替换会冲掉上一批非空提示）
+  const s3 = ghostwriterAssistReducer(s2, {
     type: 'ghostwriter_assist_changed',
     payload: { candidateGroups: [], recommendations: [] },
   });
   assert(
-    s2.candidateGroups.length === 0 && s2.recommendations.length === 0,
-    '新批次应整体替换旧批次',
+    JSON.stringify(s3.candidateGroups.flatMap(group => group.items.map(item => item.text))) ===
+      JSON.stringify(flat),
+    '空 candidateGroups 不应清空既有条目',
+  );
+  // 已存在条目重复到达：note 不被改写
+  const withNote = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [{ kind: 'term', items: [{ index: 1, text: '灰度发布', note: '旧注释' }] }],
+      recommendations: [],
+    },
+  });
+  const reArrived = ghostwriterAssistReducer(withNote, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [{ kind: 'term', items: [{ index: 1, text: '灰度发布', note: '新注释' }] }],
+      recommendations: [],
+    },
+  });
+  assert(
+    reArrived.candidateGroups[0].items[0].note === '旧注释',
+    '已存在条目应原样不动（note 不改写）',
+  );
+}
+
+// 上限 8 条：超出按 FIFO 淘汰最旧
+{
+  let state = EMPTY_ASSIST;
+  for (let i = 1; i <= 10; i++) {
+    state = ghostwriterAssistReducer(state, {
+      type: 'ghostwriter_assist_changed',
+      payload: {
+        candidateGroups: [{ kind: 'term', items: [{ index: 1, text: `候选${i}` }] }],
+        recommendations: [],
+      },
+    });
+  }
+  const texts = state.candidateGroups.flatMap(group => group.items.map(item => item.text));
+  assert(texts.length === 8, '候选总量上限应为 8');
+  assert(
+    JSON.stringify(texts) ===
+      JSON.stringify(['候选3', '候选4', '候选5', '候选6', '候选7', '候选8', '候选9', '候选10']),
+    '超上限应 FIFO 淘汰最旧',
+  );
+  assert(
+    state.candidateGroups[0].items[0].index === 1 &&
+      state.candidateGroups[0].items[7].index === 8,
+    '淘汰后序号应重排 1..N',
+  );
+}
+
+// 会话结束/新会话清空：调用方以 emptyGhostwriterAssistState() 复位（starting
+// 阶段既有清空路径），复位后累积集合归零
+{
+  const merged = ghostwriterAssistReducer(EMPTY_ASSIST, {
+    type: 'ghostwriter_assist_changed',
+    payload: {
+      candidateGroups: [{ kind: 'term', items: [{ index: 1, text: '灰度发布' }] }],
+      recommendations: [],
+    },
+  });
+  const reset = ghostwriterAssistReducer(emptyGhostwriterAssistState(), {
+    type: 'ghostwriter_assist_changed',
+    payload: { candidateGroups: [], recommendations: [] },
+  });
+  assert(
+    reset.candidateGroups.length === 0 &&
+      merged.candidateGroups.length === 1 &&
+      JSON.stringify(reset) === JSON.stringify(EMPTY_ASSIST),
+    '复位后新会话应从空集合开始',
   );
 }
 

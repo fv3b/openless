@@ -30,10 +30,11 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作，浮框唯一
- * 按钮＝✕）、候选区（候选组 chips／推荐行，ghostwriter_assist_changed 整体替换；
- * 候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，看中哪个常用语
- * 直接读它的触发词，命中机制自然接住，2026-09-17 裁决；对话会话下推荐行
- * sticky 常驻，空批次不塌行）、
+ * 按钮＝✕）、候选区（候选组 chips／推荐行；候选组跨批次累积合并——按 text
+ * 去重、空批次不清空、上限 8 条 FIFO，见 ghostwriterCapsule.mergeCandidateGroups，
+ * 推荐行照批次整体替换；候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，
+ * 看中哪个常用语直接读它的触发词，命中机制自然接住，2026-09-17 裁决；对话会话下
+ * 推荐行 sticky 常驻，空批次不塌行）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照；
  * 对话会话的 AI 回话以「助手」前缀行按到达顺序追加其后，多行文本原样保留）。
  * 对话会话在标题区带「对话」标识（dictation_state_changed 载荷 conversational）。
