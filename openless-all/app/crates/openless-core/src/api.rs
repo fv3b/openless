@@ -10286,7 +10286,8 @@ mod tests {
     async fn recent_voice_background_is_frozen_from_history_at_session_start() {
         // 批次 A：听写会话启动时从历史冻结最近语音背景——挂进 context（ASR
         // dialog_ctx 的取数口）与 Ghostwriter 会话（LLM 消费点的取数口）；
-        // 无历史 → None，一切照旧零变化。
+        // 同日复核改偏好驱动（实验性，默认关）：开关关闭 → None；开启 → 按设置
+        // 捕获；无历史 → None，一切照旧零变化。
         let data_dir = std::env::temp_dir().join(format!(
             "openless-recent-voice-{}",
             uuid::Uuid::new_v4().simple()
@@ -10317,8 +10318,26 @@ mod tests {
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
         preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        // 开关默认关：即使有历史也不冻结背景。
+        assert!(!preferences.ghostwriter.recent_voice_background_enabled);
         backend.set_preferences(preferences).unwrap();
-
+        let session_id = backend.start_external_dictation().await.unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert!(
+                context.recent_voice.is_none(),
+                "背景开关默认关：有历史也不应冻结"
+            );
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        // 开关开启（数量 3 条）：下一场会话按设置捕获（冻结语义：启动时生效）。
+        let mut preferences = backend.get_preferences();
+        preferences.ghostwriter.recent_voice_background_enabled = true;
+        backend.set_preferences(preferences).unwrap();
         let session_id = backend.start_external_dictation().await.unwrap();
         let expected = ["第一条旧指令".to_string(), "第二条最新指令".to_string()];
         {
@@ -10327,7 +10346,7 @@ mod tests {
                 .dictation_context
                 .as_ref()
                 .expect("active session has a captured context");
-            let background = context.recent_voice.as_ref().expect("history present");
+            let background = context.recent_voice.as_ref().expect("开关开启且有历史");
             assert_eq!(background.lines(), expected.as_slice());
             let session = state
                 .ghostwriter_sessions

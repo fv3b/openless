@@ -41,8 +41,14 @@ const BYTES_PER_MS: f64 = 32.0;
 const HOTWORD_CAP: usize = 80;
 /// dialog_ctx（语境提示）的注入上限：官方限 800 tokens（docs/6561/1354869），
 /// 中文按 1 字符 ≈ 1 token 保守估算，总字符数截到该值内（超出丢最旧，保住
-/// 最近的话）。来源：会话启动时冻结的最近语音背景（批次 A）。
+/// 最近的话）。来源：会话启动时冻结的最近语音背景（批次 A）＋固定场景条目。
 const DIALOG_CTX_CHAR_CAP: usize = 800;
+/// dialog_ctx 的固定场景条目（2026-09-18 用户裁决；官方 dialog_ctx 示例 d 类
+/// 「业务/个性化信息」）：告诉识别引擎当前是「语音给 AI 助手下指令」的场景，
+/// 内容多为待办与任务类表达。代码固定常量（逐字钉住，见测试），常驻计入
+/// 800 字符预算——它不是用户数据，不受最近语音背景开关控制（否则该开关
+/// 默认关时场景偏置就永不生效）。
+pub const DIALOG_CTX_SCENE_ENTRY: &str = "用户在通过语音给 AI 助手下指令，内容为待办与任务类表达";
 const FINAL_RESULT_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 弱网下 TLS/WebSocket 握手可能一直挂到 OS 级 TCP 超时（几十秒），期间用户卡在
@@ -1015,9 +1021,11 @@ fn hotword_words(entries: &[DictionaryHotword]) -> Option<Vec<Value>> {
 /// dialog_ctx 语境提示条目（调用方按 新→旧 传入）：官方限 800 tokens / 20 轮、
 /// 从新到旧截断（docs/6561/1354869）。中文按 1 字符 ≈ 1 token 保守估算，
 /// 总字符数超 [`DIALOG_CTX_CHAR_CAP`] 丢弃更旧的条目（保住最近的话）。
+/// 固定场景条目（[`DIALOG_CTX_SCENE_ENTRY`]）常驻首位并计入预算——即使没有
+/// 最近语音（背景开关关闭/无历史）也注入，让场景偏置对所有人生效。
 fn dialog_ctx_entries(lines: &[String]) -> Option<Vec<String>> {
-    let mut kept: Vec<String> = Vec::new();
-    let mut used = 0usize;
+    let mut kept: Vec<String> = vec![DIALOG_CTX_SCENE_ENTRY.to_string()];
+    let mut used = DIALOG_CTX_SCENE_ENTRY.chars().count();
     for line in lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1029,16 +1037,13 @@ fn dialog_ctx_entries(lines: &[String]) -> Option<Vec<String>> {
         used += trimmed.chars().count();
         kept.push(trimmed.to_string());
     }
-    if kept.is_empty() {
-        None
-    } else {
-        Some(kept)
-    }
+    Some(kept)
 }
 
 /// 首帧 request.context 的组装：热词直传（既有）＋ dialog_ctx 语境提示
-/// （批次 A，同一 context 对象内并列）。两者皆空 → None（不携带 context，
-/// 旧路径零变化）。沿用既有 string 化 JSON 形态（与线上的热词注入一致）。
+/// （批次 A，同一 context 对象内并列）。dialog_ctx 常驻（至少含固定场景
+/// 条目），故 context 恒 Some；context_data 条目按官方格式 `{"text": …}`
+/// 对象形态下发。沿用既有 string 化 JSON 形态（与线上的热词注入一致）。
 fn context_payload(hotwords: &[DictionaryHotword], dialog_ctx: &[String]) -> Option<String> {
     let hotwords = hotword_words(hotwords);
     let dialog_ctx = dialog_ctx_entries(dialog_ctx);
@@ -1053,7 +1058,12 @@ fn context_payload(hotwords: &[DictionaryHotword], dialog_ctx: &[String]) -> Opt
         object.insert("context_type".into(), Value::String("dialog_ctx".into()));
         object.insert(
             "context_data".into(),
-            Value::Array(entries.into_iter().map(Value::String).collect()),
+            Value::Array(
+                entries
+                    .into_iter()
+                    .map(|text| json!({ "text": text }))
+                    .collect(),
+            ),
         );
     }
     serde_json::to_string(&Value::Object(object)).ok()
@@ -1130,29 +1140,61 @@ mod tests {
             "停用热词不应入列: {payload}"
         );
         let count = payload.matches("\"word\"").count();
-        assert!(count <= HOTWORD_CAP);
+        // 「word」键计数：热词封顶 80＋场景条目（context_data[].text）。
+        assert!(count <= HOTWORD_CAP + 1);
     }
 
     #[test]
-    fn hotword_context_returns_none_when_all_disabled() {
+    fn hotword_context_omits_hotwords_key_when_all_disabled() {
         let entries = vec![DictionaryHotword {
             phrase: "Foo".into(),
             enabled: false,
         }];
-        assert!(context_payload(&entries, &Vec::new()).is_none());
+        let payload = context_payload(&entries, &Vec::new()).expect("场景条目常驻，仍有 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert!(parsed.get("hotwords").is_none(), "全停用不应带 hotwords 键");
+        assert_eq!(parsed["context_type"], "dialog_ctx");
+        assert_eq!(
+            parsed["context_data"][0]["text"],
+            DIALOG_CTX_SCENE_ENTRY,
+            "无热词无历史时场景条目仍应常驻"
+        );
+    }
+
+    #[test]
+    fn dialog_ctx_scene_entry_is_fixed_constant_and_leads_context_data() {
+        // 用户裁决（2026-09-18）：固定场景描述（官方示例 d 类业务/个性化信息），
+        // 逐字钉住；在最近语音之前（context_data 首位，官方从新到旧截断时最靠前）。
+        assert_eq!(
+            DIALOG_CTX_SCENE_ENTRY,
+            "用户在通过语音给 AI 助手下指令，内容为待办与任务类表达"
+        );
+        let payload = context_payload(&[], &vec!["最新一句".into()]).expect("有 dialog_ctx 应产出 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let texts: Vec<&str> = parsed["context_data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, vec![DIALOG_CTX_SCENE_ENTRY, "最新一句"]);
     }
 
     #[test]
     fn context_payload_carries_dialog_ctx_entries_newest_first() {
         // dialog_ctx 语境提示（批次 A）：context_type=dialog_ctx + context_data[]，
-        // 条目按调用方顺序（新→旧）原样入列。
+        // 条目按调用方顺序（新→旧）原样入列；场景条目固定在首位。
         let payload = context_payload(&[], &vec!["最新一句".into(), "更早一句".into()])
             .expect("有 dialog_ctx 应产出 context");
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["context_type"], "dialog_ctx");
         assert_eq!(
             parsed["context_data"],
-            serde_json::json!(["最新一句", "更早一句"])
+            serde_json::json!([
+                { "text": DIALOG_CTX_SCENE_ENTRY },
+                { "text": "最新一句" },
+                { "text": "更早一句" }
+            ])
         );
         assert!(parsed.get("hotwords").is_none(), "无热词不应带 hotwords 键");
     }
@@ -1167,29 +1209,48 @@ mod tests {
             .expect("热词＋dialog_ctx 应共存于同一 context");
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["context_type"], "dialog_ctx");
-        assert_eq!(parsed["context_data"], serde_json::json!(["最近语音一句"]));
+        assert_eq!(
+            parsed["context_data"],
+            serde_json::json!([
+                { "text": DIALOG_CTX_SCENE_ENTRY },
+                { "text": "最近语音一句" }
+            ])
+        );
         assert_eq!(parsed["hotwords"][0]["word"], "OpenLess");
     }
 
     #[test]
-    fn dialog_ctx_entries_cap_total_chars_dropping_oldest() {
-        // 官方 dialog_ctx 限 800 tokens：总字符数超限丢弃更旧的条目（保住最新）。
+    fn dialog_ctx_entries_cap_total_chars_with_scene_reserved_dropping_oldest() {
+        // 官方 dialog_ctx 限 800 tokens：场景条目常驻计入预算，其余条目总字符数
+        // 超限丢弃更旧的（保住最新）。
         let long = "y".repeat(500);
         let lines = vec![long.clone(), long.clone(), long.clone()];
-        let kept = dialog_ctx_entries(&lines).expect("应保留至少一条");
-        assert_eq!(kept.len(), 1, "500×3>800：只保住最新一条");
-        assert_eq!(kept[0], long);
-        // 预算内（800 chars）原样保留；空白条目跳过。
+        let kept = dialog_ctx_entries(&lines).expect("应保留至少场景条目＋一条");
+        assert_eq!(kept.len(), 2, "场景条目＋500：再加一条超 800，只保住最新一条");
+        assert_eq!(kept[0], DIALOG_CTX_SCENE_ENTRY);
+        assert_eq!(kept[1], long);
+        // 预算内（800 chars 减场景条目）原样保留；空白条目跳过。
         let short = vec!["第三条".into(), "  ".into(), "第一条".into()];
         let kept = dialog_ctx_entries(&short).expect("预算内应全留");
-        assert_eq!(kept, vec!["第三条".to_string(), "第一条".to_string()]);
-        // 全空 → None。
-        assert!(dialog_ctx_entries(&["  ".to_string()]).is_none());
+        assert_eq!(
+            kept,
+            vec![
+                DIALOG_CTX_SCENE_ENTRY.to_string(),
+                "第三条".to_string(),
+                "第一条".to_string()
+            ]
+        );
     }
 
     #[test]
-    fn context_payload_returns_none_without_hotwords_or_dialog_ctx() {
-        assert!(context_payload(&[], &Vec::new()).is_none());
+    fn context_payload_carries_scene_entry_without_history_or_hotwords() {
+        // 场景条目常驻：即使无热词、无最近语音，dialog_ctx 也带场景描述
+        // （用户裁决 2026-09-18；背景开关默认关时场景偏置仍生效）。
+        let payload = context_payload(&[], &Vec::new()).expect("场景条目常驻 → context 恒在");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["context_type"], "dialog_ctx");
+        assert_eq!(parsed["context_data"], serde_json::json!([{ "text": DIALOG_CTX_SCENE_ENTRY }]));
+        assert!(parsed.get("hotwords").is_none());
     }
 
     #[test]
