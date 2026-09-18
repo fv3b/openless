@@ -395,6 +395,7 @@ pub enum BackendEventKind {
     GhostwriterPreviewChanged(crate::ghostwriter::types::GhostwriterPreviewChanged),
     GhostwriterSnippetsHit(crate::ghostwriter::types::GhostwriterSnippetHit),
     GhostwriterNotice(crate::ghostwriter::types::GhostwriterNotice),
+    GhostwriterStageChanged(crate::ghostwriter::types::GhostwriterStageChanged),
     GhostwriterAssistChanged(crate::ghostwriter::types::GhostwriterAssistChanged),
     GhostwriterReplyChanged(crate::ghostwriter::types::GhostwriterReplyChanged),
 }

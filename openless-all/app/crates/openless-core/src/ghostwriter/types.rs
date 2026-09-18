@@ -122,6 +122,16 @@ pub struct GhostwriterNotice {
     pub level: String,
 }
 
+/// 浮框收尾阶段事件（2026-09-18 批次 B）：stop 后处理链的轻量阶段信号，
+/// 浮框不再随停止收起、据此刻显示阶段行。「polishing」＝尾段补润中；
+/// 「finalizing」＝对话终稿出稿中；写入/完成/失败沿用 dictation_state_changed
+/// （inserting）与 dictation_completed / failed。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostwriterStageChanged {
+    pub stage: String,
+}
+
 /// 实时助手批次变化事件：候选组＋推荐，浮框候选区整体替换渲染。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,5 +248,8 @@ mod tests {
         let r = GhostwriterReplyChanged { text: "你说的是哪个日志？".into() };
         let v: serde_json::Value = serde_json::to_value(&r).unwrap();
         assert_eq!(v["text"], "你说的是哪个日志？");
+        let s = GhostwriterStageChanged { stage: "finalizing".into() };
+        let v: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["stage"], "finalizing");
     }
 }

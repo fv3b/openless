@@ -6,6 +6,10 @@ import {
   ghostwriterHasUndoAction,
   ghostwriterPanelActionFor,
   ghostwriterPreviewReducer,
+  ghostwriterProcessingExpired,
+  ghostwriterStageKey,
+  ghostwriterStageOverrideFromEvent,
+  GHOSTWRITER_PROCESSING_TIMEOUT_MS,
   shouldUseGhostwriterCapsule,
 } from './ghostwriterCapsule';
 import { applyTranscriptEvent, type TranscriptViewState } from './backendEvent';
@@ -35,34 +39,101 @@ assert(shouldUseGhostwriterCapsule({}) === false, '缺省样式不应启用');
 assert(shouldUseGhostwriterCapsule(null) === false, 'null prefs 不应启用');
 
 // --- ghostwriterPanelActionFor：dictation_state_changed/completed → 浮框动作 ---
-// 约定（2026-09 用户拍板）：说话中显示实时转写；按下停止键后浮框立即收起、
-// 静默落字进光标；只有剪贴板兜底/粘贴确认这类需要用户动手的收尾才允许显示。
+// 约定（2026-09-18 批次 B 用户裁决）：按下停止键浮框**不收起**，显示处理阶段
+// （正在润色/正在写入…）；内容真正落进光标（dictation_completed inserted）才收
+// ——消失＝粘贴完成＝可以继续下一个动作的信号。插入失败/处理失败浮框保留
+// 错误信息等用户手动关；只有剪贴板兜底/粘贴确认以浮框内提示呈现。
 
 assert(ghostwriterPanelActionFor('starting') === 'show', 'starting 应显示浮框');
 assert(ghostwriterPanelActionFor('recording') === 'show', 'recording 应显示浮框');
-assert(ghostwriterPanelActionFor('transcribing') === 'hide', '停止后 transcribing 应立即隐藏');
-assert(ghostwriterPanelActionFor('polishing') === 'hide', 'polishing 应立即隐藏');
-assert(ghostwriterPanelActionFor('inserting') === 'hide', 'inserting 应立即隐藏');
+assert(
+  ghostwriterPanelActionFor('transcribing') === 'show',
+  '停止后 transcribing 浮框保留（显示阶段行）',
+);
+assert(ghostwriterPanelActionFor('polishing') === 'show', 'polishing 浮框保留');
+assert(ghostwriterPanelActionFor('inserting') === 'show', 'inserting 浮框保留（正在写入）');
+assert(ghostwriterPanelActionFor('failed') === 'show', 'failed 浮框保留错误信息，等手动关');
 assert(ghostwriterPanelActionFor('cancelled') === 'hide', 'cancelled 应隐藏');
-assert(ghostwriterPanelActionFor('failed') === 'hide', 'failed 应隐藏');
 assert(ghostwriterPanelActionFor('idle') === 'hide', 'idle 应隐藏');
 assert(ghostwriterPanelActionFor(undefined) === 'hide', '未知 phase 应保守隐藏');
 assert(
   ghostwriterPanelActionFor('completed', 'inserted') === 'hide',
-  '已完成且字已入光标：不留任何展示',
+  '已完成且字已入光标：浮框收起（粘贴完成信号）',
 );
 assert(ghostwriterPanelActionFor('completed', 'notRequested') === 'hide', '无需插入时也不展示');
 assert(
   ghostwriterPanelActionFor('completed', 'copiedFallback') === 'show-fallback-toast',
-  '剪贴板兜底需要用户手动粘贴：必须提示',
+  '剪贴板兜底需要用户手动粘贴：浮框内提示',
 );
 assert(
   ghostwriterPanelActionFor('completed', 'pasteSent') === 'show-fallback-toast',
-  '粘贴已发送需要用户确认落点：必须提示',
+  '粘贴已发送需要用户确认落点：浮框内提示',
 );
 assert(
   ghostwriterPanelActionFor('completed', undefined) === 'hide',
   'completed 无 inserted 字段按已入光标处理',
+);
+
+// --- ghostwriterStageOverrideFromEvent：ghostwriter_stage_changed 载荷校验 ---
+
+assert(
+  ghostwriterStageOverrideFromEvent('polishing') === 'polishing',
+  'polishing 阶段应被接受',
+);
+assert(
+  ghostwriterStageOverrideFromEvent('finalizing') === 'finalizing',
+  'finalizing 阶段应被接受',
+);
+assert(ghostwriterStageOverrideFromEvent('unknown') === null, '未知阶段应被拒绝');
+assert(ghostwriterStageOverrideFromEvent(undefined) === null, '载荷缺失应被拒绝');
+assert(ghostwriterStageOverrideFromEvent(42) === null, '非字符串应被拒绝');
+
+// --- ghostwriterStageKey：收尾阶段的阶段行文案 key ---
+// ghostwriter 会话润色模式强制 Raw（引擎不进入 polishing 相），stop 后的 LLM
+// 等待发生在 transcribing 相——阶段行以 ghostwriter_stage_changed 事件为准，
+// 相位映射只做兜底。
+
+assert(
+  ghostwriterStageKey('transcribing', null, false) === 'ghostwriter.panel.stageTranscribing',
+  'transcribing 无阶段事件兜底显示正在识别',
+);
+assert(
+  ghostwriterStageKey('transcribing', 'polishing', false) === 'ghostwriter.panel.stagePolishing',
+  '补润阶段事件覆盖 transcribing 相：正在润色',
+);
+assert(
+  ghostwriterStageKey('transcribing', 'finalizing', false) === 'ghostwriter.panel.stageFinalizing',
+  '出稿阶段事件覆盖 transcribing 相：正在出稿',
+);
+assert(
+  ghostwriterStageKey('polishing', null, false) === 'ghostwriter.panel.stagePolishing',
+  'polishing 相兜底显示正在润色',
+);
+assert(
+  ghostwriterStageKey('polishing', null, true) === 'ghostwriter.panel.stageFinalizing',
+  '对话会话 polishing 相兜底显示正在出稿',
+);
+assert(
+  ghostwriterStageKey('inserting', 'polishing', false) === 'ghostwriter.panel.stageInserting',
+  '写入相优先于阶段事件：正在写入',
+);
+assert(ghostwriterStageKey('recording', null, false) === null, '录音相无阶段行');
+assert(ghostwriterStageKey('completed', null, false) === null, '完成无阶段行');
+assert(ghostwriterStageKey('failed', null, false) === null, '失败无阶段行（错误态接管）');
+
+// --- ghostwriterProcessingExpired：收尾护栏（处理卡死不永久占屏） ---
+
+assert(GHOSTWRITER_PROCESSING_TIMEOUT_MS === 60_000, '护栏阈值应为 60 秒');
+assert(ghostwriterProcessingExpired(null, Date.now()) === false, '未进入处理阶段不超时');
+const startedAt = 1_000_000;
+assert(
+  ghostwriterProcessingExpired(startedAt, startedAt + GHOSTWRITER_PROCESSING_TIMEOUT_MS - 1) ===
+    false,
+  '阈值内不算超时',
+);
+assert(
+  ghostwriterProcessingExpired(startedAt, startedAt + GHOSTWRITER_PROCESSING_TIMEOUT_MS) === true,
+  '达到阈值即超时（转失败态显示错误，可手动关）',
 );
 
 // --- ghostwriterPreviewReducer：浮框三区（命中徽标/指令预览）的纯状态机 ---

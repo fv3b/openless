@@ -1,6 +1,7 @@
 /**
  * Ghostwriter 浮框（capsule 流体样式）的纯逻辑：dictation_completed 的 inserted →
- * 收尾文案的 i18n key 映射、浮框收放规则、指令预览状态机与候选区状态机。
+ * 收尾文案的 i18n key 映射、浮框收放规则、收尾阶段行与超时护栏、指令预览
+ * 状态机与候选区状态机。
  * 独立成 lib 以便单测（前端测试栈是 node+tsx，无 DOM）；
  * 具体译文在 i18n 的 ghostwriter.panel.* key。
  */
@@ -37,12 +38,15 @@ export function shouldUseGhostwriterCapsule(
 export type GhostwriterPanelAction = 'show' | 'hide' | 'show-fallback-toast';
 
 /**
- * 浮框收放规则（事件驱动，纯函数）：
+ * 浮框收放规则（事件驱动，纯函数；2026-09-18 批次 B 用户裁决）：
  * starting/recording → show，实时转写流；
- * transcribing/polishing/inserting → hide，停止键已按下，落字期间不打扰；
+ * transcribing/polishing/inserting → show，停止键已按下但浮框**不收起**，
+ *   显示处理阶段行（正在润色/正在出稿/正在写入…）——消失＝粘贴完成＝可以
+ *   继续下一个动作的信号；
  * completed → hide，字已落进光标就是最好的回执；仅剪贴板兜底（copiedFallback）
- *   与粘贴确认（pasteSent）需要用户动手，用最小 toast 提示；
- * cancelled/failed/idle/未知 → hide，异常路径一律静默收起。
+ *   与粘贴确认（pasteSent）需要用户动手，浮框内提示；
+ * failed → show，浮框保留错误信息等用户手动关（可读原因走 ghostwriter_notice）；
+ * cancelled/idle/未知 → hide，异常路径一律静默收起。
  */
 export function ghostwriterPanelActionFor(
   phase: string | null | undefined,
@@ -52,6 +56,11 @@ export function ghostwriterPanelActionFor(
     case 'starting':
     case 'recording':
       return 'show';
+    case 'transcribing':
+    case 'polishing':
+    case 'inserting':
+    case 'failed':
+      return 'show';
     case 'completed':
       return inserted === 'copiedFallback' || inserted === 'pasteSent'
         ? 'show-fallback-toast'
@@ -59,6 +68,56 @@ export function ghostwriterPanelActionFor(
     default:
       return 'hide';
   }
+}
+
+// --- 收尾阶段行（2026-09-18 批次 B）：浮框不收起时的处理阶段提示 ---
+
+/** ghostwriter_stage_changed 的合法阶段值：尾段补润 / 对话终稿出稿。 */
+export type GhostwriterStageOverride = 'polishing' | 'finalizing';
+
+/** 处理阶段超时护栏：后台卡死（如 LLM 无响应）超 60s 转失败态，不永久占屏。 */
+export const GHOSTWRITER_PROCESSING_TIMEOUT_MS = 60_000;
+
+/** 处理阶段是否已超时（startedAtMs 为空＝未在处理阶段，恒 false）。 */
+export function ghostwriterProcessingExpired(
+  startedAtMs: number | null | undefined,
+  nowMs: number,
+): boolean {
+  if (typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs)) return false;
+  return nowMs - startedAtMs >= GHOSTWRITER_PROCESSING_TIMEOUT_MS;
+}
+
+/** 校验 ghostwriter_stage_changed 载荷；非法值返回 null（原样忽略）。 */
+export function ghostwriterStageOverrideFromEvent(
+  stage: unknown,
+): GhostwriterStageOverride | null {
+  return stage === 'polishing' || stage === 'finalizing' ? stage : null;
+}
+
+/**
+ * 阶段行文案 key（卡片区一行小字）：inserting 恒「正在写入」；transcribing/
+ * polishing 相下以 ghostwriter_stage_changed 事件为准，无事件按相位兜底
+ * （对话会话 polishing 相＝终稿出稿）。ghostwriter 会话润色模式强制 Raw
+ * （引擎不进入 polishing 相），stop 后的 LLM 等待发生在 transcribing 相——
+ * 阶段事件是「正在润色/正在出稿」的主要信源。其余相位无阶段行（返回 null）。
+ */
+export function ghostwriterStageKey(
+  phase: string | null | undefined,
+  override: GhostwriterStageOverride | null,
+  conversational: boolean,
+): string | null {
+  if (phase === 'inserting') return 'ghostwriter.panel.stageInserting';
+  if (phase === 'transcribing' || phase === 'polishing') {
+    if (override === 'polishing') return 'ghostwriter.panel.stagePolishing';
+    if (override === 'finalizing') return 'ghostwriter.panel.stageFinalizing';
+    if (phase === 'polishing') {
+      return conversational
+        ? 'ghostwriter.panel.stageFinalizing'
+        : 'ghostwriter.panel.stagePolishing';
+    }
+    return 'ghostwriter.panel.stageTranscribing';
+  }
+  return null;
 }
 
 // --- 指令预览状态机（纯函数，node 可测） ---

@@ -15,19 +15,33 @@ import {
   ghostwriterHasUndoAction,
   ghostwriterPanelActionFor,
   ghostwriterPreviewReducer,
+  ghostwriterProcessingExpired,
+  ghostwriterStageKey,
+  ghostwriterStageOverrideFromEvent,
+  GHOSTWRITER_PROCESSING_TIMEOUT_MS,
   shouldUseGhostwriterCapsule,
   type GhostwriterPreviewState,
+  type GhostwriterStageOverride,
 } from '../lib/ghostwriterCapsule';
 import { getSettings, ghostwriterCancelLast, ghostwriterFitWindow } from '../lib/ipc';
 import { shouldRefitWindow } from '../lib/ghostwriterWindowFit';
 import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/types';
 
 /**
- * ghostwriter 浮框：说话时底部浮框实时转写，停止即收起、静默落字。
+ * ghostwriter 浮框：说话时底部浮框实时转写；按下停止后浮框**不收起**，显示
+ * 处理阶段（正在润色/正在出稿/正在写入…），内容真正落进光标的那一刻才收起
+ * ——消失＝粘贴完成＝可以继续下一个动作的信号（2026-09-18 批次 B 裁决）。
  *
- * 收放规则见 ghostwriterCapsule.ts 的 ghostwriterPanelActionFor：starting/recording 显示，
- * 其余一律立即隐藏——字落进光标本身就是回执；只有剪贴板兜底/粘贴确认这类
- * 需要用户动手的收尾，才以最小 toast 提示 2.5 秒。
+ * 收放规则见 ghostwriterCapsule.ts 的 ghostwriterPanelActionFor：starting/recording
+ * 与收尾阶段（transcribing/polishing/inserting）显示，dictation_completed 的
+ * inserted 即收起；失败（failed）浮框保留错误信息等用户手动关（✕）；剪贴板
+ * 兜底/粘贴确认以浮框内提示呈现，提示 2.5 秒后收框。后台处理卡死由超时护栏
+ * 兜底：处理阶段超 60 秒转失败态、可手动关。
+ *
+ * 阶段行信源：ghostwriter_stage_changed（补润=polishing／对话出稿=finalizing）
+ * 覆盖 transcribing/polishing 相的兜底映射，inserting 相恒「正在写入」。
+ * ghostwriter 会话润色模式强制 Raw（引擎不进入 polishing 相），stop 后的 LLM
+ * 等待发生在 transcribing 相——阶段事件是「正在润色/正在出稿」的主要信源。
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作，浮框唯一
  * 按钮＝✕）、候选区（候选组 chips／推荐行；候选组跨批次累积合并——按 text
@@ -37,6 +51,8 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 推荐行 sticky 常驻，空批次不塌行）、
  * 中区指令预览（若此刻停下将贴给 AI 的完整结果）、底区转写流（小字上下文参照；
  * 对话会话的 AI 回话以「助手」前缀行按到达顺序追加其后，多行文本原样保留）。
+ * 标题行下的一条状态行按优先级渲染：失败态（红字＋可读原因＋✕）＞轻提示
+ * （收尾确认/兜底，2.5 秒自清）＞处理阶段行。
  * 对话会话在标题区带「对话」标识（dictation_state_changed 载荷 conversational）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
@@ -140,6 +156,12 @@ interface FallbackNotice {
   text: string;
 }
 
+/** 失败态（浮框保留、✕ 手动关）：标题＋可读原因（缺省回落通用提示）。 */
+interface GhostwriterTailError {
+  title: string;
+  detail: string | null;
+}
+
 export function GhostwriterPanel() {
   const { t } = useTranslation();
   // 事件监听只挂一次，经 ref 取最新 t：语言切换后兜底提示不再回退旧语言。
@@ -158,11 +180,23 @@ export function GhostwriterPanel() {
   // 候选区渲染快照：内容清空时保留最后一帧到收起动画结束（见下 effect）。
   const [assistView, setAssistView] = useState<GhostwriterAssistState>(emptyGhostwriterAssistState());
   const [notice, setNotice] = useState<FallbackNotice | null>(null);
+  // 收尾阶段行（i18n key）与失败态（2026-09-18 批次 B）：浮框不随停止收起。
+  const [stageLine, setStageLine] = useState<string | null>(null);
+  const [tailError, setTailError] = useState<GhostwriterTailError | null>(null);
   const visibleRef = useRef(false);
   const transcriptRef = useRef<TranscriptViewState>({ sessionId: null, sequence: 0, text: '' });
   // 事件监听只挂一次，conversational 经 ref 供 assist reducer 读取（sticky 推荐行）。
   const conversationalRef = useRef(false);
   const timersRef = useRef<number[]>([]);
+  // 监听闭包读的镜像状态：轻提示/阶段行/失败态/最近相位与阶段事件覆盖值。
+  const noticeRef = useRef<FallbackNotice | null>(null);
+  const stageLineRef = useRef<string | null>(null);
+  const stageOverrideRef = useRef<GhostwriterStageOverride | null>(null);
+  const tailErrorRef = useRef<GhostwriterTailError | null>(null);
+  const lastPhaseRef = useRef<string | null>(null);
+  // 超时护栏走独立 ref：轻提示会清 timersRef，不能牵连护栏计时。
+  const processingSinceRef = useRef<number | null>(null);
+  const timeoutTimerRef = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 内容容器（兜底提示＋卡片）：窗口贴合的测量目标（2026-09-18 裁决）。
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -183,8 +217,63 @@ export function GhostwriterPanel() {
 
   const showNotice = (text: string) => {
     clearTimers();
+    noticeRef.current = { text };
     setNotice({ text });
-    later(() => setNotice(null), FALLBACK_TOAST_MS);
+    later(() => {
+      noticeRef.current = null;
+      setNotice(null);
+    }, FALLBACK_TOAST_MS);
+  };
+
+  const applyStageLine = (key: string | null) => {
+    stageLineRef.current = key;
+    setStageLine(key);
+  };
+
+  const disarmProcessingTimeout = () => {
+    processingSinceRef.current = null;
+    if (timeoutTimerRef.current !== null) {
+      clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
+    }
+  };
+
+  // 超时护栏：进入收尾阶段武装一次；卡死超 60s 转失败态（标题＋提示），
+  // 等用户手动关——浮框不永久占屏。
+  const armProcessingTimeout = () => {
+    if (processingSinceRef.current !== null) return;
+    processingSinceRef.current = Date.now();
+    timeoutTimerRef.current = window.setTimeout(() => {
+      timeoutTimerRef.current = null;
+      const startedAt = processingSinceRef.current;
+      if (startedAt === null || !ghostwriterProcessingExpired(startedAt, Date.now())) return;
+      processingSinceRef.current = null;
+      stageOverrideRef.current = null;
+      applyStageLine(null);
+      tailErrorRef.current = {
+        title: tRef.current('ghostwriter.panel.failTimeout'),
+        detail: tRef.current('ghostwriter.panel.failHint'),
+      };
+      setTailError(tailErrorRef.current);
+    }, GHOSTWRITER_PROCESSING_TIMEOUT_MS);
+  };
+
+  const clearTailState = () => {
+    stageOverrideRef.current = null;
+    applyStageLine(null);
+    tailErrorRef.current = null;
+    setTailError(null);
+    disarmProcessingTimeout();
+  };
+
+  // 失败态的 ✕：清错误与提示后收框，浮框交还系统。
+  const dismissTailError = () => {
+    tailErrorRef.current = null;
+    setTailError(null);
+    noticeRef.current = null;
+    setNotice(null);
+    clearTimers();
+    void hideNow();
   };
 
   const hideNow = async () => {
@@ -267,16 +356,32 @@ export function GhostwriterPanel() {
           setPreview(state => ghostwriterPreviewReducer(state, e.kind));
         } else if (e.kind.type === 'ghostwriter_assist_changed') {
           setAssist(state => ghostwriterAssistReducer(state, e.kind, conversationalRef.current));
+        } else if (e.kind.type === 'ghostwriter_stage_changed') {
+          const payload = e.kind.payload as { stage?: unknown } | undefined;
+          const override = ghostwriterStageOverrideFromEvent(payload?.stage);
+          if (override) {
+            stageOverrideRef.current = override;
+            applyStageLine(
+              ghostwriterStageKey(lastPhaseRef.current, override, conversationalRef.current),
+            );
+          }
         } else if (e.kind.type === 'ghostwriter_notice') {
           const payload = e.kind.payload as { message?: string; level?: string } | undefined;
           if (payload?.level === 'error' && typeof payload.message === 'string' && payload.message) {
-            showNotice(payload.message);
+            if (tailErrorRef.current) {
+              // 失败态在浮框里等手动关：通知补上可读原因，升级错误详情。
+              tailErrorRef.current = { ...tailErrorRef.current, detail: payload.message };
+              setTailError(tailErrorRef.current);
+            } else {
+              showNotice(payload.message);
+            }
           }
         } else if (e.kind.type === 'dictation_state_changed') {
           const payload = e.kind.payload as
-            | { phase?: string; level?: number; conversational?: boolean }
+            | { phase?: string; level?: number; conversational?: boolean; message?: string | null }
             | undefined;
           const phase = payload?.phase;
+          lastPhaseRef.current = phase ?? null;
           const sessionConversational = payload?.conversational === true;
           conversationalRef.current = sessionConversational;
           setConversational(sessionConversational);
@@ -284,6 +389,11 @@ export function GhostwriterPanel() {
             setRecording(false);
             setPreview(emptyGhostwriterPreviewState());
             setAssist(emptyGhostwriterAssistState());
+            // 新会话即清收尾残留（阶段行/失败态/护栏/提示计时）。
+            clearTimers();
+            noticeRef.current = null;
+            setNotice(null);
+            clearTailState();
           } else if (phase === 'recording') {
             setRecording(true);
             const raw = payload?.level;
@@ -298,26 +408,55 @@ export function GhostwriterPanel() {
               }
               clearTimers();
               setNotice(null);
+              noticeRef.current = null;
               setPanelVisible(true);
               void showPanel();
             })();
           }
+          if (phase === 'transcribing' || phase === 'polishing' || phase === 'inserting') {
+            // 收尾阶段：浮框保留，武装护栏并显示阶段行。
+            armProcessingTimeout();
+            applyStageLine(
+              ghostwriterStageKey(phase, stageOverrideRef.current, conversationalRef.current),
+            );
+          }
+          if (phase === 'failed') {
+            clearTailState();
+            tailErrorRef.current = {
+              title: tRef.current('ghostwriter.panel.failTitle'),
+              detail: payload?.message || tRef.current('ghostwriter.panel.failHint'),
+            };
+            setTailError(tailErrorRef.current);
+          }
           const action = ghostwriterPanelActionFor(phase);
           if (visibleRef.current && action === 'hide') {
-            setRecording(false);
-            clearTimers();
-            setNotice(null);
-            void hideNow();
+            if (phase === 'completed' && noticeRef.current) {
+              // 兜底/粘贴确认提示已由 dictation_completed 摆好：收框交给提示计时。
+            } else {
+              setRecording(false);
+              clearTimers();
+              setNotice(null);
+              noticeRef.current = null;
+              clearTailState();
+              void hideNow();
+            }
           }
         } else if (e.kind.type === 'dictation_completed') {
           const payload = e.kind.payload as { inserted?: string; polishedText?: string } | undefined;
+          disarmProcessingTimeout();
+          stageOverrideRef.current = null;
+          applyStageLine(null);
           const action = ghostwriterPanelActionFor('completed', payload?.inserted);
           if (action === 'show-fallback-toast') {
             setRecording(false);
             const notice = completionNotice(payload?.inserted, (payload?.polishedText ?? '').length);
             showNotice(tRef.current(notice.key, { count: notice.count ?? 0 }));
-            // 停止阶段窗口可能已被 hideNow 真隐藏；兜底提示是修订版决策 1 里唯一
-            // 保留的展示通道，必须先把窗口重新唤起，否则用户对丢字毫无感知。
+            // 浮框内提示展示 2.5 秒后收框：兜底也是完成，消失＝可以继续下一动作。
+            later(() => {
+              void hideNow();
+            }, FALLBACK_TOAST_MS);
+            // 旧收放规则下停止阶段窗口可能已被真隐藏（兜底提示是修订版决策 1 里
+            // 唯一保留的展示通道）；防御性唤起，避免用户对兜底结果毫无感知。
             void (async () => {
               try {
                 if (!shouldUseGhostwriterCapsule(await getSettings())) return;
@@ -330,6 +469,8 @@ export function GhostwriterPanel() {
             setRecording(false);
             clearTimers();
             setNotice(null);
+            noticeRef.current = null;
+            clearTailState();
             void hideNow();
           }
         }
@@ -427,24 +568,6 @@ export function GhostwriterPanel() {
           flexShrink: 0,
         }}
       >
-        {notice ? (
-          <div
-            style={{
-              marginBottom: 10,
-              padding: '8px 16px',
-              borderRadius: 999,
-              background: 'rgba(24, 26, 32, 0.92)',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
-              color: '#f4f4f5',
-              fontSize: 13,
-              fontWeight: 500,
-              letterSpacing: '0.01em',
-            }}
-          >
-            {notice.text}
-          </div>
-        ) : null}
         {visible ? (
           <div
             style={{
@@ -534,6 +657,84 @@ export function GhostwriterPanel() {
                 })}
               </div>
             </div>
+            {tailError || notice || stageLine ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  padding: '2px 16px 8px',
+                }}
+              >
+                {tailError ? (
+                  <>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: '#f87171',
+                        lineHeight: '22px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {tailError.title}
+                    </span>
+                    {tailError.detail ? (
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          lineHeight: 1.6,
+                          color: 'rgba(248, 113, 113, 0.8)',
+                          flex: 1,
+                          minWidth: 0,
+                          whiteSpace: 'normal',
+                          wordBreak: 'break-word',
+                          paddingTop: 1,
+                        }}
+                      >
+                        {tailError.detail}
+                      </span>
+                    ) : (
+                      <div style={{ flex: 1 }} />
+                    )}
+                    <button
+                      type="button"
+                      aria-label={t('ghostwriter.panel.dismiss')}
+                      title={t('ghostwriter.panel.dismiss')}
+                      onClick={dismissTailError}
+                      className="ghostwriter-cancel-btn"
+                      style={ICON_BUTTON_STYLE}
+                    >
+                      ✕
+                    </button>
+                  </>
+                ) : notice ? (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: '#e4e4e7',
+                      letterSpacing: '0.01em',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {notice.text}
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: '#a1a1aa',
+                      letterSpacing: '0.04em',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {stageLine ? t(stageLine) : null}
+                  </span>
+                )}
+              </div>
+            ) : null}
             {preview.hits.length > 0 || undoable ? (
               <div style={ASSIST_ROW_STYLE}>
                 {preview.hits.map(hit => (

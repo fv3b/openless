@@ -5358,6 +5358,8 @@ impl OpenLessBackend {
         };
         // 对话会话：尾巴先进聊天记录，终稿出稿吃整份聊天记录（命中材料由
         // 出稿调用并入）；尾段补润跳过（其结果只进拼装缓冲，出稿成功即覆盖）。
+        // 阶段事件（2026-09-18 批次 B）：出稿/补润是 stop 后最长的 LLM 等待，
+        // 浮框不收起、凭 GhostwriterStageChanged 显示阶段行（正在出稿/正在润色）。
         let conversation_finalized =
             if ghostwriter_conversational && ghostwriter_dispatcher.is_some() {
                 let dispatcher = ghostwriter_dispatcher.clone().unwrap();
@@ -5367,6 +5369,14 @@ impl OpenLessBackend {
                         session.record_tail_into_chat();
                     }
                 }
+                self.events.publish(
+                    Some(session_id),
+                    BackendEventKind::GhostwriterStageChanged(
+                        crate::ghostwriter::types::GhostwriterStageChanged {
+                            stage: "finalizing".into(),
+                        },
+                    ),
+                );
                 dispatcher.finalize_conversation(session_id).await
             } else {
                 // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
@@ -5380,6 +5390,14 @@ impl OpenLessBackend {
                 if let (Some(dispatcher), Some(segment)) = (ghostwriter_dispatcher.clone(), tail_input)
                 {
                     let request = dispatcher.segment_request(&session_id, &segment);
+                    self.events.publish(
+                        Some(session_id),
+                        BackendEventKind::GhostwriterStageChanged(
+                            crate::ghostwriter::types::GhostwriterStageChanged {
+                                stage: "polishing".into(),
+                            },
+                        ),
+                    );
                     dispatcher.dispatch_tail(session_id, request).await;
                 }
                 None
@@ -6432,10 +6450,23 @@ impl OpenLessBackend {
         state.dictation.phase = DictationPhase::Failed;
         state.dictation.message = Some(format!("{:?}", error.code));
         let snapshot = state.dictation.clone();
+        // 浮框不再随停止收起（2026-09-18 批次 B）：失败态留在浮框里等用户
+        // 手动关，须带可读原因（GhostwriterNotice 模式）——仅 ghostwriter
+        // 会话发布，普通听写无此面板。
+        let ghostwriter_active = state.ghostwriter_sessions.contains_key(&session_id);
         self.events.publish(
             Some(session_id),
             BackendEventKind::DictationStateChanged(snapshot),
         );
+        if ghostwriter_active {
+            self.events.publish(
+                Some(session_id),
+                BackendEventKind::GhostwriterNotice(crate::ghostwriter::types::GhostwriterNotice {
+                    message: format!("落字失败：{}", error.message),
+                    level: "error".into(),
+                }),
+            );
+        }
         self.phase_changed.notify_waiters();
     }
 }
@@ -10774,6 +10805,200 @@ mod tests {
         let state = backend.state.read().expect("backend state lock poisoned");
         assert!(state.ghostwriter_sessions.is_empty());
         drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 收尾阶段信号（2026-09-18 批次 B）：stop 后尾段补润前发布
+    /// GhostwriterStageChanged("polishing")，且先于 Inserting 状态到达——
+    /// 浮框不随停止收起、凭它显示「正在润色」阶段行。
+    #[tokio::test]
+    async fn ghostwriter_stop_publishes_polishing_stage_before_inserting() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-stage-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。", "第一句。第二句来了"],
+            "第一句。第二句来了",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        let _ = wait_for_ghostwriter_preview(&mut events, "润后文本").await;
+        backend.stop_dictation_session(session_id).await.unwrap();
+
+        let mut stage_seen = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("stop events did not arrive in time")
+                .expect("event stream closed");
+            match event.kind {
+                BackendEventKind::GhostwriterStageChanged(payload) => {
+                    assert_eq!(payload.stage, "polishing");
+                    stage_seen = true;
+                }
+                BackendEventKind::DictationStateChanged(snapshot)
+                    if snapshot.phase == DictationPhase::Inserting =>
+                {
+                    assert!(stage_seen, "补润阶段事件应先于 Inserting 到达");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 对话会话收尾阶段信号：stop 后终稿出稿前发布
+    /// GhostwriterStageChanged("finalizing")，先于 Inserting——浮框显示「正在出稿」。
+    #[tokio::test]
+    async fn ghostwriter_conversation_stop_publishes_finalizing_stage() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-stage-final-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("出稿终稿"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["把日志清一下。"],
+            "把日志清一下。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        let mut events = backend.subscribe();
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        // 终稿出稿成功：最终文本来自对话出稿任务书的润写输出。
+        assert_eq!(result.polished_text, "出稿终稿");
+
+        let mut stage_seen = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("stop events did not arrive in time")
+                .expect("event stream closed");
+            match event.kind {
+                BackendEventKind::GhostwriterStageChanged(payload) => {
+                    assert_eq!(payload.stage, "finalizing");
+                    stage_seen = true;
+                }
+                BackendEventKind::DictationStateChanged(snapshot)
+                    if snapshot.phase == DictationPhase::Inserting =>
+                {
+                    assert!(stage_seen, "出稿阶段事件应先于 Inserting 到达");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 收尾失败要带可读原因（2026-09-18 批次 B）：ghostwriter 会话失败时
+    /// mark_dictation_failed 补发 GhostwriterNotice（error），浮框保留失败态
+    /// 显示原因、等用户手动关；普通会话不发布该通知。
+    #[tokio::test]
+    async fn ghostwriter_failure_publishes_readable_notice() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-fail-notice-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。"],
+            "第一句。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        );
+        let backend = OpenLessBackend::new(
+            BackendConfig {
+                data_dir: data_dir.clone(),
+                ..BackendConfig::default()
+            },
+            BackendDependencies {
+                host_actions: Arc::new(FakeHost::default()),
+                text_inserter: Arc::new(crate::testing::FixtureTextInserter::failing(
+                    BackendError::new(BackendErrorCode::Internal, "insertion down"),
+                )),
+                dictation_engine: Arc::new(engine),
+                task_spawner: Arc::new(TokioTaskSpawner),
+                credential_store: Arc::new(crate::credentials::InMemoryCredentialStore::default()),
+                services: crate::domains::BackendServices::unsupported(),
+                local_asr_runtime: None,
+                marketplace_config: None,
+                selection_runtime: Some(Arc::new(
+                    crate::testing::FixtureSelectionRuntime::successful(
+                        crate::domains::SelectionCapture {
+                            text: String::new(),
+                            source_app: None,
+                        },
+                        InsertOutcome::Inserted,
+                    ),
+                )),
+                selection_polisher: Some(Arc::new(
+                    crate::testing::FixtureTextPolisher::successful("polished"),
+                )),
+                qa_runtime: None,
+            },
+        )
+        .unwrap();
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        let stop = backend.stop_dictation_session(session_id).await;
+        assert!(stop.is_err(), "写入夹具失败时 stop 应返回错误");
+
+        let mut failed_seen = false;
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .expect("failure events did not arrive in time")
+                .expect("event stream closed");
+            match event.kind {
+                BackendEventKind::DictationStateChanged(snapshot)
+                    if snapshot.phase == DictationPhase::Failed =>
+                {
+                    failed_seen = true;
+                }
+                BackendEventKind::GhostwriterNotice(notice) => {
+                    assert_eq!(notice.level, "error");
+                    assert!(notice.message.contains("落字失败"), "通知应带可读前缀，实际 {}", notice.message);
+                    assert!(notice.message.contains("insertion down"), "通知应带具体原因，实际 {}", notice.message);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(failed_seen, "失败态事件应先于/同批到达");
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
