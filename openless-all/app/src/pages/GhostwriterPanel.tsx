@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '../lib/ipc';
-import type { Window as TauriWindow } from '@tauri-apps/api/window';
 import {
   applyTranscriptEvent,
   type BackendEvent,
@@ -55,8 +54,6 @@ const ASSIST_COLLAPSE_MS = 220;
 const FALLBACK_TOAST_MS = 2500;
 // 窗口底沿与屏幕底沿的间距（逻辑 px）：贴合命令底边锚定，show 同样按底边摆放。
 const SCREEN_BOTTOM_MARGIN = 20;
-// 悬停穿透判定轮询间隔：50ms 内完成穿透/接收切换，点击节奏下无感。
-const CARD_HOVER_POLL_MS = 50;
 const LEVEL_BARS = [0.45, 0.7, 1, 0.7, 0.45];
 
 const CANDIDATE_KIND_LABEL_KEYS: Record<GhostwriterCandidateKind, string> = {
@@ -166,8 +163,6 @@ export function GhostwriterPanel() {
   const conversationalRef = useRef(false);
   const timersRef = useRef<number[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  // 卡片根元素：悬停穿透的命中判定区域。
-  const cardRef = useRef<HTMLDivElement | null>(null);
   // 内容容器（兜底提示＋卡片）：窗口贴合的测量目标（2026-09-18 裁决）。
   const contentRef = useRef<HTMLDivElement | null>(null);
 
@@ -356,75 +351,6 @@ export function GhostwriterPanel() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [text, replyLines]);
 
-  // 悬停穿透：窗口 560×420 固定矩形里卡片外的透明区放行点击，指针移到
-  // 卡片上恢复接收。v2 JS API 的 setIgnoreCursorEvents 不带 forward（置
-  // ignore 后 webview 收不到 mousemove），改用全局光标位置轮询双向判定：
-  // 指针在卡片 rect 内 → 接收，否则 → 穿透；失败一律回到不穿透（宁可
-  // 透明区吃点击，不可卡片点不到）。会话隐藏/显示（visible 切换）时重置
-  // 为不穿透。
-  useEffect(() => {
-    if (!isTauri || !visible) return;
-    let disposed = false;
-    let timer: number | undefined;
-    // null＝OS 侧状态未知（上次会话可能残留穿透态）：首次调用必须真实下发。
-    let ignoring: boolean | null = null;
-    let win: TauriWindow | null = null;
-    const setIgnore = async (next: boolean) => {
-      if (!win || ignoring === next) return;
-      ignoring = next;
-      try {
-        await win.setIgnoreCursorEvents(next);
-      } catch (error) {
-        // 调用失败回滚标记，下一轮轮询重试。
-        ignoring = !next;
-        console.warn('[ghostwriter] setIgnoreCursorEvents failed', error);
-      }
-    };
-    void (async () => {
-      let mod: typeof import('@tauri-apps/api/window');
-      try {
-        mod = await import('@tauri-apps/api/window');
-        win = mod.getCurrentWindow();
-      } catch (error) {
-        console.warn('[ghostwriter] hover-passthrough setup failed', error);
-        return;
-      }
-      await setIgnore(false);
-      timer = window.setInterval(() => {
-        void (async () => {
-          if (disposed) return;
-          try {
-            const [cursor, outer, scale] = await Promise.all([
-              mod.cursorPosition(),
-              win!.outerPosition(),
-              win!.scaleFactor(),
-            ]);
-            const el = cardRef.current;
-            if (!el) return;
-            const rect = el.getBoundingClientRect();
-            // 光标全局物理坐标 → 窗口本地逻辑（CSS）坐标，与 DOM rect 同系。
-            const localX = (cursor.x - outer.x) / scale;
-            const localY = (cursor.y - outer.y) / scale;
-            const inside =
-              localX >= rect.left &&
-              localX <= rect.right &&
-              localY >= rect.top &&
-              localY <= rect.bottom;
-            void setIgnore(!inside);
-          } catch {
-            // 光标/几何信息取不到（平台差异等）：按不穿透处理。
-            void setIgnore(false);
-          }
-        })();
-      }, CARD_HOVER_POLL_MS);
-    })();
-    return () => {
-      disposed = true;
-      if (timer !== undefined) window.clearInterval(timer);
-      void setIgnore(false);
-    };
-  }, [visible]);
-
   // 窗口贴合卡片（2026-09-18 裁决，替代轮询穿透）：ResizeObserver 监听内容
   // 容器（兜底提示＋卡片），尺寸变化 ≥4px 才下发 ghostwriter_fit_window——
   // Rust 侧同一次主线程 pass 原子改尺寸＋底边锚定＋水平居中；窗口贴合卡片后，
@@ -520,7 +446,6 @@ export function GhostwriterPanel() {
         ) : null}
         {visible ? (
           <div
-            ref={cardRef}
             style={{
               width: CARD_WIDTH,
               maxHeight: CARD_MAX_HEIGHT,
