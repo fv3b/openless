@@ -344,6 +344,44 @@ pub enum ConversationProbeDepth {
     Echo,
 }
 
+/// 对话热键的路由结果（2026-09-18 批次 A4「没话就结束」三态判定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationHotkeyRoute {
+    /// 无活跃对话会话 → 开对话会话。
+    Start,
+    /// 活跃＋显式交话时机＋用户说过新话 → 触发一次回话。
+    TriggerReply,
+    /// 活跃但没话可交：显式交话时机下用户没说新话、或停顿即审（防误触，
+    /// 直接收尾）→ 结束会话（走与主停止相同的收尾路径）。
+    Stop,
+}
+
+/// 对话热键三态路由判定（机器契约，纯函数：Core 单测覆盖，壳层执行）：
+/// - 总开关关闭 → 无操作（None）；
+/// - 无活跃对话会话 → start；
+/// - 活跃＋显式交话时机：自上一条回话后用户说过新话 → trigger_reply，
+///   无新话 → 结束会话；
+/// - 活跃＋停顿即审 → 直接结束会话。
+pub fn route_conversation_hotkey(
+    conversation_enabled: bool,
+    has_active_conversation: bool,
+    reply_timing: ConversationReplyTiming,
+    has_pending_speech: bool,
+) -> Option<ConversationHotkeyRoute> {
+    if !conversation_enabled {
+        return None;
+    }
+    if !has_active_conversation {
+        return Some(ConversationHotkeyRoute::Start);
+    }
+    match reply_timing {
+        ConversationReplyTiming::Explicit if has_pending_speech => {
+            Some(ConversationHotkeyRoute::TriggerReply)
+        }
+        _ => Some(ConversationHotkeyRoute::Stop),
+    }
+}
+
 /// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数＋
 /// 背景落点。润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象
 /// 或对象内缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
@@ -3555,6 +3593,59 @@ mod tests {
         assert_eq!(p.candidate_throttle_ms, 2000);
         // 背景落点默认文末
         assert_eq!(p.background_placement, SnippetPlacement::Tail);
+    }
+
+    #[test]
+    fn conversation_hotkey_routes_start_when_no_active_session() {
+        // 组合一：无活跃对话会话 → start（总开关开着）。
+        assert_eq!(
+            route_conversation_hotkey(true, false, ConversationReplyTiming::Explicit, false),
+            Some(ConversationHotkeyRoute::Start)
+        );
+        assert_eq!(
+            route_conversation_hotkey(true, false, ConversationReplyTiming::Pause, false),
+            Some(ConversationHotkeyRoute::Start)
+        );
+    }
+
+    #[test]
+    fn conversation_hotkey_routes_trigger_reply_on_new_speech_with_explicit_timing() {
+        // 组合二：活跃＋显式交话＋自上一条回话后说过新话 → trigger_reply。
+        assert_eq!(
+            route_conversation_hotkey(true, true, ConversationReplyTiming::Explicit, true),
+            Some(ConversationHotkeyRoute::TriggerReply)
+        );
+    }
+
+    #[test]
+    fn conversation_hotkey_routes_stop_when_no_new_speech_or_pause_timing() {
+        // 组合三：活跃但没话可交 → 结束会话。显式交话时机下用户没说新话、
+        // 停顿即审（防误触）都直接走与主停止相同的收尾路径。
+        assert_eq!(
+            route_conversation_hotkey(true, true, ConversationReplyTiming::Explicit, false),
+            Some(ConversationHotkeyRoute::Stop)
+        );
+        assert_eq!(
+            route_conversation_hotkey(true, true, ConversationReplyTiming::Pause, true),
+            Some(ConversationHotkeyRoute::Stop)
+        );
+        assert_eq!(
+            route_conversation_hotkey(true, true, ConversationReplyTiming::Pause, false),
+            Some(ConversationHotkeyRoute::Stop)
+        );
+    }
+
+    #[test]
+    fn conversation_hotkey_is_a_noop_when_conversation_mode_is_disabled() {
+        // 组合四：总开关关闭 → 无操作（None），其余条件无关。
+        assert_eq!(
+            route_conversation_hotkey(false, false, ConversationReplyTiming::Explicit, false),
+            None
+        );
+        assert_eq!(
+            route_conversation_hotkey(false, true, ConversationReplyTiming::Explicit, true),
+            None
+        );
     }
 
     #[test]

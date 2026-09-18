@@ -129,6 +129,9 @@ pub struct GhostwriterSession {
     /// 纠正后的（dictation_engine 转写后润色前应用规则），此前各阶段缓冲
     /// 是原始转写。消费点据此保证同一份原话只过一次规则（规则不保证幂等）。
     final_delta_corrected: bool,
+    /// 自上一条回话后用户说过新话（2026-09-18 批次 A4「没话就结束」的判定
+    /// 依据）：喂入增量导致缓冲变化即置位，记回话即复位。仅对话会话维护。
+    pending_speech: bool,
     /// 会话启动时冻结的最近语音背景（LLM 消费点共用；None＝无历史）。
     recent_voice: Option<super::recent_voice::RecentVoiceBackground>,
 }
@@ -165,6 +168,7 @@ impl GhostwriterSession {
             auto_reply_count: 0,
             correction_rules: Vec::new(),
             final_delta_corrected: false,
+            pending_speech: false,
             recent_voice: None,
         }
     }
@@ -282,10 +286,18 @@ impl GhostwriterSession {
         self.chat
             .push(ChatTurn::assistant(text.replace(['\r', '\n'], " ")));
         self.reply_cooldown = true;
+        // 刚消化完一次回话：此后再有增量才算「新话」（热键交话/结束的判据）。
+        self.pending_speech = false;
         if auto {
             self.auto_reply_count += 1;
         }
         self.revision += 1;
+    }
+
+    /// 自上一条回话后用户是否说过新话（仅对话会话有意义）：feed 的缓冲增量
+    /// 置位、record_reply 复位。对话热键「没话就结束」的判定依据（批次 A4）。
+    pub fn has_pending_speech(&self) -> bool {
+        self.conversational && self.pending_speech
     }
 
     /// 聊天记录按行语法格式化（【我】/【助手】逐行，代码固定）；空记录返回
@@ -334,6 +346,11 @@ impl GhostwriterSession {
         }
         let old_buffer = self.buffer.clone();
         self.apply_delta(delta)?;
+        // 「自上一条回话后用户说过新话」的置位点：任何让缓冲变化的增量
+        // （含替换式重写）都算新话（仅对话会话维护）。
+        if self.conversational && self.buffer != old_buffer {
+            self.pending_speech = true;
+        }
         // 替换类增量的扫描领地：新缓冲是旧缓冲的前缀延伸（final 后缀追加
         // 的常见形态）→ 游标原地保留，只扫新增后缀——被撤销的命中不会因
         // 重扫旧文复活；新缓冲改写了旧文 → 游标归零全量重扫，重扫属旧文
@@ -1443,6 +1460,28 @@ mod tests {
             s.chat_transcript(),
             "【我】想把日志清一下。\n【助手】第一行 第二行"
         );
+    }
+
+    #[test]
+    fn pending_speech_tracks_unconsumed_user_speech_since_last_reply() {
+        // 批次 A4「没话就结束」的判定：feed 增量置位、record_reply 复位、
+        // 普通会话恒 false。
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        assert!(!s.has_pending_speech(), "刚开的会话没说过话");
+        s.feed(&delta("想把日志清一下。", 0, false), &[]).unwrap();
+        assert!(s.has_pending_speech(), "说过话＝有未消化新话");
+        s.record_reply("你说的是哪个日志？".into(), true);
+        assert!(!s.has_pending_speech(), "回话已消化，无新话");
+        // 回话后的新增量（含替换式重写）再次置位。
+        s.feed(&delta("就是系统日志。", 0, false), &[]).unwrap();
+        assert!(s.has_pending_speech());
+        s.record_reply("好的，这就整理。".into(), true);
+        assert!(!s.has_pending_speech());
+
+        // 普通会话：恒 false（判定只对对话会话有意义）。
+        let mut normal = GhostwriterSession::new();
+        normal.feed(&delta("第一句。", 0, false), &[]).unwrap();
+        assert!(!normal.has_pending_speech());
     }
 
     #[test]

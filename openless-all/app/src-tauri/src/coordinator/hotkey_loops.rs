@@ -1542,36 +1542,59 @@ pub(super) fn handle_action_hotkey_pressed(inner: &Arc<Inner>, kind: ActionHotke
     }
 }
 
-/// 对话热键分发（一键两用，防误触）：
+/// 对话热键分发（2026-09-18 批次 A4 三态路由「没话就结束」）：
 /// - 无活跃对话会话 → 开对话会话（后端按偏好冻结回话时机与追问深度）；
-/// - 有活跃对话会话且回话时机＝显式交话 → 触发一次回话（绕过冷却）；
-/// - 其余（停顿即审下的活跃对话会话、活跃普通会话、总开关关闭）→ 无操作。
-/// ghostwriter 未激活（非 Fluid 样式/翻译中）时 start 由后端静默降级为普通
-/// 听写，这里不额外处理。
+/// - 活跃＋显式交话时机＋用户说过新话 → 触发一次回话（绕过冷却）；
+/// - 活跃但没话可交（显式交话时机下无新话／停顿即审防误触）→ 结束会话，
+///   走与主停止相同的收尾路径（stop_dictation_session 该会话）。
+/// 总开关关闭 → 无操作。路由判定收敛在
+/// `openless_core::shared_types::route_conversation_hotkey`（Core 单测覆盖
+/// 四种组合：start/交话/结束/无操作），macOS modifier-tap 与跨平台组合键
+/// 两条入口共用本函数。ghostwriter 未激活（非 Fluid 样式/翻译中）时 start
+/// 由后端静默降级为普通听写，这里不额外处理。
 pub(super) fn handle_conversation_hotkey_pressed(inner: &Arc<Inner>) {
     let preferences = inner.backend.get_preferences();
-    if !preferences.ghostwriter.conversation_enabled {
-        log::info!("[coord] conversation hotkey ignored: conversation mode disabled");
-        return;
+    let session_id = inner.backend.active_ghostwriter_conversation_session();
+    let has_pending_speech = session_id
+        .map(|session_id| {
+            inner
+                .backend
+                .ghostwriter_conversation_has_pending_speech(session_id)
+        })
+        .unwrap_or(false);
+    match openless_core::shared_types::route_conversation_hotkey(
+        preferences.ghostwriter.conversation_enabled,
+        session_id.is_some(),
+        preferences.ghostwriter.conversation_reply_timing,
+        has_pending_speech,
+    ) {
+        Some(openless_core::shared_types::ConversationHotkeyRoute::Start) => {
+            let backend = Arc::clone(&inner.backend);
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = backend.start_ghostwriter_conversation().await {
+                    log::warn!("[coord] conversation start failed: {error}");
+                }
+            });
+        }
+        Some(openless_core::shared_types::ConversationHotkeyRoute::TriggerReply) => {
+            let session_id = session_id.expect("route guarantees an active conversation session");
+            if let Err(error) = inner.backend.trigger_ghostwriter_reply(session_id) {
+                log::warn!("[coord] conversation trigger reply failed: {error}");
+            }
+        }
+        Some(openless_core::shared_types::ConversationHotkeyRoute::Stop) => {
+            let session_id = session_id.expect("route guarantees an active conversation session");
+            let backend = Arc::clone(&inner.backend);
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = backend.stop_dictation_session(session_id).await {
+                    log::warn!("[coord] conversation stop failed: {error}");
+                }
+            });
+        }
+        None => {
+            log::info!("[coord] conversation hotkey ignored: conversation mode disabled");
+        }
     }
-    if let Some(session_id) = inner.backend.active_ghostwriter_conversation_session() {
-        if preferences.ghostwriter.conversation_reply_timing
-            != openless_core::shared_types::ConversationReplyTiming::Explicit
-        {
-            log::info!("[coord] conversation hotkey ignored: pause timing, no-op");
-            return;
-        }
-        if let Err(error) = inner.backend.trigger_ghostwriter_reply(session_id) {
-            log::warn!("[coord] conversation trigger reply failed: {error}");
-        }
-        return;
-    }
-    let backend = Arc::clone(&inner.backend);
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = backend.start_ghostwriter_conversation().await {
-            log::warn!("[coord] conversation start failed: {error}");
-        }
-    });
 }
 
 /// 全局快捷键切风格后的轻量提示：用户多半在别的前台 app 里按键，不弹提示
@@ -2106,8 +2129,9 @@ pub(super) fn hotkey_bridge_loop(inner: Arc<Inner>, rx: mpsc::Receiver<HotkeyEve
                 handle_selection_workspace_hotkey_released(&inner_cloned);
             }
             // 对话热键 modifier-only 槽位（macOS 主 tap 短按判定产出）。与组合键
-            // 路径共用 handle_conversation_hotkey_pressed 的路由语义：
-            // 无活跃对话会话→start；explicit 时机活跃→trigger；其余无操作。
+            // 路径共用 handle_conversation_hotkey_pressed 的三态路由（批次 A4）：
+            // 无活跃对话会话→start；显式交话时机有新话→trigger；没话可交或
+            // 停顿即审→结束会话；总开关关闭→无操作。
             HotkeyEvent::ConversationShortcutPressed => {
                 handle_conversation_hotkey_pressed(&inner_cloned);
             }

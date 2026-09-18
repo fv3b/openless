@@ -994,12 +994,6 @@ fn hotword_words(entries: &[DictionaryHotword]) -> Option<Vec<Value>> {
     Some(seen.into_iter().map(|w| json!({ "word": w })).collect())
 }
 
-/// 既有热词 context JSON（`{"hotwords":[…]}`），保留给单测与可读性。
-fn hotword_context(entries: &[DictionaryHotword]) -> Option<String> {
-    let payload = json!({ "hotwords": hotword_words(entries)? });
-    serde_json::to_string(&payload).ok()
-}
-
 /// dialog_ctx 语境提示条目（调用方按 新→旧 传入）：官方限 800 tokens / 20 轮、
 /// 从新到旧截断（docs/6561/1354869）。中文按 1 字符 ≈ 1 token 保守估算，
 /// 总字符数超 [`DIALOG_CTX_CHAR_CAP`] 丢弃更旧的条目（保住最近的话）。
@@ -1081,12 +1075,16 @@ mod tests {
                 enabled: true,
             });
         }
-        let ctx = hotword_context(&entries).expect("should produce JSON");
-        assert!(ctx.contains("\"hotwords\""));
-        assert!(ctx.contains("Foo"));
-        assert!(ctx.contains("Baz"));
-        assert!(!ctx.contains("Bar"));
-        let count = ctx.matches("\"word\"").count();
+        let payload = context_payload(&entries, &Vec::new()).expect("should produce JSON");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert!(parsed.get("hotwords").is_some());
+        assert_eq!(parsed["hotwords"][0]["word"], "Foo");
+        assert_eq!(parsed["hotwords"][1]["word"], "Baz");
+        assert!(
+            !payload.contains("Bar"),
+            "停用热词不应入列: {payload}"
+        );
+        let count = payload.matches("\"word\"").count();
         assert!(count <= HOTWORD_CAP);
     }
 
@@ -1096,7 +1094,7 @@ mod tests {
             phrase: "Foo".into(),
             enabled: false,
         }];
-        assert!(hotword_context(&entries).is_none());
+        assert!(context_payload(&entries, &Vec::new()).is_none());
     }
 
     #[test]

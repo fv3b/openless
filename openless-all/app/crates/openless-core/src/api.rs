@@ -6075,6 +6075,17 @@ impl OpenLessBackend {
             .map(|_| session_id)
     }
 
+    /// 对话热键分发用（2026-09-18 批次 A4「没话就结束」）：活跃对话会话是否
+    /// 有未消化新话（自上一条回话后用户说过新话）。无该会话/非对话会话一律
+    /// false（路由判定据此走结束或无操作分支）。
+    pub fn ghostwriter_conversation_has_pending_speech(&self, session_id: SessionId) -> bool {
+        let state = self.state.read().expect("backend state lock poisoned");
+        state
+            .ghostwriter_sessions
+            .get(&session_id)
+            .is_some_and(|session| session.has_pending_speech())
+    }
+
 
 
     /// 按需批量提取候选常用语（常用语管理页触发）：校验 id 都在历史里、
@@ -11519,6 +11530,51 @@ mod tests {
         );
         backend.stop_dictation_session(normal).await.unwrap();
 
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 对话热键「没话就结束」的 api 查询（批次 A4）：活跃对话会话自上一条
+    /// 回话后说过新话 → true；回话消化后 → false；未知会话 → false。
+    #[tokio::test]
+    async fn conversation_pending_speech_query_tracks_unconsumed_user_speech() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-conversation-pending-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful("润后文本"));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["第一句。"],
+            "第一句。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher);
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        assert!(
+            backend.ghostwriter_conversation_has_pending_speech(session_id),
+            "开场说过话＝有未消化新话"
+        );
+        {
+            let mut state = backend.state.write().expect("backend state lock poisoned");
+            let session = state.ghostwriter_sessions.get_mut(&session_id).unwrap();
+            session.record_reply("你说的是哪个日志？".into(), true);
+        }
+        assert!(
+            !backend.ghostwriter_conversation_has_pending_speech(session_id),
+            "回话已消化，无新话"
+        );
+        // 未知会话一律 false（路由判定据此走结束或无操作分支）。
+        assert!(!backend.ghostwriter_conversation_has_pending_speech(SessionId::new()));
+
+        backend.stop_dictation_session(session_id).await.unwrap();
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
