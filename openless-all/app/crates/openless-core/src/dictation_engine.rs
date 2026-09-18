@@ -26,11 +26,20 @@ pub enum PolishFailurePolicy {
     UseRawText,
 }
 
+/// 结束补录宽限（2026-09-18 批次 A3）：用户说完立刻按结束会漏尾字——「停止
+/// 录音」刚返回时，最后几个音节的音频可能还在采集/网络管线上，ASR 需要一点
+/// 时间消化尾音才能把 final 文本收全。固定在「停止录音」之后、「收 final
+/// 文本」之前等待 300ms（终稿润色之前，不添润色后延迟）；等待期间取消仍
+/// 即时生效。
+const FINALIZE_TAIL_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
 pub struct PipelineDictationEngine {
     recorder: Arc<dyn AudioRecorder>,
     transcription: Arc<dyn TranscriptionEngine>,
     polisher: Arc<dyn TextPolisher>,
     polish_failure_policy: PolishFailurePolicy,
+    /// 停止录音后、收 final 文本前的尾音宽限（生产 300ms；测试可注入为 0）。
+    finalize_grace: std::time::Duration,
     sessions: Arc<Mutex<HashMap<SessionId, Arc<PipelineSession>>>>,
 }
 
@@ -97,12 +106,19 @@ impl PipelineDictationEngine {
             transcription,
             polisher,
             polish_failure_policy: PolishFailurePolicy::UseRawText,
+            finalize_grace: FINALIZE_TAIL_GRACE,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn with_polish_failure_policy(mut self, policy: PolishFailurePolicy) -> Self {
         self.polish_failure_policy = policy;
+        self
+    }
+
+    /// 注入尾音宽限时长（测试用；生产保持 [`FINALIZE_TAIL_GRACE`] 默认值）。
+    pub fn with_finalize_grace(mut self, grace: std::time::Duration) -> Self {
+        self.finalize_grace = grace;
         self
     }
 }
@@ -312,6 +328,7 @@ impl DictationEngine for PipelineDictationEngine {
         let transcription_engine = Arc::clone(&self.transcription);
         let polisher = Arc::clone(&self.polisher);
         let policy = self.polish_failure_policy;
+        let finalize_grace = self.finalize_grace;
         Box::pin(async move {
             let session = find_session(&sessions, session_id)?;
             if session.finishing.swap(true, Ordering::AcqRel) {
@@ -371,6 +388,13 @@ impl DictationEngine for PipelineDictationEngine {
                 &progress,
                 EngineProgress::Stage(EngineStage::Transcribing),
             )?;
+            // 尾音宽限（批次 A3）：停止录音后给 ASR 收尾音的时间，再收 final
+            // 文本（终稿润色之前）。取消即刻中断等待并走取消收尾。
+            if let Err(error) = wait_finalize_tail_grace(&session, finalize_grace).await {
+                let _ = cancel_transcription_once(&session, transcription).await;
+                remove_session(&sessions, session_id, &session);
+                return Err(EngineFailure::new(error, EngineFailureStage::Transcribing));
+            }
             let asr_started = std::time::Instant::now();
             let mut asr_call_label = transcription.asr_call_label();
             let transcription_result = transcription.finish().await;
@@ -823,6 +847,30 @@ async fn cancellable_backoff(
     }
 }
 
+/// 尾音宽限等待（批次 A3）：轮询取消标志的睡眠，取消即刻中断等待返回取消
+/// 错误（调用方走取消收尾），其余睡满宽限后放行。grace 为 0 时不等待。
+async fn wait_finalize_tail_grace(
+    session: &PipelineSession,
+    grace: std::time::Duration,
+) -> Result<(), BackendError> {
+    if grace.is_zero() {
+        return Ok(());
+    }
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        if session.cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error(
+                "dictation was cancelled during the finalize tail grace",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
+    }
+}
+
 async fn cancel_transcription_once(
     session: &Arc<PipelineSession>,
     transcription: Arc<dyn TranscriptionSession>,
@@ -1246,7 +1294,9 @@ mod tests {
                 cancels: Arc::new(AtomicUsize::new(0)),
                 contexts: Arc::clone(&polish_contexts),
             }),
-        );
+        )
+        // 测试套件不测 300ms 真实等待（有专门时序测试）：置零保持套件快速。
+        .with_finalize_grace(std::time::Duration::ZERO);
         FixtureParts {
             engine,
             progress: Arc::new(RecordingProgress::default()),
@@ -1304,6 +1354,122 @@ mod tests {
             offset: 0,
             is_final: true,
         })));
+    }
+
+    #[tokio::test]
+    async fn finish_waits_the_finalize_tail_grace_before_collecting_final_text() {
+        // 批次 A3：停止录音之后、收 final 文本之前等待尾音宽限——finish 总
+        // 耗时 ≥ 注入宽限（200ms），且 final 文本照常收全。
+        let pcm = Arc::new(Mutex::new(Vec::new()));
+        let recorder_stops = Arc::new(AtomicUsize::new(0));
+        let archive_discards = Arc::new(AtomicUsize::new(0));
+        let archive = Arc::new(FixtureArchive {
+            available: AtomicBool::new(true),
+            discards: Arc::clone(&archive_discards),
+            pcm: vec![1, 0, 2, 0],
+        });
+        let engine = PipelineDictationEngine::new(
+            Arc::new(FixtureRecorder {
+                stops: Arc::clone(&recorder_stops),
+                archive,
+                fail: false,
+            }),
+            Arc::new(FixtureTranscriber {
+                session: Arc::new(FixtureTranscriptionSession {
+                    pcm: Arc::clone(&pcm),
+                    cancels: Arc::new(AtomicUsize::new(0)),
+                    finish_entered: None,
+                    finish_release: None,
+                }),
+            }),
+            Arc::new(FixturePolisher {
+                result: Ok(crate::ports::PolishOutput::text("polished text")),
+                calls: Arc::new(AtomicUsize::new(0)),
+                cancels: Arc::new(AtomicUsize::new(0)),
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            }),
+        )
+        .with_finalize_grace(std::time::Duration::from_millis(200));
+        let session_id = SessionId::new();
+        let progress = Arc::new(RecordingProgress::default());
+        engine
+            .start(session_id, Arc::new(DictationContext::default()), progress.clone())
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = engine.finish(session_id, progress.clone()).await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(200),
+            "finish 应等待尾音宽限，实际 {elapsed:?}"
+        );
+        assert_eq!(result.raw_text, "raw text");
+    }
+
+    #[tokio::test]
+    async fn cancel_during_the_finalize_tail_grace_aborts_finalization() {
+        // 宽限期间取消：finish 以取消错误收场，不再收 final 文本。
+        let pcm = Arc::new(Mutex::new(Vec::new()));
+        let recorder_stops = Arc::new(AtomicUsize::new(0));
+        let archive_discards = Arc::new(AtomicUsize::new(0));
+        let archive = Arc::new(FixtureArchive {
+            available: AtomicBool::new(true),
+            discards: Arc::clone(&archive_discards),
+            pcm: vec![1, 0, 2, 0],
+        });
+        let engine = PipelineDictationEngine::new(
+            Arc::new(FixtureRecorder {
+                stops: Arc::clone(&recorder_stops),
+                archive,
+                fail: false,
+            }),
+            Arc::new(FixtureTranscriber {
+                session: Arc::new(FixtureTranscriptionSession {
+                    pcm: Arc::clone(&pcm),
+                    cancels: Arc::new(AtomicUsize::new(0)),
+                    finish_entered: None,
+                    finish_release: None,
+                }),
+            }),
+            Arc::new(FixturePolisher {
+                result: Ok(crate::ports::PolishOutput::text("polished text")),
+                calls: Arc::new(AtomicUsize::new(0)),
+                cancels: Arc::new(AtomicUsize::new(0)),
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            }),
+        )
+        .with_finalize_grace(std::time::Duration::from_secs(30));
+        let session_id = SessionId::new();
+        let progress = Arc::new(RecordingProgress::default());
+        engine
+            .start(session_id, Arc::new(DictationContext::default()), progress.clone())
+            .await
+            .unwrap();
+        let finish_task = tokio::spawn(engine.finish(session_id, progress.clone()));
+        // 等到进入宽限（Transcribing 阶段事件已发布）再取消。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let entered = progress
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, EngineProgress::Stage(EngineStage::Transcribing)));
+            if entered {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "finish never reached the tail grace"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        engine.cancel(session_id).await.unwrap();
+        let error = finish_task
+            .await
+            .unwrap()
+            .expect_err("cancelled during grace must abort");
+        assert_eq!(error.error.code, BackendErrorCode::Cancelled);
     }
 
     #[tokio::test]

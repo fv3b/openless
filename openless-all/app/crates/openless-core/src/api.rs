@@ -7518,7 +7518,8 @@ mod tests {
             recorder.clone(),
             transcription.clone(),
             Arc::new(crate::testing::FixtureTextPolisher::successful("unused")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.path().to_path_buf(),
@@ -7945,7 +7946,8 @@ mod tests {
                 120,
             )),
             Arc::new(crate::testing::FixtureTextPolisher::successful("unused")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.path().to_path_buf(),
@@ -10188,7 +10190,8 @@ mod tests {
             Arc::new(recorder),
             Arc::new(transcription.clone()),
             Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
         backend.start().await.unwrap();
 
@@ -10264,7 +10267,8 @@ mod tests {
             Arc::new(recorder),
             Arc::new(transcription),
             Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
@@ -10311,7 +10315,8 @@ mod tests {
             Arc::new(recorder),
             Arc::new(transcription),
             Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = backend_with_dictation_engine(empty_dir.clone(), Arc::new(engine));
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
@@ -10351,7 +10356,8 @@ mod tests {
             Arc::new(recorder),
             Arc::new(transcription.clone()),
             Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
         backend.start().await.unwrap();
         let mut preferences = backend.get_preferences();
@@ -10552,6 +10558,7 @@ mod tests {
             crate::ExternalAudioRecorder::default(),
         );
         crate::PipelineDictationEngine::new(Arc::new(recorder), transcription, polisher)
+        .with_finalize_grace(std::time::Duration::ZERO)
     }
 
     /// 表述类测试条目（无附件）。
@@ -11645,7 +11652,8 @@ mod tests {
                 Arc::new(crate::testing::FixtureTextPolisher::successful(
                     "complete transcription",
                 )),
-            );
+            )
+        .with_finalize_grace(std::time::Duration::ZERO);
             let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
             backend.start().await.unwrap();
             let mut preferences = backend.get_preferences();
@@ -11975,7 +11983,8 @@ mod tests {
                 "10粒", 10,
             )),
             polisher.clone(),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend =
             backend_with_dictation_engine(data_dir.path().to_path_buf(), Arc::new(engine));
         backend
@@ -12009,7 +12018,8 @@ mod tests {
             Arc::new(crate::testing::FixtureTextPolisher::successful(
                 "omni final",
             )),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.clone(),
@@ -12141,7 +12151,8 @@ mod tests {
             Arc::new(crate::testing::FixtureTextPolisher::failing(
                 BackendError::new(BackendErrorCode::Provider, "fixture polish failure"),
             )),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.clone(),
@@ -12203,7 +12214,8 @@ mod tests {
             Arc::new(crate::testing::FixtureTextPolisher::successful(
                 "must not be inserted",
             )),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.clone(),
@@ -12306,7 +12318,8 @@ mod tests {
                 80,
             )),
             Arc::new(polisher.clone()),
-        ));
+        )
+        .with_finalize_grace(std::time::Duration::ZERO));
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.path().to_path_buf(),
@@ -12362,7 +12375,8 @@ mod tests {
                     80,
                 )),
                 polisher.clone(),
-            )),
+            )
+        .with_finalize_grace(std::time::Duration::ZERO)),
         );
         let llm = backend
             .create_channel(
@@ -12517,7 +12531,8 @@ mod tests {
                 BackendError::new(BackendErrorCode::Provider, "fixture ASR failure"),
             )),
             Arc::new(crate::testing::FixtureTextPolisher::successful("unused")),
-        );
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
         let backend = OpenLessBackend::new(
             BackendConfig {
                 data_dir: data_dir.clone(),

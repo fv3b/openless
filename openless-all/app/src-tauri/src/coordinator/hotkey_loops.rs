@@ -2327,7 +2327,9 @@ pub(crate) mod windows_less_computer_tests {
                         }),
                         Arc::new(FixtureTranscriptionEngine::successful("voice", 120)),
                         Arc::new(FixtureTextPolisher::successful("unused")),
-                    )),
+                    )
+                    // 测试不测 300ms 真实等待：置零保持套件快速。
+                    .with_finalize_grace(std::time::Duration::ZERO)),
                     ..openless_core::BackendDependencies::unsupported()
                 },
             )
