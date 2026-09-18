@@ -219,14 +219,12 @@ export function emptyGhostwriterAssistState(): GhostwriterAssistState {
   return { candidateGroups: [], recommendations: [] };
 }
 
-/** 候选区总量上限：并入后超出按 FIFO 淘汰最旧。 */
-export const GHOSTWRITER_CANDIDATE_CAP = 8;
-
 /**
- * 候选并入（2026-09-18 批次 A 裁决）：新批次条目并入现有集合，按 text 去重
- * ——已存在的条目原样不动（note 也不改），不重复入列；空批次不清空既有条目。
- * 总量超上限按 FIFO 淘汰最旧（最早出现的先走）。返回按 kind 重新分组的集合：
- * kind 首现顺序即组序，index 为跨组全局 1..N 连续重排（纯展示序号）。
+ * 候选并入（2026-09-18 批次 A 裁决；同日复核改纯累积）：新批次条目并入现有
+ * 集合，按 text 去重——已存在的条目原样不动（note 也不改），不重复入列；空
+ * 批次不清空既有条目；**无总量上限**（说得越久候选越多是本意，会话结束才清）。
+ * 返回按 kind 重新分组的集合：kind 首现顺序即组序，index 为跨组全局 1..N
+ * 连续重排（纯展示序号）。
  */
 export function mergeCandidateGroups(
   existing: GhostwriterCandidateGroup[],
@@ -239,9 +237,8 @@ export function mergeCandidateGroups(
       entries.push({ kind: group.kind, text: item.text, note: item.note });
     }
   }
-  const kept = entries.slice(Math.max(0, entries.length - GHOSTWRITER_CANDIDATE_CAP));
   const groups: GhostwriterCandidateGroup[] = [];
-  for (const entry of kept) {
+  for (const entry of entries) {
     let group = groups.find(candidate => candidate.kind === entry.kind);
     if (!group) {
       group = { kind: entry.kind, items: [{ index: 0, text: entry.text, note: entry.note }] };
@@ -262,11 +259,11 @@ export function mergeCandidateGroups(
 }
 
 /**
- * 候选区纯状态机：只认 ghostwriter_assist_changed。候选组改为**累积合并**
- * （2026-09-18 批次 A 裁决：新批次条目并入现有集合，按 text 去重，空批次
- * 不清空，上限 8 条 FIFO 淘汰最旧，见 mergeCandidateGroups）——空批次会把
- * 上一批非空提示冲掉的实测痛点由此修复；普通代笔与对话会话都适用。推荐行
- * 照旧整体替换；conversational=true（对话会话）时推荐行常驻：某次批次推荐
+ * 候选区纯状态机：只认 ghostwriter_assist_changed。候选组改为**纯累积合并**
+ * （2026-09-18 批次 A 裁决；同日复核去上限：新批次条目并入现有集合，按 text
+ * 去重，空批次不清空，无总量上限不淘汰，见 mergeCandidateGroups）——空批次
+ * 会把上一批非空提示冲掉的实测痛点由此修复；普通代笔与对话会话都适用。推荐
+ * 行照旧整体替换；conversational=true（对话会话）时推荐行常驻：某次批次推荐
  * 为空则保留上一批的非空推荐（整场只此一份、可刷新不消失）。会话结束/
  * 新会话由调用方用 emptyGhostwriterAssistState() 复位（既有清空路径）。
  * payload 缺失/形状不对与未知事件一律原样返回。

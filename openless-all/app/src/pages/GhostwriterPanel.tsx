@@ -45,7 +45,7 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  *
  * 卡片内部五区纵向：顶区命中徽标行（✓ pills＋✕ 撤销最近生效动作，浮框唯一
  * 按钮＝✕）、候选区（候选组 chips／推荐行；候选组跨批次累积合并——按 text
- * 去重、空批次不清空、上限 8 条 FIFO，见 ghostwriterCapsule.mergeCandidateGroups，
+ * 去重、空批次不清空、无上限不淘汰，见 ghostwriterCapsule.mergeCandidateGroups，
  * 推荐行照批次整体替换；候选与推荐 chips 均为纯展示提示——不可点选、无口头命令，
  * 看中哪个常用语直接读它的触发词，命中机制自然接住，2026-09-17 裁决；对话会话下
  * 推荐行 sticky 常驻，空批次不塌行）、

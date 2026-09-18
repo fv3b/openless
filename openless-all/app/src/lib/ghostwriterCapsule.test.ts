@@ -291,8 +291,9 @@ assert(EMPTY.text === '' && EMPTY.revision === 0 && EMPTY.hits.length === 0, '�
 }
 
 // --- ghostwriterAssistReducer：候选区（候选组/推荐）的纯状态机 ---
-// 候选组改为累积合并（2026-09-18 批次 A 裁决）：新批次并入现有集合、按 text
-// 去重、空批次不清空、上限 8 条 FIFO 淘汰最旧；推荐照旧整体替换。
+// 候选组改为累积合并（2026-09-18 批次 A 裁决；同日复核改纯累积）：新批次并入
+// 现有集合、按 text 去重、空批次不清空、**无上限不淘汰**（会话结束才清）；
+// 推荐照旧整体替换。
 
 const EMPTY_ASSIST = emptyGhostwriterAssistState();
 assert(
@@ -373,7 +374,7 @@ assert(
   );
 }
 
-// 上限 8 条：超出按 FIFO 淘汰最旧
+// 纯累积无淘汰（用户复核裁决）：超过 8 条仍全保留、不淘汰最旧
 {
   let state = EMPTY_ASSIST;
   for (let i = 1; i <= 10; i++) {
@@ -386,16 +387,15 @@ assert(
     });
   }
   const texts = state.candidateGroups.flatMap(group => group.items.map(item => item.text));
-  assert(texts.length === 8, '候选总量上限应为 8');
   assert(
     JSON.stringify(texts) ===
-      JSON.stringify(['候选3', '候选4', '候选5', '候选6', '候选7', '候选8', '候选9', '候选10']),
-    '超上限应 FIFO 淘汰最旧',
+      JSON.stringify(['候选1', '候选2', '候选3', '候选4', '候选5', '候选6', '候选7', '候选8', '候选9', '候选10']),
+    '纯累积：超过 8 条应全部保留，不 FIFO 淘汰',
   );
   assert(
     state.candidateGroups[0].items[0].index === 1 &&
-      state.candidateGroups[0].items[7].index === 8,
-    '淘汰后序号应重排 1..N',
+      state.candidateGroups[0].items[9].index === 10,
+    '序号应重排 1..N',
   );
 }
 
