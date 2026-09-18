@@ -189,6 +189,12 @@ impl GhostwriterSession {
         self.reply_timing
     }
 
+    /// 创建时冻结的追问深度（对话会话）；普通会话 None。
+    /// dispatcher 传给 assist 组装深度口径注入行（回声确认/追问到清）。
+    pub fn conversation_depth(&self) -> Option<ConversationProbeDepth> {
+        self.conversational.then_some(self.probe_depth)
+    }
+
     /// 回话门控（机制级，不靠模型自觉）：显式交话（auto=false）恒放行——
     /// 绕过冷却、封顶只数自动回话；自动触发（auto=true）——一点一问/回声
     /// 确认下冷却激活即 [`ReplyGate::Cooldown`]（用户新段完成即解除），
@@ -1182,6 +1188,16 @@ mod tests {
     #[test]
     fn conversational_flag_follows_builder() {
         assert!(conversational_session(ConversationProbeDepth::Single).conversational());
+    }
+
+    #[test]
+    fn conversation_depth_accessor_reflects_frozen_depth() {
+        // 普通会话 None；对话会话返回创建时冻结的档位。
+        assert_eq!(GhostwriterSession::new().conversation_depth(), None);
+        assert_eq!(
+            conversational_session(ConversationProbeDepth::Echo).conversation_depth(),
+            Some(ConversationProbeDepth::Echo)
+        );
     }
 
     #[test]

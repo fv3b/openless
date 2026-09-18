@@ -353,8 +353,8 @@ impl GhostwriterPolishDispatcher {
         prefs: &crate::shared_types::GhostwriterPreferences,
         auto: bool,
     ) -> Result<bool, crate::errors::BackendError> {
-        // 状态锁内只读聊天记录与门控判定＋启用常用语。
-        let (chat, suppress_reply, snippets) = {
+        // 状态锁内只读聊天记录、门控判定、冻结深度与启用常用语。
+        let (chat, suppress_reply, probe_depth, snippets) = {
             let state = self.state.read().expect("backend state lock poisoned");
             let Some(session) = state.ghostwriter_sessions.get(session_id) else {
                 return Ok(false);
@@ -370,6 +370,7 @@ impl GhostwriterPolishDispatcher {
             (
                 session.chat_transcript(),
                 suppress_reply,
+                session.conversation_depth(),
                 state.ghostwriter_snippets.enabled(),
             )
         };
@@ -387,6 +388,7 @@ impl GhostwriterPolishDispatcher {
             conversation: Some(ConversationAssistContext {
                 chat: chat.clone(),
                 suppress_reply,
+                probe_depth,
             }),
         };
         let outcome =
@@ -781,20 +783,33 @@ mod tests {
         harness_with(throttles, responses, None)
     }
 
-    /// 对话会话 harness：会话带对话标志，且已喂出一段完成段
+    /// 对话会话 harness：会话带对话标志（停顿即审时机），且已喂出一段完成段
     /// （聊天记录有【我】行）。
     fn conversational_harness(
         throttles: (u64, u64),
         responses: Vec<&str>,
         depth: ConversationProbeDepth,
     ) -> Harness {
-        harness_with(throttles, responses, Some(depth))
+        harness_with(throttles, responses, Some((ConversationReplyTiming::Pause, depth)))
+    }
+
+    /// 显式交话时机的对话会话 harness。
+    fn explicit_conversational_harness(
+        throttles: (u64, u64),
+        responses: Vec<&str>,
+        depth: ConversationProbeDepth,
+    ) -> Harness {
+        harness_with(
+            throttles,
+            responses,
+            Some((ConversationReplyTiming::Explicit, depth)),
+        )
     }
 
     fn harness_with(
         throttles: (u64, u64),
         responses: Vec<&str>,
-        conversation_depth: Option<ConversationProbeDepth>,
+        conversation: Option<(ConversationReplyTiming, ConversationProbeDepth)>,
     ) -> Harness {
         let dir = std::env::temp_dir().join(format!(
             "openless-ghostwriter-dispatcher-{}",
@@ -830,9 +845,9 @@ mod tests {
         {
             let mut guard = state.write().expect("state lock poisoned");
             let mut session = GhostwriterSession::new();
-            match conversation_depth {
-                Some(depth) => {
-                    session = session.with_conversation(ConversationReplyTiming::Pause, depth);
+            match conversation {
+                Some((timing, depth)) => {
+                    session = session.with_conversation(timing, depth);
                     session
                         .feed(
                             &TranscriptDelta {
@@ -1122,6 +1137,62 @@ mod tests {
         let state = harness.state.read().expect("state lock poisoned");
         let session = state.ghostwriter_sessions.get(&harness.session_id).unwrap();
         assert_eq!(session.reply_gate(true), ReplyGate::Allow);
+    }
+
+    #[tokio::test]
+    async fn conversation_echo_depth_injects_notice_even_when_suppressed() {
+        // 回声确认档自动触发：首次回话后冷却，第二次触发 suppress 行与
+        // 深度口径行并存（suppress 在前），口径不因抑制而丢失。
+        let harness = conversational_harness(
+            (0, 0),
+            vec![
+                r#"{"reply":"第一问","recommendations":["s-rec"]}"#,
+                r#"{"reply":"null 代答","recommendations":["s-rec"]}"#,
+            ],
+            ConversationProbeDepth::Echo,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let _ = next_reply_changed(&mut events).await;
+        let _ = next_assist_changed(&mut events).await;
+
+        harness.clock.advance_ms(1);
+        harness
+            .dispatcher
+            .maybe_trigger_assist(&harness.session_id, AssistTrigger::Pause);
+        let _ = next_assist_changed(&mut events).await;
+        let prompt = &harness.polisher.calls()[1].1.polish.style_system_prompt;
+        let pos_suppress = prompt
+            .find("（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）")
+            .expect("suppress notice");
+        let pos_depth = prompt
+            .find("（系统提示：回声确认模式——每次回话先用一句话重述你理解的他的意图，等他确认或纠正后再展开。）")
+            .expect("depth notice");
+        assert!(pos_suppress < pos_depth);
+    }
+
+    #[tokio::test]
+    async fn explicit_timing_echo_session_reply_carries_depth_notice() {
+        // 显式交话时机＋回声确认档：热键触发回话，prompt 含深度口径行、
+        // 不含 suppress 行（显式绕冷却，放行语义）。
+        let harness = explicit_conversational_harness(
+            (0, 0),
+            vec![r#"{"reply":"显式交的问","recommendations":["s-rec"]}"#],
+            ConversationProbeDepth::Echo,
+        );
+        let mut events = harness.events.subscribe();
+
+        harness.dispatcher.trigger_reply(&harness.session_id);
+        let reply = next_reply_changed(&mut events).await;
+        assert_eq!(reply.text, "显式交的问");
+        let prompt = &harness.polisher.calls()[0].1.polish.style_system_prompt;
+        assert!(prompt.contains(
+            "（系统提示：回声确认模式——每次回话先用一句话重述你理解的他的意图，等他确认或纠正后再展开。）"
+        ));
+        assert!(!prompt.contains("本次不要回话"));
     }
 
     #[tokio::test]

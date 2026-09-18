@@ -30,6 +30,7 @@ use crate::errors::BackendError;
 use crate::ghostwriter::prompts::{ASSIST_OUTPUT_CONTRACT, CONVERSATION_OUTPUT_CONTRACT};
 use crate::ghostwriter::types::CandidateItem;
 use crate::ports::{TextPolisher, TextStreamChunk, TextStreamSink};
+use crate::shared_types::ConversationProbeDepth;
 use crate::types::{PolishMode, SessionId};
 
 use super::snippet_store::Snippet;
@@ -63,12 +64,26 @@ const CANDIDATE_KINDS: [&str; 2] = ["term", "naming"];
 const SUPPRESS_REPLY_NOTICE: &str =
     "（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）";
 
+/// 追问到清档的深度口径注入行（逐字，跟在 suppress 行之后）：
+/// 解除「一点一问」默认口径，但一次一句的边界保留。
+const UNTIL_CLEAR_DEPTH_NOTICE: &str =
+    "（系统提示：追问到清模式——同一个点没问清可以继续追问，但每次仍只说一句。）";
+
+/// 回声确认档的深度口径注入行（逐字，跟在 suppress 行之后）：
+/// 本档独有口径——先重述意图等确认，再展开。
+const ECHO_DEPTH_NOTICE: &str =
+    "（系统提示：回声确认模式——每次回话先用一句话重述你理解的他的意图，等他确认或纠正后再展开。）";
+
 /// 对话会话的 assist 上下文：聊天记录（行语法【我】/【助手】）＋是否抑制回话
-/// （门控判定由 dispatcher 传入）。内部结构，不外序列化。
+/// （门控判定由 dispatcher 传入）＋冻结的追问深度（口径注入行的依据）。
+/// 内部结构，不外序列化。
 #[derive(Debug, Clone)]
 pub struct ConversationAssistContext {
     pub chat: String,
     pub suppress_reply: bool,
+    /// 冻结的追问深度；Single（及 None＝未指定）不注入——回话任务书默认
+    /// 口径即一点一问。
+    pub probe_depth: Option<ConversationProbeDepth>,
 }
 
 /// 一次实时助手调用的输入（由调用方组装；缓冲截取与材料筛选都在调用方做）。
@@ -177,15 +192,20 @@ pub async fn run_assist(
     Ok(outcome)
 }
 
-/// system prompt 拼装：对话路径＝回话正文＋（抑制注入行）＋推荐正文（按开关）
-/// ＋对话输出契约（逐字，永远在末尾）——不含候选/提醒任务书、不含代笔契约；
-/// 代笔路径＝候选任务书（include_candidates 时）＋推荐任务书（include_recommendations
-/// 时）＋输出契约（逐字，永远在末尾）。
+/// system prompt 拼装：对话路径＝回话正文＋（抑制注入行）＋（深度口径注入行，
+/// 按冻结档位）＋推荐正文（按开关）＋对话输出契约（逐字，永远在末尾）——
+/// 不含候选/提醒任务书、不含代笔契约；代笔路径＝候选任务书（include_candidates
+/// 时）＋推荐任务书（include_recommendations 时）＋输出契约（逐字，永远在末尾）。
 fn compose_system_prompt(input: &AssistInput) -> String {
     if let Some(conversation) = &input.conversation {
         let mut parts: Vec<&str> = vec![input.instruction_conversation_reply.as_str()];
         if conversation.suppress_reply {
             parts.push(SUPPRESS_REPLY_NOTICE);
+        }
+        match conversation.probe_depth {
+            Some(ConversationProbeDepth::Echo) => parts.push(ECHO_DEPTH_NOTICE),
+            Some(ConversationProbeDepth::UntilClear) => parts.push(UNTIL_CLEAR_DEPTH_NOTICE),
+            Some(ConversationProbeDepth::Single) | None => {}
         }
         if input.include_recommendations {
             parts.push(input.instruction_recommendations.as_str());
@@ -395,6 +415,7 @@ mod tests {
         input.conversation = Some(ConversationAssistContext {
             chat: "【我】想把日志清一下。".to_string(),
             suppress_reply: false,
+            probe_depth: None,
         });
         input
     }
@@ -467,6 +488,89 @@ mod tests {
 
         assert_eq!(outcome.reply, None);
         assert!(outcome.recommendation_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn depth_notice_injects_verbatim_per_probe_depth() {
+        // 深度口径注入行按档位逐字进 prompt（与 suppress 注入行同区）：
+        // Echo＝重述意图等确认；UntilClear＝可继续追问；Single 不注入。
+        for (depth, notice, other) in [
+            (
+                ConversationProbeDepth::Echo,
+                "（系统提示：回声确认模式——每次回话先用一句话重述你理解的他的意图，等他确认或纠正后再展开。）",
+                "追问到清模式",
+            ),
+            (
+                ConversationProbeDepth::UntilClear,
+                "（系统提示：追问到清模式——同一个点没问清可以继续追问，但每次仍只说一句。）",
+                "回声确认模式",
+            ),
+        ] {
+            let fixture =
+                FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+            let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+            let mut request = conversation_input();
+            request.conversation.as_mut().unwrap().probe_depth = Some(depth);
+
+            run_assist(&polisher, &store(), "test-llm", &request)
+                .await
+                .expect("assist should succeed");
+
+            let contexts = fixture.contexts();
+            let prompt = contexts[0].polish.style_system_prompt.as_str();
+            assert!(prompt.contains(notice), "depth={depth:?}");
+            assert!(!prompt.contains(other), "depth={depth:?}");
+            assert!(prompt.ends_with(CONVERSATION_OUTPUT_CONTRACT));
+        }
+
+        // Single 档：回话任务书默认口径即一点一问，不注入。
+        let fixture =
+            FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let mut request = conversation_input();
+        request.conversation.as_mut().unwrap().probe_depth = Some(ConversationProbeDepth::Single);
+        run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+        let contexts = fixture.contexts();
+        let prompt = contexts[0].polish.style_system_prompt.as_str();
+        assert!(!prompt.contains("回声确认模式"));
+        assert!(!prompt.contains("追问到清模式"));
+    }
+
+    #[tokio::test]
+    async fn suppress_and_depth_notices_coexist_in_order() {
+        // 两行可同时存在（冷却期的回声确认档）：回话正文 → suppress 行 →
+        // 深度行 → 推荐正文 → 契约。
+        let fixture =
+            FixtureTextPolisher::successful("unused").with_assist_json(CONVERSATION_CANNED);
+        let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
+        let mut request = conversation_input();
+        let conversation = request.conversation.as_mut().unwrap();
+        conversation.suppress_reply = true;
+        conversation.probe_depth = Some(ConversationProbeDepth::Echo);
+
+        run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("assist should succeed");
+
+        let contexts = fixture.contexts();
+        let prompt = contexts[0].polish.style_system_prompt.as_str();
+        let pos_body = prompt.find("对话回话任务书正文").expect("reply body");
+        let pos_suppress = prompt
+            .find("（系统提示：本次不要回话，用户还没有回应你上一句——reply 给 null。）")
+            .expect("suppress notice");
+        let pos_depth = prompt
+            .find("（系统提示：回声确认模式——每次回话先用一句话重述你理解的他的意图，等他确认或纠正后再展开。）")
+            .expect("depth notice");
+        let pos_recommendations = prompt.find("推荐任务书正文乙").expect("recommendations body");
+        assert!(pos_body < pos_suppress && pos_suppress < pos_depth);
+        assert!(pos_depth < pos_recommendations);
+        // suppress 机制不受影响：reply 仍被强制剥除。
+        let outcome = run_assist(&polisher, &store(), "test-llm", &request)
+            .await
+            .expect("second call");
+        assert_eq!(outcome.reply, None);
     }
 
     #[tokio::test]
