@@ -37,7 +37,10 @@ export function SettingsPane() {
     }));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div
+      className="ol-thinscroll"
+      style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: '1 1 0', minHeight: 0, overflow: 'auto' }}
+    >
       <Card>
         <SectionTitle>{t('nav.ghostwriter')}</SectionTitle>
         <SettingRow
