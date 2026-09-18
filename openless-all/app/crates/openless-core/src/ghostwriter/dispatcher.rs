@@ -135,7 +135,9 @@ impl GhostwriterPolishDispatcher {
                 )
                 .await
                 {
-                    Ok(text) => this.apply_segment(session_id, index, text),
+                    Ok(text) => {
+                        this.apply_segment(session_id, index, request.segment.as_str(), text)
+                    }
                     Err(error) => {
                         log::warn!("[ghostwriter] segment polish failed: {error}");
                         this.events.publish(
@@ -610,10 +612,12 @@ impl GhostwriterPolishDispatcher {
         }
     }
 
-    fn apply_segment(&self, session_id: SessionId, index: usize, text: String) {
+    /// 把段润色结果合回会话：带润色请求时的段原文做对位守卫（改写重建换
+    /// 段文本后，在飞旧结果由会话拒收，不落到别的段上）。
+    fn apply_segment(&self, session_id: SessionId, index: usize, segment_text: &str, text: String) {
         let mut state = self.state.write().expect("backend state lock poisoned");
         if let Some(session) = state.ghostwriter_sessions.get_mut(&session_id) {
-            if session.apply_polished(index, text) {
+            if session.apply_polished(index, segment_text, text) {
                 self.events.publish(
                     Some(session_id),
                     BackendEventKind::GhostwriterPreviewChanged(GhostwriterPreviewChanged {

@@ -302,7 +302,9 @@ impl GhostwriterSession {
     /// 尾巴补润或下一段，不落进本 feed 刚完成的段）；扫描领地规则与
     /// 撤销-复活交互见方法体内的注释。每段产出 [`PolishableSegment`]
     /// （prior＝已润前文尾部 200 字符；materials＝此刻待融队列全部材料，
-    /// 取走后队列清空）。
+    /// 取走后队列清空）。改写式替换（final 干净重写／修订型重写）触发
+    /// [`Self::rebuild_segmentation`]：段状态整体重建，贴出恒为「用户说的
+    /// 话恰一遍」。
     pub fn feed(
         &mut self,
         delta: &TranscriptDelta,
@@ -327,46 +329,51 @@ impl GhostwriterSession {
         let tail_increment: String = self.buffer.chars().skip(cursor).collect();
         self.scanned_chars = cursor + tail_increment.chars().count();
         let text = self.buffer.clone();
-        let completed = self.segmenter.update(&text);
+        let mut new_hits = Vec::new();
+        let mut new_segments = Vec::new();
+        if rewritten {
+            self.rebuild_segmentation(&text, &mut new_segments);
+        } else {
+            let completed = self.segmenter.update(&text);
+            for segment in completed {
+                let index = self.segments.len();
+                // 先纠正再扫描/产出：规则可能修复触发词的 ASR 错字；段文本
+                // （存储、聊天记录、出稿输入、拼装回落）都以纠正后为准。final
+                // 之后的缓冲已是纠正文本，直接放行（不二次应用）。
+                let segment_text = self.asr_text(&segment.text);
+                self.segments.push(Segment {
+                    text: segment_text.clone(),
+                    end_char: segment.end_char,
+                });
+                self.polished.push(None);
+                if self.conversational {
+                    // 对话会话：用户段进聊天记录；新段＝回应了上一问，
+                    // 自动回话冷却解除。
+                    self.chat.push(ChatTurn::user(segment_text.clone()));
+                    self.reply_cooldown = false;
+                }
+                // 先扫段文本再取材料：段内说出的触发词，其材料随本段转移。
+                // 段文本可含已扫过的旧文，撤销过的命中不在此复活（新话触发
+                // 由下方增量扫描负责）。
+                new_hits.extend(self.scan_hits(&segment_text, snippets, false));
+                let prior = self.polished_so_far(index);
+                let materials = std::mem::take(&mut self.inline_pending);
+                self.mark_pending_materials_moved();
+                new_segments.push(PolishableSegment {
+                    index,
+                    prior,
+                    text: segment_text,
+                    materials,
+                });
+            }
+        }
         // 尾巴在补润后又长出（或缩回）新内容：旧润色结果对不上新尾巴，
-        // 作废回落原文，等下次 apply_tail_polished。
+        // 作废回落原文，等下次 apply_tail_polished（重建分支已显式作废，
+        // 此处对增量路径生效）。
         if self.tail_polished.is_some()
             && self.segmenter.tail(&text).chars().count() != self.tail_polished_covered
         {
             self.tail_polished = None;
-        }
-        let mut new_hits = Vec::new();
-        let mut new_segments = Vec::new();
-        for segment in completed {
-            let index = self.segments.len();
-            // 先纠正再扫描/产出：规则可能修复触发词的 ASR 错字；段文本
-            // （存储、聊天记录、出稿输入、拼装回落）都以纠正后为准。final
-            // 之后的缓冲已是纠正文本，直接放行（不二次应用）。
-            let segment_text = self.asr_text(&segment.text);
-            self.segments.push(Segment {
-                text: segment_text.clone(),
-                end_char: segment.end_char,
-            });
-            self.polished.push(None);
-            if self.conversational {
-                // 对话会话：用户段进聊天记录；新段＝回应了上一问，
-                // 自动回话冷却解除。
-                self.chat.push(ChatTurn::user(segment_text.clone()));
-                self.reply_cooldown = false;
-            }
-            // 先扫段文本再取材料：段内说出的触发词，其材料随本段转移。
-            // 段文本可含已扫过的旧文，撤销过的命中不在此复活（新话触发
-            // 由下方增量扫描负责）。
-            new_hits.extend(self.scan_hits(&segment_text, snippets, false));
-            let prior = self.polished_so_far(index);
-            let materials = std::mem::take(&mut self.inline_pending);
-            self.mark_pending_materials_moved();
-            new_segments.push(PolishableSegment {
-                index,
-                prior,
-                text: segment_text,
-                materials,
-            });
         }
         // 尾巴增量后扫：尾巴里说出的触发词，材料留给尾巴补润或下一段；
         // 非改写路径的增量是真正的新话，撤销过的 snippet 可在此再生效。
@@ -385,6 +392,97 @@ impl GhostwriterSession {
             new_segments,
             new_hits,
         })
+    }
+
+    /// 改写式替换（新缓冲不是旧缓冲的前缀延伸：final 干净重写、修订型重写、
+    /// 全量快照改写）后的段状态重建。旧缓冲切出的段与段游标对新文本已失配
+    /// ——段＋尾巴按旧游标拼接会把同一段话算两遍（游标落在已覆盖区内，
+    /// 尾巴重发段尾内容）或整段丢失（游标越过新文本末尾）——故整体重切：
+    /// 断句游标归零、段列按新缓冲重建。已润结果按段文本对位保留（同一段
+    /// 话的润色仍有效）；文本变了或新切出的段重新产出 [`PolishableSegment`]
+    /// 交润色，在飞旧润色结果由 [`Self::apply_polished`] 的段文本守卫拒收。
+    /// 对话会话的用户聊天行与段列一一对应，随重建同步（文本随段、行数多
+    /// 退少补）；尾巴补润结果基于旧文本，一并作废。待融材料若仍排队，随
+    /// 最后一个重新产出的段转移（无则留队，由下一段或尾巴补润接住）。
+    fn rebuild_segmentation(&mut self, text: &str, new_segments: &mut Vec<PolishableSegment>) {
+        self.segmenter = Segmenter::new(DEFAULT_MAX_FORCE_CHARS);
+        self.tail_polished = None;
+        self.tail_polished_covered = 0;
+        let completed = self.segmenter.update(text);
+        let old_segments = std::mem::take(&mut self.segments);
+        let old_polished = std::mem::take(&mut self.polished);
+        let mut old_cursor = 0usize;
+        let mut recut: Vec<(Segment, Option<String>)> = Vec::new();
+        for segment in completed {
+            // 先纠正再对位：旧段文本存储口径是纠正后的，重切文本按同一
+            // 口径纠正后才能对上（final 后的缓冲已是纠正文本，直接放行）。
+            let segment_text = self.asr_text(&segment.text);
+            let mut polished = None;
+            for probe in old_cursor..old_segments.len() {
+                if old_segments[probe].text == segment_text {
+                    polished = old_polished[probe].clone();
+                    old_cursor = probe + 1;
+                    break;
+                }
+            }
+            recut.push((
+                Segment {
+                    text: segment_text,
+                    end_char: segment.end_char,
+                },
+                polished,
+            ));
+        }
+        if self.conversational {
+            self.sync_chat_turns_with_recut(&old_segments, &recut);
+        }
+        for (index, (segment, polished)) in recut.into_iter().enumerate() {
+            self.segments.push(segment.clone());
+            let re_polish = polished.is_none();
+            self.polished.push(polished);
+            if re_polish {
+                new_segments.push(PolishableSegment {
+                    index,
+                    prior: self.polished_so_far(index),
+                    text: segment.text,
+                    materials: Vec::new(),
+                });
+            }
+        }
+        if let Some(last) = new_segments.last_mut() {
+            last.materials = std::mem::take(&mut self.inline_pending);
+            self.mark_pending_materials_moved();
+        }
+    }
+
+    /// 对话会话：重建后把用户聊天行与重切段列对齐。用户行（段行）与旧段列
+    /// 一一对应（feed 的段循环同步 push，尾巴行只在 stop 入列、位于段行后）：
+    /// 行文本随重切段更新（措辞重写反映到出稿输入），行数多退少补——补的
+    /// 追加在记录尾部，退的从段行区段移除（不动助手行与尾巴行）。
+    fn sync_chat_turns_with_recut(
+        &mut self,
+        old_segments: &[Segment],
+        recut: &[(Segment, Option<String>)],
+    ) {
+        let user_positions: Vec<usize> = self
+            .chat
+            .iter()
+            .enumerate()
+            .filter_map(|(i, turn)| (turn.role == ChatRole::User).then_some(i))
+            .collect();
+        let synced = user_positions.len().min(old_segments.len());
+        for (&position, segment) in user_positions[..synced].iter().zip(recut.iter()) {
+            self.chat[position].text = segment.0.text.clone();
+        }
+        if recut.len() > synced {
+            for segment in &recut[synced..] {
+                self.chat.push(ChatTurn::user(segment.0.text.clone()));
+            }
+        } else if synced > recut.len() {
+            for &position in user_positions[recut.len()..synced].iter().rev() {
+                self.chat.remove(position);
+            }
+        }
     }
 
     /// 按 delta 形态应用一条转写增量（判型规则见模块注释）。
@@ -569,10 +667,15 @@ impl GhostwriterSession {
             .collect()
     }
 
-    /// 应用一段润色结果：越界返回 false（revision 不增）。
-    /// 材料消耗在 feed 产出时已转移，这里不动材料。
-    pub fn apply_polished(&mut self, index: usize, text: String) -> bool {
+    /// 应用一段润色结果：段序号越界，或该段文本已不是润色请求时的原文
+    /// （改写重建换了段文本）→ 返回 false（revision 不增）——在飞旧结果
+    /// 不得落到换了文本的段上（对位错乱＝内容污染）。材料消耗在 feed
+    /// 产出时已转移，这里不动材料。
+    pub fn apply_polished(&mut self, index: usize, segment_text: &str, text: String) -> bool {
         if index >= self.polished.len() {
+            return false;
+        }
+        if self.segments[index].text != segment_text {
             return false;
         }
         self.polished[index] = Some(text);
@@ -971,7 +1074,7 @@ mod tests {
         assert_eq!(s.assembled_text(), "你好，帮我翻译一下。请");
 
         // 第 2 段的 prior＝第 1 段已润文本的尾部 200 字符
-        assert!(s.apply_polished(0, format!("润{}", "好".repeat(250))));
+        assert!(s.apply_polished(0, "你好，帮我翻译一下。", format!("润{}", "好".repeat(250))));
         let outcome = s.feed(&delta("第二句。完", 0, false), &snippets).unwrap();
         assert_eq!(outcome.new_segments.len(), 1);
         let prior = &outcome.new_segments[0].prior;
@@ -1048,7 +1151,7 @@ mod tests {
             .unwrap();
         s.feed(&delta("第二句原文。尾", 0, false), &snippets).unwrap();
         assert_eq!(s.segments().len(), 2);
-        assert!(s.apply_polished(0, "第一句润好。".to_string()));
+        assert!(s.apply_polished(0, "第一句原文。", "第一句润好。".to_string()));
         assert_eq!(
             s.assembled_text(),
             format!(
@@ -1099,10 +1202,12 @@ mod tests {
         let mut s = GhostwriterSession::new();
         s.feed(&delta("第一句。续", 0, false), &[]).unwrap();
         assert_eq!(s.revision(), 0);
-        assert!(s.apply_polished(0, "第一句润好。".to_string()));
+        assert!(s.apply_polished(0, "第一句。", "第一句润好。".to_string()));
         assert_eq!(s.revision(), 1);
         // 越界 index：false 且不增
-        assert!(!s.apply_polished(9, "越界".to_string()));
+        assert!(!s.apply_polished(9, "第一句。", "越界".to_string()));
+        // 段文本对不上（改写重建后的在飞旧结果）：false 且不增
+        assert!(!s.apply_polished(0, "换了文本的段", "越界".to_string()));
         assert_eq!(s.revision(), 1);
         assert!(s.apply_tail_polished("尾巴润好".to_string()));
         assert_eq!(s.revision(), 2);
@@ -1707,5 +1812,83 @@ mod tests {
             .unwrap();
         assert!(outcome.new_hits.is_empty());
         assert_eq!(outcome.new_segments[0].text, "帮我看看几粒样品。");
+    }
+
+    // ===== 输出重复复现（贴出不变量：用户说的话恰一遍）=====
+
+    #[test]
+    fn batch_final_only_session_pastes_text_exactly_once() {
+        // 批量型 ASR（智谱）：整场静默无 partial，stop 前后才到一条 is_final
+        // 全量 delta。两种时序都不许重复、不许丢。
+        // 顺序一（生产顺序）：final 先到，stop 后读。
+        let mut s = GhostwriterSession::new();
+        s.feed(&delta("帮我把方案整理一下。重点是成本。", 0, true), &[])
+            .unwrap();
+        assert_eq!(s.assembled_text(), "帮我把方案整理一下。重点是成本。");
+        assert_eq!(s.tail_polish_input().unwrap().text, "重点是成本。");
+        // 顺序二（迟到 final）：stop 先读到空状态，final 后到——仍恰一遍。
+        let mut s = GhostwriterSession::new();
+        assert!(s.tail_polish_input().is_none());
+        s.record_tail_into_chat();
+        s.feed(&delta("帮我把方案整理一下。重点是成本。", 0, true), &[])
+            .unwrap();
+        assert_eq!(s.assembled_text(), "帮我把方案整理一下。重点是成本。");
+    }
+
+    #[test]
+    fn streaming_final_rewrite_inserting_before_cursor_does_not_duplicate() {
+        // 流式：partials 切出「帮我看一下这个方案。」后，final 干净重写在该段
+        // 覆盖区内插入字词（「的整体」）——旧段游标从新文本取尾巴，尾巴重新
+        // 覆盖已切段尾部内容，「方案。」出现两份。
+        let mut s = GhostwriterSession::new();
+        s.feed(&delta("帮我看一下这个方案。然后说下一步", 0, false), &[])
+            .unwrap();
+        assert_eq!(s.segments().len(), 1);
+        s.feed(&delta("帮我看一下这个的整体方案。然后说下一步。", 0, true), &[])
+            .unwrap();
+        assert_eq!(
+            s.assembled_text(),
+            "帮我看一下这个的整体方案。然后说下一步。"
+        );
+    }
+
+    #[test]
+    fn streaming_final_rewrite_shorter_than_cursor_loses_nothing() {
+        // final 干净重写比已发射游标还短：旧实现把缓冲缩到游标前、尾巴取空，
+        // 贴出停留在旧 partial 文本（final 文本整体丢失）。
+        let mut s = GhostwriterSession::new();
+        s.feed(&delta("帮我看一下这个方案。然后说下一步", 0, false), &[])
+            .unwrap();
+        s.feed(&delta("帮我看一下方案。", 0, true), &[]).unwrap();
+        assert_eq!(s.assembled_text(), "帮我看一下方案。");
+    }
+
+    #[test]
+    fn revision_rewrite_shrink_then_regrow_does_not_duplicate_segment() {
+        // 修订型重写把缓冲缩到已发射游标之前，随后修订再把缓冲长回原话：
+        // 旧实现段游标被钳制到中途后从中途重发，「理一下。」出现两份。
+        let mut s = GhostwriterSession::new();
+        s.feed(&delta("帮我把方案整理一下。重点是成本", 0, false), &[])
+            .unwrap();
+        assert_eq!(s.segments().len(), 1);
+        s.feed(&delta("案", 5, false), &[]).unwrap();
+        s.feed(&delta("整理一下。重点是成本", 5, false), &[]).unwrap();
+        assert_eq!(s.assembled_text(), "帮我把方案整理一下。重点是成本");
+    }
+
+    #[test]
+    fn conversational_final_rewrite_keeps_chat_free_of_duplicates() {
+        // 对话会话同一形态：final 重写后聊天记录里同一句话不许出现两份，
+        // 出稿输入（整份聊天记录）随重建同步成 final 措辞。
+        let mut s = conversational_session(ConversationProbeDepth::Single);
+        s.feed(&delta("帮我看一下这个方案。然后说下一步", 0, false), &[])
+            .unwrap();
+        s.feed(&delta("帮我看一下这个的整体方案。然后说下一步。", 0, true), &[])
+            .unwrap();
+        s.record_tail_into_chat();
+        assert_eq!(
+            s.chat_transcript(),
+            "【我】帮我看一下这个的整体方案。\n【我】然后说下一步。"
+        );
     }
 }

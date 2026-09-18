@@ -10638,6 +10638,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    /// 流式 ASR 的 final 干净重写与累计 partial 不一致（重写在已切段覆盖区
+    /// 内插入字词）：贴出＝final 文本恰一遍，不得把段尾内容贴两份。
+    /// 润色夹具失败 → 段与尾巴都回落原文，贴出即 final 原文。
+    #[tokio::test]
+    async fn ghostwriter_final_rewrite_pastes_text_exactly_once() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-rewrite-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::failing(
+            BackendError::new(BackendErrorCode::Provider, "polish down"),
+        ));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["帮我看一下这个方案。然后说下一步"],
+            "帮我看一下这个的整体方案。然后说下一步。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(
+            data_dir.clone(),
+            Arc::new(engine),
+            polisher,
+        );
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(result.raw_text, "帮我看一下这个的整体方案。然后说下一步。");
+        assert_eq!(
+            result.polished_text,
+            "帮我看一下这个的整体方案。然后说下一步。"
+        );
+
+        let state = backend.state.read().expect("backend state lock poisoned");
+        assert!(state.ghostwriter_sessions.is_empty());
+        drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 对话会话同一形态：final 重写后出稿输入（整份聊天记录）随重建同步，
+    /// 同一句话在聊天记录里恰一遍；出稿成功 → 贴出＝出稿文本。
+    #[tokio::test]
+    async fn ghostwriter_conversation_final_rewrite_keeps_chat_single() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-conversation-rewrite-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::failing(BackendError::new(
+                BackendErrorCode::Provider,
+                "polish down",
+            ))
+            .with_finalize_text("按 final 措辞整理的指令。"),
+        );
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["帮我看一下这个方案。然后说下一步"],
+            "帮我看一下这个的整体方案。然后说下一步。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend =
+            backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        assert_eq!(result.polished_text, "按 final 措辞整理的指令。");
+
+        let finalize_index = polisher
+            .session_ids()
+            .iter()
+            .position(|id| {
+                *id == crate::ghostwriter::segment_polisher::conversation_finalize_session_id()
+            })
+            .expect("finalize polish call");
+        assert_eq!(
+            polisher.inputs()[finalize_index],
+            "【我】帮我看一下这个的整体方案。\n【我】然后说下一步。"
+        );
+
+        let state = backend.state.read().expect("backend state lock poisoned");
+        assert!(state.ghostwriter_sessions.is_empty());
+        drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[tokio::test]
     async fn ghostwriter_hit_dedup_and_cancel_command() {
         let data_dir = std::env::temp_dir().join(format!(
