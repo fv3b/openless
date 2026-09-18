@@ -4922,11 +4922,13 @@ impl OpenLessBackend {
                         crate::types::PolishMode::Raw,
                     );
                 // 对话会话启动标志（对话热键入口）：以偏好冻结回话时机与
-                // 追问深度；普通启动不调用，一切照旧。
+                // 追问深度；普通启动不调用，一切照旧。纠正规则与引擎同源
+                // （context.correction_rules，启动时冻结）传给会话。
                 let mut ghostwriter_session = crate::ghostwriter::session::GhostwriterSession::new()
                     .with_background_placement(
                         self.preferences.get().ghostwriter.background_placement,
-                    );
+                    )
+                    .with_correction_rules(context.correction_rules.clone());
                 if options.ghostwriter_conversational {
                     let conversation_prefs = self.preferences.get().ghostwriter;
                     ghostwriter_session = ghostwriter_session.with_conversation(
@@ -5364,20 +5366,22 @@ impl OpenLessBackend {
                 }
                 dispatcher.finalize_conversation(session_id).await
             } else {
-            // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
-            let tail_input = {
-                let state = self.state.read().expect("backend state lock poisoned");
-                state
-                    .ghostwriter_sessions
-                    .get(&session_id)
-                    .and_then(|session| session.tail_polish_input())
-            };
-            if let (Some(dispatcher), Some(segment)) = (ghostwriter_dispatcher.clone(), tail_input) {
-                let request = dispatcher.segment_request(&segment);
-                dispatcher.dispatch_tail(session_id, request).await;
-            }
-            None
+                // 尾段补润先行：贴出前同步完成（润色失败回落尾巴原文，兜底追加仍在）。
+                let tail_input = {
+                    let state = self.state.read().expect("backend state lock poisoned");
+                    state
+                        .ghostwriter_sessions
+                        .get(&session_id)
+                        .and_then(|session| session.tail_polish_input())
+                };
+                if let (Some(dispatcher), Some(segment)) = (ghostwriter_dispatcher.clone(), tail_input)
+                {
+                    let request = dispatcher.segment_request(&segment);
+                    dispatcher.dispatch_tail(session_id, request).await;
+                }
+                None
         };
+        let mut ghostwriter_assembled_replaced = false;
         let ghostwriter_assembled = {
             let state = self.state.read().expect("backend state lock poisoned");
             state
@@ -5391,7 +5395,9 @@ impl OpenLessBackend {
                 assembled.chars().count()
             );
             engine_result.polished_text = assembled;
+            ghostwriter_assembled_replaced = true;
         }
+        let conversation_had_finalized = conversation_finalized.is_some();
         if let Some(finalized) = conversation_finalized {
             log::debug!(
                 "[ghostwriter] stop: conversation finalized text replaces assembled output ({} chars)",
@@ -5399,6 +5405,8 @@ impl OpenLessBackend {
             );
             engine_result.polished_text = finalized;
         }
+        let ghostwriter_assembled_is_final =
+            ghostwriter_assembled_replaced && !conversation_had_finalized;
         engine_result.polished_text = crate::streaming_insert::apply_chinese_script_preference(
             &engine_result.polished_text,
             context.polish.chinese_script_preference,
@@ -5420,7 +5428,13 @@ impl OpenLessBackend {
             .and_then(|preparation| preparation.peek())
             .and_then(|result| result.as_ref().ok())
             .is_some_and(|insertion| insertion.has_written_text());
-        if !correction_rules.is_empty() && !streamed_text_is_visible {
+        // 纠正规则只过一次：ghostwriter 拼装文本的段/尾巴已在会话层从原始
+        // 转写纠正过（规则不保证幂等，再过一遍会对同一份文本二次应用）；
+        // 对话终稿是 LLM 重写的输出文本，与主管线出稿后纠正同惯例照常应用。
+        if !correction_rules.is_empty()
+            && !streamed_text_is_visible
+            && !ghostwriter_assembled_is_final
+        {
             engine_result.polished_text =
                 apply_correction_rules(&engine_result.polished_text, &correction_rules);
         }
@@ -10509,6 +10523,78 @@ mod tests {
                 return payload;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn ghostwriter_session_applies_correction_rules_once() {
+        // 纠正规则接入代笔流式路径：启动时从 context 冻结进会话，说话中
+        // 命中扫描吃纠正后的文本（错字换成触发词→照常命中）；stop 后的
+        // 拼装终稿不再二次应用规则（扩展型规则重复应用会失真）。
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-correction-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let transcription = Arc::new(FixturePartialTranscripts::new(
+            &["哦帮我看看几粒样品"],
+            "哦帮我看看几粒样品。",
+        ));
+        let engine = ghostwriter_engine_with(
+            transcription,
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        );
+        let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(engine));
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        backend.set_preferences(preferences).unwrap();
+        backend
+            .add_correction_rule("几粒".into(), "几例".into())
+            .unwrap();
+        backend.add_correction_rule("哦".into(), "哦哦".into()).unwrap();
+        insert_ghostwriter_snippet(
+            &backend,
+            ghostwriter_snippet("s1", "几例", "【s1】几例的完整表述文本"),
+        );
+        let mut events = backend.subscribe();
+
+        let session_id = backend.start_external_dictation().await.unwrap();
+        // 预览文本已纠正；尾巴里的命中材料按待融惯例随预览携带。
+        // 命中事件先于预览发布，收集与等待同循环进行。
+        let mut hits = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let preview = loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("ghostwriter events did not arrive in time")
+                .expect("event stream closed");
+            match event.kind {
+                BackendEventKind::GhostwriterSnippetsHit(hit) => hits.push(hit),
+                BackendEventKind::GhostwriterPreviewChanged(payload)
+                    if payload.text.starts_with("哦哦帮我看看几例样品") =>
+                {
+                    break payload;
+                }
+                _ => {}
+            }
+        };
+        assert!(
+            hits.iter().any(|hit| hit.snippet_id == "s1"),
+            "纠正后的触发词应命中，实际 {:?}",
+            hits
+        );
+
+        let result = backend.stop_dictation_session(session_id).await.unwrap();
+        // 拼装文本已纠正且只纠正一次（哦→哦哦 未再次膨胀；测试夹具无
+        // ghostwriter 润色器，尾巴里的命中材料按待融兜底惯例随文携带）。
+        assert!(result.polished_text.starts_with("哦哦帮我看看几例样品。"));
+        assert!(!result.polished_text.contains("哦哦哦哦"));
+
+        let state = backend.state.read().expect("backend state lock poisoned");
+        assert!(state.ghostwriter_sessions.is_empty());
+        drop(state);
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[tokio::test]

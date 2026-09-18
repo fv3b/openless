@@ -15,12 +15,17 @@
 //! （2026-09-17 裁决）：不可点选、无口头命令（「用候选N/用常用语N」等说法
 //! 一律当普通话保留）；用户看到提示自己说出来，触发词命中/润色自然吸收。
 //! 命中混入统一动作序，[`GhostwriterSession::cancel_last_action`] 取最新撤销。
+//! 纠正规则（用户级文本替换，修 ASR 错字）创建时冻结进会话，作用于一切
+//! 出自 ASR 原话的输出面：段文本、尾巴（聊天记录/补润输入/拼装回落）与
+//! 命中扫描（先纠正后扫描，规则可能修复触发词的错字）。final 全量替换
+//! delta 的文本引擎侧已纠正过，消费点按缓冲出处保证同一份原话只过一次。
 
 use std::collections::HashSet;
 
+use crate::correction::apply_correction_rules;
 use crate::errors::BackendError;
 use crate::shared_types::{ConversationProbeDepth, ConversationReplyTiming};
-use crate::types::TranscriptDelta;
+use crate::types::{CorrectionRule, TranscriptDelta};
 
 use super::segmenter::{Segment, Segmenter};
 use super::snippet_store::{Snippet, SnippetAttachment, SnippetKind, SnippetPlacement};
@@ -117,6 +122,13 @@ pub struct GhostwriterSession {
     reply_cooldown: bool,
     /// 本次会话已发生的自动回话数（封顶只数自动）。
     auto_reply_count: usize,
+    /// 纠正规则（创建时从引擎同源的 context.correction_rules 冻结）；
+    /// 空＝无规则，一切照旧。
+    correction_rules: Vec<CorrectionRule>,
+    /// 缓冲文本是否已过纠正规则：final 全量替换 delta 的文本是引擎侧
+    /// 纠正后的（dictation_engine 转写后润色前应用规则），此前各阶段缓冲
+    /// 是原始转写。消费点据此保证同一份原话只过一次规则（规则不保证幂等）。
+    final_delta_corrected: bool,
 }
 
 impl Default for GhostwriterSession {
@@ -149,7 +161,26 @@ impl GhostwriterSession {
             chat: Vec::new(),
             reply_cooldown: false,
             auto_reply_count: 0,
+            correction_rules: Vec::new(),
+            final_delta_corrected: false,
         }
+    }
+
+    /// 创建时冻结纠正规则（api 从 context.correction_rules 取值传入，与
+    /// 引擎转写后润色前的纠正同源同语义）；不传按无规则，一切照旧。
+    pub fn with_correction_rules(mut self, rules: Vec<CorrectionRule>) -> Self {
+        self.correction_rules = rules;
+        self
+    }
+
+    /// ASR 原话消费点统一出口：final 全量替换后的缓冲文本引擎侧已纠正过，
+    /// 直接放行；其余阶段是原始转写，应用一次会话冻结的纠正规则。同一份
+    /// 原话至多过一次规则（规则不保证幂等，扩展型规则重复应用会膨胀）。
+    fn asr_text(&self, raw: &str) -> String {
+        if self.final_delta_corrected || self.correction_rules.is_empty() {
+            return raw.to_string();
+        }
+        apply_correction_rules(raw, &self.correction_rules)
     }
 
     /// 创建时指定全局背景落点（api 从偏好取值传入）；不传按默认文末。
@@ -253,12 +284,13 @@ impl GhostwriterSession {
     }
 
     /// stop 路径调用一次：未断段的尾巴作为用户话进聊天记录（api stop 时调）。
-    /// 尾巴为空不产生行；普通会话不维护聊天记录。
+    /// 尾巴为空不产生行；普通会话不维护聊天记录。【我】行是纠正后的
+    /// （对话出稿输入吃整份聊天记录）。
     pub fn record_tail_into_chat(&mut self) {
         if !self.conversational {
             return;
         }
-        let tail = self.segmenter.tail(&self.buffer).to_string();
+        let tail = self.asr_text(self.segmenter.tail(&self.buffer));
         if !tail.is_empty() {
             self.chat.push(ChatTurn::user(tail));
         }
@@ -276,6 +308,10 @@ impl GhostwriterSession {
         delta: &TranscriptDelta,
         snippets: &[Snippet],
     ) -> Result<FeedOutcome, BackendError> {
+        if delta.is_final {
+            // final 全量替换的文本引擎侧已纠正过（见 final_delta_corrected）。
+            self.final_delta_corrected = true;
+        }
         let old_buffer = self.buffer.clone();
         self.apply_delta(delta)?;
         // 替换类增量的扫描领地：新缓冲是旧缓冲的前缀延伸（final 后缀追加
@@ -303,8 +339,14 @@ impl GhostwriterSession {
         let mut new_segments = Vec::new();
         for segment in completed {
             let index = self.segments.len();
-            let segment_text = segment.text.clone();
-            self.segments.push(segment);
+            // 先纠正再扫描/产出：规则可能修复触发词的 ASR 错字；段文本
+            // （存储、聊天记录、出稿输入、拼装回落）都以纠正后为准。final
+            // 之后的缓冲已是纠正文本，直接放行（不二次应用）。
+            let segment_text = self.asr_text(&segment.text);
+            self.segments.push(Segment {
+                text: segment_text.clone(),
+                end_char: segment.end_char,
+            });
             self.polished.push(None);
             if self.conversational {
                 // 对话会话：用户段进聊天记录；新段＝回应了上一问，
@@ -328,7 +370,10 @@ impl GhostwriterSession {
         }
         // 尾巴增量后扫：尾巴里说出的触发词，材料留给尾巴补润或下一段；
         // 非改写路径的增量是真正的新话，撤销过的 snippet 可在此再生效。
-        new_hits.extend(self.scan_hits(&tail_increment, snippets, !rewritten));
+        // 扫描吃纠正后的增量（规则修好的触发词即刻生效）；final 之后缓冲
+        // 已是纠正文本，直接扫描。
+        let corrected_tail_increment = self.asr_text(&tail_increment);
+        new_hits.extend(self.scan_hits(&corrected_tail_increment, snippets, !rewritten));
         if !new_segments.is_empty() {
             log::debug!(
                 "[ghostwriter] segmenter: {} segment(s) completed (buffer={} chars)",
@@ -635,7 +680,7 @@ impl GhostwriterSession {
     /// 材料此处只是随请求交付，待 [`Self::apply_tail_polished`] 成功才出队，
     /// 润色失败时兜底追加仍在 assembled 生效。
     pub fn tail_polish_input(&self) -> Option<PolishableSegment> {
-        let tail = self.segmenter.tail(&self.buffer).to_string();
+        let tail = self.asr_text(self.segmenter.tail(&self.buffer));
         if tail.is_empty() {
             return None;
         }
@@ -666,7 +711,7 @@ impl GhostwriterSession {
         let tail = self
             .tail_polished
             .clone()
-            .unwrap_or_else(|| self.segmenter.tail(&self.buffer).to_string());
+            .unwrap_or_else(|| self.asr_text(self.segmenter.tail(&self.buffer)));
         main.push_str(&tail);
         let mut assembled = main.trim().to_string();
         for material in &self.inline_pending {
@@ -1583,4 +1628,84 @@ mod tests {
         assert!(s.assembled_text().contains(&format!("- 素材：{}", bg.text)));
     }
 
+    // ===== 纠正规则接入（代笔/对话流式路径）=====
+
+    fn correction_rule(pattern: &str, replacement: &str) -> crate::types::CorrectionRule {
+        crate::types::CorrectionRule {
+            id: format!("rule-{pattern}"),
+            pattern: pattern.into(),
+            replacement: replacement.into(),
+            enabled: true,
+            created_at: String::new(),
+            source: crate::types::RuleSource::Manual,
+        }
+    }
+
+    #[test]
+    fn correction_rules_fix_asr_typos_before_hit_scan() {
+        // 规则把 ASR 错字换成触发词：命中照常发生，段文本、聊天记录
+        // （对话会话共用同一 feed）与出稿段输入都是纠正后的。
+        let mut s = conversational_session(ConversationProbeDepth::Single)
+            .with_correction_rules(vec![correction_rule("几粒", "几例")]);
+        let snippets = vec![snip("s1", "几例", SnippetKind::Phrasing)];
+        let outcome = s
+            .feed(&delta("帮我看看几粒样品。继续", 0, false), &snippets)
+            .unwrap();
+        assert_eq!(outcome.new_hits.len(), 1, "纠正后的触发词应命中");
+        assert_eq!(outcome.new_hits[0].snippet_id, "s1");
+        assert_eq!(outcome.new_segments[0].text, "帮我看看几例样品。");
+        assert!(s.chat_transcript().contains("【我】帮我看看几例样品。"));
+    }
+
+    #[test]
+    fn tail_correction_reaches_chat_and_tail_polish_input() {
+        // 未断段尾巴：stop 时进聊天记录的【我】行与尾巴补润输入都是纠正后的；
+        // 拼装回落（未补润）同样回落到纠正后的尾巴。
+        let mut s = conversational_session(ConversationProbeDepth::Single)
+            .with_correction_rules(vec![correction_rule("几粒", "几例")]);
+        s.feed(&delta("先记着几粒样品", 0, false), &[]).unwrap();
+        s.record_tail_into_chat();
+        assert!(s.chat_transcript().contains("【我】先记着几例样品"));
+        let input = s.tail_polish_input().unwrap();
+        assert_eq!(input.text, "先记着几例样品");
+        assert!(s.assembled_text().contains("先记着几例样品"));
+    }
+
+    #[test]
+    fn correction_rules_apply_once_per_raw_span() {
+        // 单次应用防护：替换结果不再吃同一规则（扩展型规则「哦→哦哦」
+        // 重复应用会无界膨胀）。每次都从原始缓冲现算，重复拼装结果稳定。
+        let mut s = GhostwriterSession::new()
+            .with_correction_rules(vec![correction_rule("哦", "哦哦")]);
+        s.feed(&delta("哦今天天气不错", 0, false), &[]).unwrap();
+        let assembled = s.assembled_text();
+        assert_eq!(assembled, "哦哦今天天气不错");
+        assert_eq!(s.assembled_text(), assembled);
+        let input = s.tail_polish_input().unwrap();
+        assert_eq!(input.text, "哦哦今天天气不错");
+    }
+
+    #[test]
+    fn engine_corrected_final_delta_is_not_corrected_again() {
+        // final 全量替换 delta 的文本引擎侧已纠正过（哦→哦哦 应用过一次），
+        // final 后完成的段与拼装回落不再二次应用规则。
+        let mut s =
+            GhostwriterSession::new().with_correction_rules(vec![correction_rule("哦", "哦哦")]);
+        s.feed(&delta("哦今天", 0, false), &[]).unwrap();
+        s.feed(&delta("哦哦今天天气。不错", 0, true), &[]).unwrap();
+        assert_eq!(s.assembled_text(), "哦哦今天天气。不错");
+        assert_eq!(s.tail_polish_input().unwrap().text, "不错");
+    }
+
+    #[test]
+    fn without_rules_everything_stays_raw() {
+        // 未配规则（默认会话）：一切照旧，零行为变化。
+        let mut s = GhostwriterSession::new();
+        let snippets = vec![snip("s1", "几例", SnippetKind::Phrasing)];
+        let outcome = s
+            .feed(&delta("帮我看看几粒样品。继续", 0, false), &snippets)
+            .unwrap();
+        assert!(outcome.new_hits.is_empty());
+        assert_eq!(outcome.new_segments[0].text, "帮我看看几粒样品。");
+    }
 }
