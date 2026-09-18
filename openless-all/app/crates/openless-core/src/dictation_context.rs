@@ -168,6 +168,9 @@ pub struct DictationContext {
     /// dialog_ctx 上下文来源；Ghostwriter 会话创建时一并冻结给 LLM 消费点。
     /// 无可用历史（读失败/无记录）＝None，一切照旧。
     pub recent_voice: Option<crate::ghostwriter::recent_voice::RecentVoiceBackground>,
+    /// 二遍复核开关（会话启动时从偏好冻结）：火山流式 ASR 的 enable_nonstream
+    /// 参数。true（默认）＝判停分句用非流式模型重识别；false＝不携带该参数。
+    pub asr_second_pass_enabled: bool,
 }
 
 impl Default for DictationContext {
@@ -315,6 +318,7 @@ impl DictationContext {
                 active: preferences.capsule_style == CapsuleStyle::Fluid,
             },
             recent_voice: None,
+            asr_second_pass_enabled: preferences.asr_second_pass_enabled,
         }
     }
 

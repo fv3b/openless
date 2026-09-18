@@ -294,6 +294,8 @@ export const de: typeof zhCN = {
     },
     accuracy: {
       title: 'Erkennungsgenauigkeit',
+      secondPass: "Zweitrundendurchsicht",
+      secondPassDesc: "Die Erkennung prüft jeden abgeschlossenen Satz mit einem Nicht-Streaming-Modell erneut: weniger Verhörer bei gleicher Formulierung, etwas langsames Ergebnis. Standardmäßig an, nur für die Volcengine-Engine wirksam.",
       recentVoice: 'Kürzliche Sprachhintergründe (experimentell)',
       recentVoiceDesc:
         'Beim Start einer Sitzung werden die letzten Sprachanweisungen im unten gewählten Umfang als Hintergrund an die KI (Politur, Konversation, Live-Assistenz) und die Cloud-Erkennung übergeben; standardmäßig aus, Änderungen gelten für die nächste Sitzung.',

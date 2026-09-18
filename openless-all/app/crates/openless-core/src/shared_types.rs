@@ -514,6 +514,11 @@ pub struct UserPreferences {
     /// 境外服务可能连不上。实时语音流（WebSocket）与 Less Computer 子进程不受此开关影响。
     #[serde(default = "default_true")]
     pub use_system_proxy: bool,
+    /// 火山流式 ASR 二遍复核（2026-09-18 用户裁决）：官方 `enable_nonstream`
+    /// 参数——判停的分句用非流式模型重识别，更准稍慢。默认开；关闭时不向
+    /// 服务端携带该参数。会话启动时冻结（DictationContext）。
+    #[serde(default = "default_true")]
+    pub asr_second_pass_enabled: bool,
     /// Windows/Linux 粘贴成功后是否恢复用户原剪贴板。默认 true 跟历史行为一致；
     /// 关掉就把听写文本留在剪贴板，让 simulate_paste 实际没生效时用户能 Ctrl+V 找回。
     /// macOS 走 AX 直写，不受这个开关影响。详见 issue #111。
@@ -938,6 +943,8 @@ struct UserPreferencesWire {
     llm_thinking_enabled: bool,
     #[serde(default = "default_true")]
     use_system_proxy: bool,
+    #[serde(default = "default_true")]
+    asr_second_pass_enabled: bool,
     restore_clipboard_after_paste: bool,
     #[serde(default)]
     paste_shortcut: PasteShortcut,
@@ -1162,6 +1169,7 @@ impl Default for UserPreferencesWire {
             active_omni_provider: prefs.active_omni_provider,
             llm_thinking_enabled: prefs.llm_thinking_enabled,
             use_system_proxy: prefs.use_system_proxy,
+            asr_second_pass_enabled: prefs.asr_second_pass_enabled,
             restore_clipboard_after_paste: prefs.restore_clipboard_after_paste,
             paste_shortcut: prefs.paste_shortcut,
             allow_non_tsf_insertion_fallback: prefs.allow_non_tsf_insertion_fallback,
@@ -1320,6 +1328,7 @@ impl<'de> Deserialize<'de> for UserPreferences {
             active_omni_provider: wire.active_omni_provider,
             llm_thinking_enabled: wire.llm_thinking_enabled,
             use_system_proxy: wire.use_system_proxy,
+            asr_second_pass_enabled: wire.asr_second_pass_enabled,
             restore_clipboard_after_paste: wire.restore_clipboard_after_paste,
             paste_shortcut: wire.paste_shortcut,
             allow_non_tsf_insertion_fallback: wire.allow_non_tsf_insertion_fallback,
@@ -1678,6 +1687,7 @@ impl Default for UserPreferences {
             active_omni_provider: "custom".into(),
             llm_thinking_enabled: false,
             use_system_proxy: true,
+            asr_second_pass_enabled: true,
             restore_clipboard_after_paste: true,
             paste_shortcut: PasteShortcut::default(),
             allow_non_tsf_insertion_fallback: true,
@@ -3692,6 +3702,18 @@ mod tests {
             prefs.ghostwriter.background_placement,
             SnippetPlacement::Head
         );
+    }
+
+    #[test]
+    fn asr_second_pass_enabled_defaults_on_and_roundtrips_camel_case() {
+        // 二遍复核默认开（既有行为零变化）；显式关掉后 wire 往返不丢键。
+        let prefs: UserPreferences = serde_json::from_str("{}").unwrap();
+        assert!(prefs.asr_second_pass_enabled);
+        let prefs: UserPreferences =
+            serde_json::from_str(r#"{"asrSecondPassEnabled":false}"#).unwrap();
+        assert!(!prefs.asr_second_pass_enabled);
+        let wire = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(wire["asrSecondPassEnabled"], false);
     }
 
     #[test]

@@ -308,6 +308,8 @@ export const en: typeof zhCN & {
     },
     accuracy: {
       title: 'Recognition boost',
+      secondPass: "Second-pass review",
+      secondPassDesc: "The recognition engine re-checks each finalized sentence with a non-streaming model: fewer mis-hearings for the same phrasing, slightly slower results. On by default; applies to the Volcengine engine only.",
       recentVoice: 'Recent voice background (experimental)',
       recentVoiceDesc:
         'When a session starts, recent voice instructions within the scope below are passed as background to the AI (polish, conversation, live assist) and the cloud recognition engine; off by default, changes apply to the next session.',

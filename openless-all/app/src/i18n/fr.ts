@@ -295,6 +295,8 @@ export const fr: typeof zhCN = {
     },
     accuracy: {
       title: 'Amélioration de la reconnaissance',
+      secondPass: "Relecture en second passage",
+      secondPassDesc: "Le moteur de reconnaissance revérifie chaque phrase finalisée avec un modèle non flux : moins d'erreurs à l'écoute pour un rendu légèrement plus lent. Activé par défaut ; s'applique uniquement au moteur Volcengine.",
       recentVoice: 'Contexte vocal récent (expérimental)',
       recentVoiceDesc:
         "Au démarrage d'une session, les instructions vocales récentes dans la plage ci-dessous sont transmises comme contexte à l'IA (polissage, conversation, assistance en direct) et au moteur de reconnaissance cloud ; désactivé par défaut, les changements s'appliquent à la session suivante.",

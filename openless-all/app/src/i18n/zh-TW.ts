@@ -287,6 +287,8 @@ export const zhTW: typeof zhCN = {
     },
     accuracy: {
       title: '辨識提準',
+      secondPass: "二遍複核",
+      secondPassDesc: "辨識引擎對判停的每句再用非串流模型複核一遍，同樣說法錯字更少，出稿稍慢；預設開，僅火山引擎生效。",
       recentVoice: '最近語音背景（實驗性）',
       recentVoiceDesc:
         '工作階段開始時，依下面的範圍把最近的語音指令帶給 AI（潤飾、對話、即時助理）與雲端辨識引擎作背景參考；預設關，變更對下一個工作階段生效。',

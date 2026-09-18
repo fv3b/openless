@@ -426,6 +426,9 @@ export interface UserPreferences {
   llmThinkingEnabled: boolean;
   /** 是否使用系统代理（issue #869）。默认开启；关闭后所有请求直连，境外服务（GitHub 登录/更新等）可能连不上。 */
   useSystemProxy: boolean;
+  /** 火山流式 ASR 二遍复核（enable_nonstream，官方参数）。默认开；关闭时不传该参数。
+   *  会话启动时冻结，改动对下一场会话生效。 */
+  asrSecondPassEnabled: boolean;
   /** 仅 Windows/Linux：粘贴成功后是否恢复用户原剪贴板。默认 true。详见 issue #111。 */
   restoreClipboardAfterPaste: boolean;
   /** 仅 Windows/Linux：模拟粘贴时按下的快捷键。详见 issue #360：kitty/alacritty

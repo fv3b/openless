@@ -116,7 +116,11 @@ export function SettingsPane() {
       <Card>
         <RecentVoiceBackgroundSection
           ghostwriter={prefs.ghostwriter}
+          secondPassEnabled={prefs.asrSecondPassEnabled}
           onSave={saveGhostwriter}
+          onToggleSecondPass={(next) =>
+            void updatePrefs((current) => ({ ...current, asrSecondPassEnabled: next }))
+          }
         />
       </Card>
     </div>
@@ -226,18 +230,29 @@ function ConversationSection({
 
 /** 「识别提准」卡片：ASR/背景类的提准开关。最近语音背景（实验性，默认关）：
  *  会话启动时按设置的条数/天数圈定历史语音冻结为背景，供润色/对话/实时助手
- *  与云端识别引擎作参考；设置改动对下一场会话生效（冻结语义）。 */
+ *  与云端识别引擎作参考；设置改动对下一场会话生效（冻结语义）。二遍复核
+ *  （默认开）：火山判停分句用非流式模型重识别，仅火山引擎生效。 */
 function RecentVoiceBackgroundSection({
   ghostwriter,
+  secondPassEnabled,
   onSave,
+  onToggleSecondPass,
 }: {
   ghostwriter: GhostwriterPreferences;
+  secondPassEnabled: boolean;
   onSave: (patch: Partial<GhostwriterPreferences>) => Promise<void> | void;
+  onToggleSecondPass: (next: boolean) => void;
 }) {
   const { t } = useTranslation();
   return (
     <>
       <SectionTitle>{t('ghostwriter.accuracy.title')}</SectionTitle>
+      <SettingRow
+        label={t('ghostwriter.accuracy.secondPass')}
+        desc={t('ghostwriter.accuracy.secondPassDesc')}
+      >
+        <Toggle on={secondPassEnabled} onToggle={onToggleSecondPass} />
+      </SettingRow>
       <SettingRow
         label={t('ghostwriter.accuracy.recentVoice')}
         desc={t('ghostwriter.accuracy.recentVoiceDesc')}

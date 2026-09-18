@@ -209,6 +209,10 @@ pub struct VolcengineStreamingASR {
     /// 会话启动时冻结的最近语音背景（新→旧）：dialog_ctx 语境提示的注入内容。
     /// 空＝无历史，不注入（零变化）。
     dialog_ctx: Vec<String>,
+    /// 二遍复核（2026-09-18 用户裁决）：官方 `enable_nonstream` 参数——判停的
+    /// 分句用非流式模型重识别，更准稍慢。偏好 `asr_second_pass_enabled` 冻结，
+    /// false 时不携带该键。
+    second_pass_enabled: bool,
     state: ParkingMutex<SyncState>,
     /// Guards the WebSocket write half so concurrent `send` calls serialize.
     /// Stored as Arc so spawned send tasks can hold their own clone — independent
@@ -233,14 +237,22 @@ impl VolcengineStreamingASR {
         credentials: VolcengineCredentials,
         hotwords: Vec<DictionaryHotword>,
         dialog_ctx: Vec<String>,
+        second_pass_enabled: bool,
     ) -> Self {
-        Self::with_task_spawner(credentials, hotwords, dialog_ctx, Arc::new(TokioTaskSpawner))
+        Self::with_task_spawner(
+            credentials,
+            hotwords,
+            dialog_ctx,
+            second_pass_enabled,
+            Arc::new(TokioTaskSpawner),
+        )
     }
 
     pub fn with_task_spawner(
         credentials: VolcengineCredentials,
         hotwords: Vec<DictionaryHotword>,
         dialog_ctx: Vec<String>,
+        second_pass_enabled: bool,
         task_spawner: Arc<dyn TaskSpawner>,
     ) -> Self {
         Self {
@@ -248,6 +260,7 @@ impl VolcengineStreamingASR {
             task_spawner,
             hotwords,
             dialog_ctx,
+            second_pass_enabled,
             state: ParkingMutex::new(SyncState::default()),
             writer: Arc::new(AsyncMutex::new(None)),
             final_rx: ParkingMutex::new(None),
@@ -631,6 +644,11 @@ impl VolcengineStreamingASR {
             "show_utterances": true,
             "enable_speaker_info": true,
         });
+        // 二遍复核：判停分句用非流式模型重识别（docs/6561/1354869）。关闭时
+        // 不携带该键——旧行为零歧义，服务端按默认关处理。
+        if self.second_pass_enabled {
+            request["enable_nonstream"] = Value::Bool(true);
+        }
         if let Some(context) = context_payload(&self.hotwords, &self.dialog_ctx) {
             request["context"] = Value::String(context);
             let enabled_count = self.hotwords.iter().filter(|h| h.enabled).count();
@@ -1045,6 +1063,33 @@ fn context_payload(hotwords: &[DictionaryHotword], dialog_ctx: &[String]) -> Opt
 mod tests {
     use super::*;
 
+    fn test_credentials() -> VolcengineCredentials {
+        VolcengineCredentials {
+            service: VolcengineService::Standard,
+            auth_mode: VolcengineAuthMode::AppIdToken,
+            app_id: "app".into(),
+            access_token: "secret".into(),
+            resource_id: VolcengineCredentials::default_resource_id().into(),
+        }
+    }
+
+    #[test]
+    fn first_frame_enables_nonstream_second_pass_only_when_configured() {
+        // 二遍复核（用户裁决 2026-09-18）：官方参数 enable_nonstream（大模型流式
+        // 优化版支持，判停分句用非流式模型重识别）。开→显式传 true；关→不传
+        // 该键（不是传 false——保持旧行为零歧义）。
+        let enabled = VolcengineStreamingASR::new(test_credentials(), vec![], Vec::new(), true);
+        let payload = enabled.build_first_frame_payload("connect-id");
+        assert_eq!(payload["request"]["enable_nonstream"], Value::Bool(true));
+
+        let disabled = VolcengineStreamingASR::new(test_credentials(), vec![], Vec::new(), false);
+        let payload = disabled.build_first_frame_payload("connect-id");
+        assert!(
+            payload["request"].get("enable_nonstream").is_none(),
+            "关闭时不应携带 enable_nonstream 键: {payload}"
+        );
+    }
+
     #[test]
     fn hotword_context_dedupes_case_insensitively_and_caps() {
         let mut entries = vec![
@@ -1255,7 +1300,7 @@ mod tests {
                     resource_id: VolcengineCredentials::default_resource_id().into(),
                 },
                 vec![],
-                Vec::new(),
+                Vec::new(), true,
             );
             let req = asr
                 .build_connect_request("connect-id", "request-id")
@@ -1377,7 +1422,7 @@ mod tests {
                 resource_id: VolcengineCredentials::default_resource_id().into(),
             },
             Vec::new(),
-            Vec::new(),
+            Vec::new(), true,
         );
         let (tx, rx) = oneshot::channel();
         asr.state.lock().final_tx = Some(tx);

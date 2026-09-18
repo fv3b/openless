@@ -74,6 +74,7 @@ export let mockSettings: UserPreferences = {
   activeOmniProvider: 'custom',
   llmThinkingEnabled: false,
   useSystemProxy: true,
+  asrSecondPassEnabled: true,
   restoreClipboardAfterPaste: true,
   pasteShortcut: 'ctrlV',
   allowNonTsfInsertionFallback: true,

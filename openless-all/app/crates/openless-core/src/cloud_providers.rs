@@ -641,6 +641,8 @@ async fn build_cloud_transcription_session(
                 credentials,
                 hotwords,
                 dialog_ctx,
+                // 二遍复核（enable_nonstream）：会话启动时冻结的偏好开关。
+                context.asr_second_pass_enabled,
                 Arc::clone(&task_spawner),
             ));
             provider.set_partial_sink(Arc::clone(&partials));

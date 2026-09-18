@@ -283,6 +283,8 @@ export const ko: typeof zhCN = {
     },
     accuracy: {
       title: '인식 정확도 향상',
+      secondPass: "2차 검토",
+      secondPassDesc: "인식 엔진이 문장이 확정될 때마다 비스트리밍 모델로 다시 검토합니다. 같은 표현에서 오인식이 줄지만 결과가 약간 느려집니다. 기본값은 켜짐이며 Volcengine 엔진에만 적용됩니다.",
       recentVoice: '최근 음성 배경 (실험적)',
       recentVoiceDesc:
         '세션 시작 시 아래 범위 내의 최근 음성 지시를 AI(다듬기, 대화, 실시간 도우미)와 클라우드 인식 엔진에 배경으로 전달합니다. 기본값은 꺼짐이며, 변경 사항은 다음 세션부터 적용됩니다.',

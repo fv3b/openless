@@ -285,6 +285,8 @@ export const zhCN = {
     },
     accuracy: {
       title: '识别提准',
+      secondPass: "二遍复核",
+      secondPassDesc: "识别引擎对判停的每句再用非流式模型复核一遍，同样说法错字更少，出稿稍慢；默认开，仅火山引擎生效。",
       recentVoice: '最近语音背景（实验性）',
       recentVoiceDesc:
         '会话启动时按下面的范围把最近的语音指令带给 AI（润色、对话、实时助手）与云端识别引擎作背景参考；默认关，改动对下一场会话生效。',
