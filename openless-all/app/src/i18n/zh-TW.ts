@@ -285,6 +285,17 @@ export const zhTW: typeof zhCN = {
       throttleRecommendation: '推薦重新整理間隔（毫秒）',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: '辨識提準',
+      recentVoice: '最近語音背景（實驗性）',
+      recentVoiceDesc:
+        '工作階段開始時，依下面的範圍把最近的語音指令帶給 AI（潤飾、對話、即時助理）與雲端辨識引擎作背景參考；預設關，變更對下一個工作階段生效。',
+      recentVoiceScope: '背景範圍',
+      recentVoiceScopeDesc: '以條數或天數圈定帶入的歷史語音。',
+      unitSessions: '條',
+      unitDays: '天',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: '對話',
       enable: '對話模式',

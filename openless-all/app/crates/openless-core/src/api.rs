@@ -6411,15 +6411,17 @@ impl OpenLessBackend {
             .into_iter()
             .filter(|rule| rule.enabled)
             .collect();
-        // 最近语音背景（2026-09-18 批次 A）：听写会话启动时从历史冻结最近 3 条
-        // 语音转写（火山 ASR dialog_ctx ＋ Ghostwriter LLM 消费点共用来源）。
-        // 读失败/无历史 → None，一切照旧；当前会话自身此刻尚未入历史
-        // （stop 才落档），无需排除。只挂听写入口：QA/选区等其它用途零变化。
+        // 最近语音背景（2026-09-18 批次 A；同日复核偏好化）：听写会话启动时按
+        // Ghostwriter 偏好（实验性，默认关）从历史冻结最近语音转写（火山 ASR
+        // dialog_ctx ＋ Ghostwriter LLM 消费点共用来源）。开关关闭/读失败/无历史
+        // → None，一切照旧；当前会话自身此刻尚未入历史（stop 才落档），无需排除。
+        // 只挂听写入口：QA/选区等其它用途零变化。设置改动对下一场会话生效（冻结语义）。
         if purpose == DictationContextPurpose::Dictation {
             context.recent_voice = match self.history.list() {
-                Ok(sessions) => {
-                    crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&sessions)
-                }
+                Ok(sessions) => crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(
+                    &sessions,
+                    &preferences.ghostwriter,
+                ),
                 Err(error) => {
                     log::warn!("failed to freeze recent voice background; continuing without: {error}");
                     None

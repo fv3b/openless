@@ -1,13 +1,19 @@
 // SettingsPane.tsx — 「设置」页签：Ghostwriter 卡片（候选/推荐开关＋背景落点
-// radio＋两枚节流间隔输入）与「对话」卡片（总开关/热键/回话时机/追问深度/
-// 推荐显示）各占一张，两张独立卡片纵向排列（同设置弹窗卡片间距惯例）。
+// radio＋两枚节流间隔输入）、「对话」卡片（总开关/热键/回话时机/追问深度/
+// 推荐显示）与「识别提准」卡片（最近语音背景，实验性）各占一张，独立卡片
+// 纵向排列（同设置弹窗卡片间距惯例）。
 // 输入越界（500–10000 外）在失焦时红字提示并回弹上次合法值；合法即保存、立即生效。
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShortcutRecorder } from '../../components/ShortcutRecorder';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
-import type { GhostwriterPreferences, GhostwriterProbeDepth, GhostwriterReplyTiming } from '../../lib/types';
+import type {
+  GhostwriterPreferences,
+  GhostwriterProbeDepth,
+  GhostwriterReplyTiming,
+  RecentVoiceBackgroundUnit,
+} from '../../lib/types';
 import { THROTTLE_MAX_MS, THROTTLE_MIN_MS, parseThrottleMs } from '../../lib/ghostwriterThrottle';
 import {
   hasConversationHotkey,
@@ -103,6 +109,12 @@ export function SettingsPane() {
       </Card>
       <Card>
         <ConversationSection
+          ghostwriter={prefs.ghostwriter}
+          onSave={saveGhostwriter}
+        />
+      </Card>
+      <Card>
+        <RecentVoiceBackgroundSection
           ghostwriter={prefs.ghostwriter}
           onSave={saveGhostwriter}
         />
@@ -212,16 +224,130 @@ function ConversationSection({
   );
 }
 
+/** 「识别提准」卡片：ASR/背景类的提准开关。最近语音背景（实验性，默认关）：
+ *  会话启动时按设置的条数/天数圈定历史语音冻结为背景，供润色/对话/实时助手
+ *  与云端识别引擎作参考；设置改动对下一场会话生效（冻结语义）。 */
+function RecentVoiceBackgroundSection({
+  ghostwriter,
+  onSave,
+}: {
+  ghostwriter: GhostwriterPreferences;
+  onSave: (patch: Partial<GhostwriterPreferences>) => Promise<void> | void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <SectionTitle>{t('ghostwriter.accuracy.title')}</SectionTitle>
+      <SettingRow
+        label={t('ghostwriter.accuracy.recentVoice')}
+        desc={t('ghostwriter.accuracy.recentVoiceDesc')}
+      >
+        <Toggle
+          on={ghostwriter.recentVoiceBackgroundEnabled}
+          onToggle={(next) => void onSave({ recentVoiceBackgroundEnabled: next })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.accuracy.recentVoiceScope')}
+        desc={t('ghostwriter.accuracy.recentVoiceScopeDesc')}
+      >
+        <RecentVoiceScopeRow
+          enabled={ghostwriter.recentVoiceBackgroundEnabled}
+          amount={ghostwriter.recentVoiceBackgroundAmount}
+          unit={ghostwriter.recentVoiceBackgroundUnit}
+          onSave={onSave}
+        />
+      </SettingRow>
+    </>
+  );
+}
+
+/** 背景范围控制：数量 N（1–90，失焦校验非法回弹）＋单位 radio（条/天）。
+ *  背景开关关闭时控件禁用（值保留，不丢用户已配的范围）。 */
+function RecentVoiceScopeRow({
+  enabled,
+  amount,
+  unit,
+  onSave,
+}: {
+  enabled: boolean;
+  amount: number;
+  unit: RecentVoiceBackgroundUnit;
+  onSave: (patch: Partial<GhostwriterPreferences>) => Promise<void> | void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(String(amount));
+  const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    setDraft(String(amount));
+    setInvalid(false);
+  }, [amount]);
+
+  const commitAmount = (raw: string) => {
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 90) {
+      setInvalid(true);
+      setDraft(String(amount));
+      return;
+    }
+    setInvalid(false);
+    setDraft(String(parsed));
+    if (parsed !== amount) void onSave({ recentVoiceBackgroundAmount: parsed });
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={1}
+        max={90}
+        step={1}
+        disabled={!enabled}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={(event) => commitAmount(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+        }}
+        style={{ ...inputStyle, flex: '0 0 auto', width: 80, maxWidth: 80 }}
+      />
+      <RadioGroup
+        name="ghostwriter-recent-voice-unit"
+        value={unit}
+        disabled={!enabled}
+        options={[
+          ['sessions', 'ghostwriter.accuracy.unitSessions'],
+          ['days', 'ghostwriter.accuracy.unitDays'],
+        ]}
+        onChange={(value) => void onSave({ recentVoiceBackgroundUnit: value as RecentVoiceBackgroundUnit })}
+      />
+      <span
+        style={{
+          fontSize: 11.5,
+          lineHeight: 1.5,
+          color: invalid ? 'var(--ol-err)' : 'var(--ol-ink-4)',
+        }}
+      >
+        {t('ghostwriter.accuracy.scopeRangeHint')}
+      </span>
+    </div>
+  );
+}
+
 function RadioGroup({
   name,
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   name: string;
   value: string;
   options: Array<[string, string]>;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -235,6 +361,7 @@ function RadioGroup({
             type="radio"
             name={name}
             checked={value === optionValue}
+            disabled={disabled}
             onChange={() => onChange(optionValue)}
           />
           <span style={{ fontSize: 12.5, color: 'var(--ol-ink)' }}>{t(labelKey)}</span>

@@ -265,10 +265,16 @@ mod tests {
         let polisher: Arc<dyn TextPolisher> = Arc::new(fixture.clone());
         let mut polish_request = request();
         polish_request.recent_voice_block = Some(
-            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
-                session_with_final("第二条"),
-                session_with_final("第一条"),
-            ])
+            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(
+                &[
+                    session_with_final("第二条"),
+                    session_with_final("第一条"),
+                ],
+                &crate::shared_types::GhostwriterPreferences {
+                    recent_voice_background_enabled: true,
+                    ..crate::shared_types::GhostwriterPreferences::default()
+                },
+            )
             .expect("背景应存在")
             .llm_block(),
         );

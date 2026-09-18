@@ -306,6 +306,17 @@ export const en: typeof zhCN & {
       throttleRecommendation: 'Recommendation refresh interval (ms)',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: 'Recognition boost',
+      recentVoice: 'Recent voice background (experimental)',
+      recentVoiceDesc:
+        'When a session starts, recent voice instructions within the scope below are passed as background to the AI (polish, conversation, live assist) and the cloud recognition engine; off by default, changes apply to the next session.',
+      recentVoiceScope: 'Background scope',
+      recentVoiceScopeDesc: 'Pick how much voice history to include: by count or by days.',
+      unitSessions: 'sessions',
+      unitDays: 'days',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: 'Conversation',
       enable: 'Conversation mode',

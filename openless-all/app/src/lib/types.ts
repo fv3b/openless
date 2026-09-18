@@ -354,6 +354,8 @@ export interface StylePackRuntimeDiagnostics {
 export type GhostwriterReplyTiming = 'pause' | 'explicit';
 /** 追问深度：'single' 一点一问（默认）/'untilClear' 追问到清/'echo' 回声确认。 */
 export type GhostwriterProbeDepth = 'single' | 'untilClear' | 'echo';
+/** 最近语音背景的范围单位：'sessions' 最近 N 条（默认）/'days' 最近 N 天内全部。 */
+export type RecentVoiceBackgroundUnit = 'sessions' | 'days';
 
 /** Ghostwriter 层（Ghostwriter 流式浮框）候选/推荐流开关＋节流参数＋背景落点；与 Core GhostwriterPreferences 对齐。 */
 export interface GhostwriterPreferences {
@@ -377,6 +379,12 @@ export interface GhostwriterPreferences {
   conversationProbeDepth: GhostwriterProbeDepth;
   /** 对话会话的推荐显示开关（仅对话模式，不动原推荐流开关），默认开。 */
   conversationRecommendations: boolean;
+  /** 最近语音背景捕获开关（实验性）：默认关；会话启动时冻结，改动对下一场会话生效。 */
+  recentVoiceBackgroundEnabled: boolean;
+  /** 背景范围数量 N：sessions=最近 N 条语音会话；days=最近 N 天内全部。默认 3。 */
+  recentVoiceBackgroundAmount: number;
+  /** 背景范围单位。默认 sessions。 */
+  recentVoiceBackgroundUnit: RecentVoiceBackgroundUnit;
 }
 
 export interface UserPreferences {

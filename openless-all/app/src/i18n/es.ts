@@ -295,6 +295,17 @@ export const es: typeof zhCN = {
       throttleRecommendation: 'Intervalo de refresco de recomendaciones (ms)',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: 'Mejora del reconocimiento',
+      recentVoice: 'Contexto de voz reciente (experimental)',
+      recentVoiceDesc:
+        'Al iniciar una sesión, las instrucciones de voz recientes dentro del rango siguiente se envían como contexto a la IA (pulido, conversación, asistencia en vivo) y al motor de reconocimiento en la nube; desactivado por defecto, los cambios se aplican a la siguiente sesión.',
+      recentVoiceScope: 'Alcance del contexto',
+      recentVoiceScopeDesc: 'Cuánto historial de voz incluir: por número o por días.',
+      unitSessions: 'elementos',
+      unitDays: 'días',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: 'Conversación',
       enable: 'Modo conversación',

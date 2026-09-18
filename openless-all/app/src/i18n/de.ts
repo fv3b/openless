@@ -292,6 +292,17 @@ export const de: typeof zhCN = {
       throttleRecommendation: 'Empfehlungs-Aktualisierungsintervall (ms)',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: 'Erkennungsgenauigkeit',
+      recentVoice: 'Kürzliche Sprachhintergründe (experimentell)',
+      recentVoiceDesc:
+        'Beim Start einer Sitzung werden die letzten Sprachanweisungen im unten gewählten Umfang als Hintergrund an die KI (Politur, Konversation, Live-Assistenz) und die Cloud-Erkennung übergeben; standardmäßig aus, Änderungen gelten für die nächste Sitzung.',
+      recentVoiceScope: 'Hintergrundumfang',
+      recentVoiceScopeDesc: 'Umfang der berücksichtigten Sprachhistorie nach Anzahl oder Tagen.',
+      unitSessions: 'Einträge',
+      unitDays: 'Tage',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: 'Dialog',
       enable: 'Dialogmodus',

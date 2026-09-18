@@ -281,6 +281,17 @@ export const ko: typeof zhCN = {
       throttleRecommendation: '추천 새로고침 간격(밀리초)',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: '인식 정확도 향상',
+      recentVoice: '최근 음성 배경 (실험적)',
+      recentVoiceDesc:
+        '세션 시작 시 아래 범위 내의 최근 음성 지시를 AI(다듬기, 대화, 실시간 도우미)와 클라우드 인식 엔진에 배경으로 전달합니다. 기본값은 꺼짐이며, 변경 사항은 다음 세션부터 적용됩니다.',
+      recentVoiceScope: '배경 범위',
+      recentVoiceScopeDesc: '개수 또는 일수로 참조할 음성 기록 범위를 지정합니다.',
+      unitSessions: '개',
+      unitDays: '일',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: '대화',
       enable: '대화 모드',

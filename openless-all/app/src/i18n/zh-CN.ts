@@ -283,6 +283,17 @@ export const zhCN = {
       throttleRecommendation: '推荐刷新间隔（毫秒）',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: '识别提准',
+      recentVoice: '最近语音背景（实验性）',
+      recentVoiceDesc:
+        '会话启动时按下面的范围把最近的语音指令带给 AI（润色、对话、实时助手）与云端识别引擎作背景参考；默认关，改动对下一场会话生效。',
+      recentVoiceScope: '背景范围',
+      recentVoiceScopeDesc: '按条数或天数圈定带入的历史语音。',
+      unitSessions: '条',
+      unitDays: '天',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: '对话',
       enable: '对话模式',

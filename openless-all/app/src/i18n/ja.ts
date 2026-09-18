@@ -283,6 +283,17 @@ export const ja: typeof zhCN = {
       throttleRecommendation: 'おすすめの更新間隔（ミリ秒）',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: '認識精度アップ',
+      recentVoice: '最近の音声バックグラウンド（実験的）',
+      recentVoiceDesc:
+        'セッション開始時に、下記の範囲内の最近の音声指示を AI（整形・会話・ライブアシスト）とクラウド認識エンジンに背景として渡します。既定はオフで、変更は次のセッションから有効です。',
+      recentVoiceScope: '背景の範囲',
+      recentVoiceScopeDesc: '件数または日数で、参照する音声履歴の範囲を指定します。',
+      unitSessions: '件',
+      unitDays: '日',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: '会話',
       enable: '会話モード',

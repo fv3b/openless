@@ -293,6 +293,17 @@ export const fr: typeof zhCN = {
       throttleRecommendation: 'Intervalle de rafraîchissement des recommandations (ms)',
       throttleRangeHint: '500–10000',
     },
+    accuracy: {
+      title: 'Amélioration de la reconnaissance',
+      recentVoice: 'Contexte vocal récent (expérimental)',
+      recentVoiceDesc:
+        "Au démarrage d'une session, les instructions vocales récentes dans la plage ci-dessous sont transmises comme contexte à l'IA (polissage, conversation, assistance en direct) et au moteur de reconnaissance cloud ; désactivé par défaut, les changements s'appliquent à la session suivante.",
+      recentVoiceScope: 'Plage du contexte',
+      recentVoiceScopeDesc: "Quantité d'historique vocal à inclure : par nombre ou par jours.",
+      unitSessions: 'entrées',
+      unitDays: 'jours',
+      scopeRangeHint: '1–90',
+    },
     conversation: {
       title: 'Conversation',
       enable: 'Mode conversation',

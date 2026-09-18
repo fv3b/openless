@@ -589,10 +589,13 @@ mod tests {
     async fn recent_voice_block_is_appended_on_both_paths() {
         // 背景（代笔与对话两条路径共用同一拼装口）：块头逐字带「次要参考」，
         // 垫底在常用语库之后；None＝零变化。
-        let block = crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
-            session_with_final("第二条"),
-            session_with_final("第一条"),
-        ])
+        let block = crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(
+            &[session_with_final("第二条"), session_with_final("第一条")],
+            &crate::shared_types::GhostwriterPreferences {
+                recent_voice_background_enabled: true,
+                ..crate::shared_types::GhostwriterPreferences::default()
+            },
+        )
         .expect("背景应存在")
         .llm_block();
         let mut request = input();
@@ -615,9 +618,13 @@ mod tests {
         // 对话路径同样追加。
         let mut conversation = conversation_input();
         conversation.recent_voice_block = Some(
-            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(&[
-                session_with_final("上一场的话"),
-            ])
+            crate::ghostwriter::recent_voice::RecentVoiceBackground::from_history(
+                &[session_with_final("上一场的话")],
+                &crate::shared_types::GhostwriterPreferences {
+                    recent_voice_background_enabled: true,
+                    ..crate::shared_types::GhostwriterPreferences::default()
+                },
+            )
             .expect("背景应存在")
             .llm_block(),
         );

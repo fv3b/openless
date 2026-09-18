@@ -382,6 +382,17 @@ pub fn route_conversation_hotkey(
     }
 }
 
+/// 最近语音背景的范围单位（2026-09-18 批次 A；同日复核偏好化）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum BackgroundUnit {
+    /// 最近 N 条语音会话（默认）。
+    #[default]
+    Sessions,
+    /// 最近 N 天内的全部语音会话（条数不限）。
+    Days,
+}
+
 /// Ghostwriter 层（Ghostwriter 流式浮框）的用户偏好：候选/推荐流开关＋节流参数＋
 /// 背景落点。润色流常开（无开关）；全部默认开启；旧配置缺整个 `ghostwriter` 对象
 /// 或对象内缺键时按默认值兜底，历史配置里的旧键 `fluid` 经 serde alias 继续可读。
@@ -409,6 +420,14 @@ pub struct GhostwriterPreferences {
     pub conversation_probe_depth: ConversationProbeDepth,
     /// 对话会话的推荐显示开关（仅对话模式，不动原推荐流开关），默认开。
     pub conversation_recommendations: bool,
+    /// 最近语音背景捕获开关（实验性，用户裁决 2026-09-18）：默认关——关时
+    /// 会话启动不捕获背景，所有消费点（润色/出稿/assist/dialog_ctx）零变化。
+    pub recent_voice_background_enabled: bool,
+    /// 背景范围数量 N：Sessions=最近 N 条语音会话；Days=最近 N 天内全部。
+    /// 默认 3（原写死值）。
+    pub recent_voice_background_amount: u32,
+    /// 背景范围单位：按会话条数（默认）或按天数。
+    pub recent_voice_background_unit: BackgroundUnit,
 }
 
 impl Default for GhostwriterPreferences {
@@ -424,6 +443,9 @@ impl Default for GhostwriterPreferences {
             conversation_reply_timing: ConversationReplyTiming::Pause,
             conversation_probe_depth: ConversationProbeDepth::Single,
             conversation_recommendations: true,
+            recent_voice_background_enabled: false,
+            recent_voice_background_amount: 3,
+            recent_voice_background_unit: BackgroundUnit::Sessions,
         }
     }
 }
@@ -3726,6 +3748,38 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ConversationReplyTiming::Pause).unwrap(),
             "pause"
+        );
+    }
+
+    #[test]
+    fn recent_voice_background_preferences_default_off() {
+        let p = GhostwriterPreferences::default();
+        assert!(!p.recent_voice_background_enabled, "实验性功能默认关");
+        assert_eq!(p.recent_voice_background_amount, 3);
+        assert_eq!(p.recent_voice_background_unit, BackgroundUnit::Sessions);
+    }
+
+    #[test]
+    fn recent_voice_background_preferences_roundtrip_camel_case() {
+        // 缺键：逐字段回落默认。
+        let p: GhostwriterPreferences = serde_json::from_str("{}").unwrap();
+        assert!(!p.recent_voice_background_enabled);
+        assert_eq!(p.recent_voice_background_amount, 3);
+        assert_eq!(p.recent_voice_background_unit, BackgroundUnit::Sessions);
+
+        // 显式写入：wire 键名 camelCase，单位枚举逐字 "sessions"|"days"，往返不丢。
+        let json = r#"{"recentVoiceBackgroundEnabled":true,"recentVoiceBackgroundAmount":7,"recentVoiceBackgroundUnit":"days"}"#;
+        let p: GhostwriterPreferences = serde_json::from_str(json).unwrap();
+        assert!(p.recent_voice_background_enabled);
+        assert_eq!(p.recent_voice_background_amount, 7);
+        assert_eq!(p.recent_voice_background_unit, BackgroundUnit::Days);
+        let wire = serde_json::to_value(&p).unwrap();
+        assert_eq!(wire["recentVoiceBackgroundEnabled"], true);
+        assert_eq!(wire["recentVoiceBackgroundAmount"], 7);
+        assert_eq!(wire["recentVoiceBackgroundUnit"], "days");
+        assert_eq!(
+            serde_json::to_value(BackgroundUnit::Sessions).unwrap(),
+            "sessions"
         );
     }
 }
