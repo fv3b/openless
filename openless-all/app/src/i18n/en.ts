@@ -1281,6 +1281,7 @@ export const en: typeof zhCN & {
       comboMenuToggle: 'More options',
       comboDisableHint: 'Core hotkey cannot be disabled — recording needs a hotkey',
       comboRecordHint: 'Press your shortcut combination\u2026',
+      comboRecordHintModifier: 'Press your shortcut combination, or tap a single modifier key (e.g. Right ⌥)…',
       comboNeedKey: 'Use a key combo (e.g. \u2318\u21e7J); a lone modifier will not work',
       comboRecorded: 'Recorded',
       comboClear: 'Clear',

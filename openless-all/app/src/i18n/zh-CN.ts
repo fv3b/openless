@@ -1216,6 +1216,7 @@ export const zhCN = {
       comboMenuToggle: '更多操作',
       comboDisableHint: '核心快捷键不可停用，录音必须绑定一个热键',
       comboRecordHint: '请按下快捷键组合…',
+      comboRecordHintModifier: '请按下快捷键组合，或点按单个修饰键（如右 ⌥）…',
       comboNeedKey: '请配组合键（如 ⌘⇧J），不支持单独的修饰键',
       comboRecorded: '已录制',
       comboClear: '清除',

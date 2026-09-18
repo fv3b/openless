@@ -1281,13 +1281,33 @@ impl Coordinator {
         // None = 用户主动停用：反注册全局键，立即生效。
         let Some(binding) = action_hotkey_binding(&self.inner, kind) else {
             take_action_hotkey_on_main_thread(&self.inner, kind);
+            #[cfg(target_os = "macos")]
+            if kind == ActionHotkeyKind::Conversation {
+                // 之前若挂过主监听器的 modifier-only 槽位，按最新 target（无绑定）清掉。
+                self.update_modifier_shortcut_bindings();
+            }
             log::info!("[coord] action hotkey {kind:?} 已停用（用户清空）");
             return;
         };
         if is_modifier_only_shortcut(&binding) {
             take_action_hotkey_on_main_thread(&self.inner, kind);
+            // macOS 对话热键例外：单修饰键 primary 挂主监听器的 modifier-only
+            // 槽位（QA/选区润色/翻译同款），短按触发。其余 kind / 非 macOS 维持
+            // 关闭（global-hotkey 装不下裸修饰键）。
+            #[cfg(target_os = "macos")]
+            if kind == ActionHotkeyKind::Conversation {
+                self.update_modifier_shortcut_bindings();
+                log::info!("[coord] conversation hotkey 已挂主监听 modifier-only 槽位");
+                return;
+            }
             log::warn!("[coord] action hotkey {kind:?} 使用了不支持的 modifier-only 绑定，已关闭");
             return;
+        }
+        #[cfg(target_os = "macos")]
+        if kind == ActionHotkeyKind::Conversation {
+            // 单修饰键 ↔ 组合键互切：切回组合键时按最新 target 清掉主监听器槽位。
+            // QA 热键的更新路径同样先重算 modifier 槽位（issue #470 既有模式）。
+            self.update_modifier_shortcut_bindings();
         }
 
         let inner_clone = Arc::clone(&self.inner);
@@ -1418,7 +1438,7 @@ impl Coordinator {
                 // Linux: 启动 fcitx5 插件信号监听作为热键源。
                 #[cfg(target_os = "linux")]
                 {
-                    let (qa_trigger, selection_polish_trigger, translation_trigger) =
+                    let (qa_trigger, selection_polish_trigger, translation_trigger, _) =
                         modifier_shortcut_triggers(&self.inner);
                     let custom_key = custom_dictation_key_string(&self.inner);
                     crate::linux_fcitx::start_dictation_signal_listener(
@@ -1450,12 +1470,13 @@ impl Coordinator {
 
     pub fn update_modifier_shortcut_bindings(&self) {
         if let Some(monitor) = self.inner.hotkey.lock().as_ref() {
-            let (qa_trigger, selection_polish_trigger, translation_trigger) =
+            let (qa_trigger, selection_polish_trigger, translation_trigger, conversation_trigger) =
                 modifier_shortcut_triggers(&self.inner);
             monitor.update_modifier_shortcuts(
                 qa_trigger,
                 selection_polish_trigger,
                 translation_trigger,
+                conversation_trigger,
             );
         }
     }
@@ -1709,6 +1730,32 @@ mod core_capsule_tests {
         assert_eq!(core_capsule_hide_delay(CapsuleState::Error), Some(2000));
         assert_eq!(core_capsule_hide_delay(CapsuleState::Cancelled), Some(0));
         assert_eq!(core_capsule_hide_delay(CapsuleState::Recording), None);
+    }
+}
+
+#[cfg(test)]
+mod conversation_hotkey_parse_tests {
+    use super::*;
+
+    /// 裸修饰键名落主键分支：macOS 上由 legacy_modifier_trigger 映射到主监听器
+    /// 对话槽位；is_modifier_only_shortcut 判定决定走槽位同步而非组合键注册。
+    #[test]
+    fn parse_conversation_hotkey_accepts_bare_side_modifier_primary() {
+        let parsed = parse_conversation_hotkey("rightoption").expect("bare RightOption parses");
+        assert!(parsed.modifiers.is_empty());
+        assert_eq!(parsed.primary, "rightoption");
+        assert_eq!(
+            crate::shortcut_binding::legacy_modifier_trigger(&parsed),
+            Some(crate::types::HotkeyTrigger::RightOption)
+        );
+        assert!(is_modifier_only_shortcut(&parsed));
+    }
+
+    #[test]
+    fn parse_conversation_hotkey_keeps_rejecting_modifier_only_chains() {
+        assert!(parse_conversation_hotkey("alt+shift").is_none());
+        assert!(parse_conversation_hotkey("").is_none());
+        assert!(parse_conversation_hotkey("alt+shift+d+e").is_none());
     }
 }
 

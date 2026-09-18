@@ -1258,6 +1258,7 @@ export const ja: typeof zhCN = {
       comboMenuToggle: 'その他の操作',
       comboDisableHint: 'コアショートカットは無効化できません（録音にはショートカットが必須です）',
       comboRecordHint: 'ショートカットの組み合わせを押してください…',
+      comboRecordHintModifier: 'ショートカットの組み合わせ、または単体の修飾キー（右 ⌥ など）を押してください…',
       comboNeedKey: '組み合わせキー（例: ⌘⇧J）を設定してください。修飾キー単体は使えません',
       comboRecorded: '記録済み',
       comboClear: 'クリア',

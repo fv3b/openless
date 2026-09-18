@@ -1304,6 +1304,7 @@ export const fr: typeof zhCN = {
       comboDisableHint:
         'Le raccourci principal ne peut pas être désactivé : l’enregistrement a besoin d’un raccourci',
       comboRecordHint: 'Appuyez sur votre combinaison…',
+      comboRecordHintModifier: 'Appuyez sur votre combinaison, ou sur une touche modificatrice seule (⌥ droite par ex.)…',
       comboNeedKey:
         'Utilisez une combinaison (p. ex. ⌘⇧J) ; une touche de modification seule ne suffit pas',
       comboRecorded: 'Raccourci enregistré',

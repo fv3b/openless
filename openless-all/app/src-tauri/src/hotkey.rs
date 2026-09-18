@@ -45,6 +45,10 @@ pub enum HotkeyEvent {
     QaShortcutPressed,
     SelectionPolishShortcutPressed,
     SelectionPolishShortcutReleased,
+    /// 对话热键（Ghostwriter 对话模式一键两用）的短按边沿。仅 macOS modifier-only
+    /// 配置下由主 tap 的对话槽位在松手确认短按后发出（组合键配置走
+    /// ComboHotkeyMonitor，不经此变体）。
+    ConversationShortcutPressed,
     /// 录制态按下 Fn（浏览器不向网页层下发 Fn 的 keydown，无法通过 recorder 捕获；
     /// 由 CGEventTap 在录制态检测后上报，供前端 ShortcutRecorder 提交 Fn 绑定）。
     FnRecordingPressed,
@@ -74,6 +78,9 @@ mod tests {
             translation_trigger: RwLock::new(None),
             translation_trigger_held: AtomicBool::new(true),
             translation_modifier_held: AtomicBool::new(true),
+            conversation_trigger: RwLock::new(None),
+            conversation_trigger_held: AtomicBool::new(true),
+            conversation_trigger_companion_seen: AtomicBool::new(true),
             recording_active: AtomicBool::new(false),
             recording_fn_held: AtomicBool::new(false),
         }
@@ -91,6 +98,8 @@ mod tests {
         assert!(!shared.selection_polish_trigger_held.load(Ordering::SeqCst));
         assert!(!shared.translation_trigger_held.load(Ordering::SeqCst));
         assert!(!shared.translation_modifier_held.load(Ordering::SeqCst));
+        assert!(!shared.conversation_trigger_held.load(Ordering::SeqCst));
+        assert!(!shared.conversation_trigger_companion_seen.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -112,6 +121,8 @@ mod tests {
         assert!(shared.selection_polish_trigger_held.load(Ordering::SeqCst));
         assert!(shared.translation_trigger_held.load(Ordering::SeqCst));
         assert!(shared.translation_modifier_held.load(Ordering::SeqCst));
+        assert!(shared.conversation_trigger_held.load(Ordering::SeqCst));
+        assert!(shared.conversation_trigger_companion_seen.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -123,6 +134,7 @@ mod tests {
             Some(HotkeyTrigger::RightCommand),
             Some(HotkeyTrigger::RightControl),
             Some(HotkeyTrigger::LeftOption),
+            Some(HotkeyTrigger::RightOption),
         );
 
         assert_eq!(*shared.qa_trigger.read(), Some(HotkeyTrigger::RightCommand));
@@ -134,11 +146,29 @@ mod tests {
             *shared.translation_trigger.read(),
             Some(HotkeyTrigger::LeftOption)
         );
+        assert_eq!(
+            *shared.conversation_trigger.read(),
+            Some(HotkeyTrigger::RightOption)
+        );
         assert!(shared.trigger_held.load(Ordering::SeqCst));
         assert!(!shared.qa_trigger_held.load(Ordering::SeqCst));
         assert!(!shared.selection_polish_trigger_held.load(Ordering::SeqCst));
         assert!(!shared.translation_trigger_held.load(Ordering::SeqCst));
         assert!(shared.translation_modifier_held.load(Ordering::SeqCst));
+        assert!(!shared.conversation_trigger_held.load(Ordering::SeqCst));
+        assert!(!shared.conversation_trigger_companion_seen.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn update_modifier_shortcuts_accepts_cleared_conversation_slot() {
+        let shared = shared_with_held_latches();
+        *shared.conversation_trigger.write() = Some(HotkeyTrigger::RightOption);
+
+        update_shared_modifier_shortcuts(&shared, None, None, None, None);
+
+        assert!(shared.conversation_trigger.read().is_none());
+        assert!(!shared.conversation_trigger_held.load(Ordering::SeqCst));
+        assert!(!shared.conversation_trigger_companion_seen.load(Ordering::SeqCst));
     }
 }
 
@@ -150,6 +180,7 @@ pub trait HotkeyAdapter: Send + Sync {
         qa_trigger: Option<HotkeyTrigger>,
         selection_polish_trigger: Option<HotkeyTrigger>,
         translation_trigger: Option<HotkeyTrigger>,
+        conversation_trigger: Option<HotkeyTrigger>,
     );
     fn reset_held_state(&self);
     /// 快捷键录制态开关。激活期间监听器上报 Fn 按下边沿（`FnRecordingPressed`），
@@ -176,6 +207,18 @@ struct Shared {
     /// Shift（翻译修饰键）当前是否按住。用于在 FLAGS_CHANGED 上识别 down 边沿
     /// （只在 false → true 时往上层发 TranslationModifierPressed）。详见 issue #4。
     translation_modifier_held: AtomicBool,
+    /// 对话热键的 modifier-only 触发键（macOS 主 tap 第 4 槽位，QA/选区润色/翻译
+    /// 同款）。None = 未配置或平台不支持；组合键配置走 ComboHotkeyMonitor，不进这里。
+    /// 非 macOS 平台只写不读（无槽位消费方），属预期。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    conversation_trigger: RwLock<Option<HotkeyTrigger>>,
+    /// 对话触发键当前是否按住（FLAGS_CHANGED 边沿去重）。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    conversation_trigger_held: AtomicBool,
+    /// 对话触发键按住期间是否见到普通键 / 功能层事件（Option+字母打特殊字符、
+    /// Option+亮度键）。true = 本次短按候选作废，松手不触发。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    conversation_trigger_companion_seen: AtomicBool,
     /// 快捷键录制是否激活（ShortcutRecorder 处于录入态）。激活期间 CGEventTap 上报
     /// Fn 按下边沿（`FnRecordingPressed`），供前端 recorder 提交 Fn 绑定。
     recording_active: AtomicBool,
@@ -217,11 +260,13 @@ impl HotkeyMonitor {
         qa_trigger: Option<HotkeyTrigger>,
         selection_polish_trigger: Option<HotkeyTrigger>,
         translation_trigger: Option<HotkeyTrigger>,
+        conversation_trigger: Option<HotkeyTrigger>,
     ) {
         self.adapter.update_modifier_shortcuts(
             qa_trigger,
             selection_polish_trigger,
             translation_trigger,
+            conversation_trigger,
         );
     }
 
@@ -337,6 +382,9 @@ where
         translation_trigger: RwLock::new(None),
         translation_trigger_held: AtomicBool::new(false),
         translation_modifier_held: AtomicBool::new(false),
+        conversation_trigger: RwLock::new(None),
+        conversation_trigger_held: AtomicBool::new(false),
+        conversation_trigger_companion_seen: AtomicBool::new(false),
         recording_active: AtomicBool::new(false),
         recording_fn_held: AtomicBool::new(false),
     });
@@ -383,10 +431,12 @@ fn update_shared_modifier_shortcuts(
     qa_trigger: Option<HotkeyTrigger>,
     selection_polish_trigger: Option<HotkeyTrigger>,
     translation_trigger: Option<HotkeyTrigger>,
+    conversation_trigger: Option<HotkeyTrigger>,
 ) {
     *shared.qa_trigger.write() = qa_trigger;
     *shared.selection_polish_trigger.write() = selection_polish_trigger;
     *shared.translation_trigger.write() = translation_trigger;
+    *shared.conversation_trigger.write() = conversation_trigger;
     shared
         .qa_trigger_held
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -395,6 +445,12 @@ fn update_shared_modifier_shortcuts(
         .store(false, std::sync::atomic::Ordering::SeqCst);
     shared
         .translation_trigger_held
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .conversation_trigger_held
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .conversation_trigger_companion_seen
         .store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
@@ -419,6 +475,12 @@ fn reset_shared_held_state(shared: &Shared) {
         .store(false, std::sync::atomic::Ordering::SeqCst);
     shared
         .translation_modifier_held
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .conversation_trigger_held
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .conversation_trigger_companion_seen
         .store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
@@ -498,12 +560,14 @@ mod platform {
             qa_trigger: Option<HotkeyTrigger>,
             selection_polish_trigger: Option<HotkeyTrigger>,
             translation_trigger: Option<HotkeyTrigger>,
+            conversation_trigger: Option<HotkeyTrigger>,
         ) {
             update_shared_modifier_shortcuts(
                 &self.shared,
                 qa_trigger,
                 selection_polish_trigger,
                 translation_trigger,
+                conversation_trigger,
             );
         }
 
@@ -592,6 +656,11 @@ mod platform {
     /// 与 Auto 模式既有的 350ms 短按 / 长按分界保持一致。
     const FN_TAP_MAX_DURATION: std::time::Duration = std::time::Duration::from_millis(350);
 
+    /// 对话热键 modifier-only 槽位的短按阈值：点按才触发，长按留给特殊字符 /
+    /// 功能层输入。与 Auto 模式既有的 350ms 短按 / 长按分界保持一致。
+    const CONVERSATION_TAP_MAX_DURATION: std::time::Duration =
+        std::time::Duration::from_millis(350);
+
     type CgEventTapCallBack = extern "C" fn(
         proxy: *mut c_void,
         event_type: CgEventType,
@@ -637,6 +706,9 @@ mod platform {
         combo_tx: Sender<HotkeyCombinedEdge>,
         /// Auto / Toggle 下 Fn 延迟到松开才决定是否派发：短按派发，长按或功能层组合丢弃。
         fn_pressed_at: parking_lot::Mutex<Option<std::time::Instant>>,
+        /// 对话槽位 modifier-only 触发的按下时刻：短按判定（CONVERSATION_TAP_MAX_DURATION）
+        /// 延迟到松开，需要知道按了多久。
+        conversation_pressed_at: parking_lot::Mutex<Option<std::time::Instant>>,
         /// 与 MacHotkeyAdapter 共享的 (tap, runloop) refs。tap re-enable on
         /// TAP_DISABLED_BY_TIMEOUT 走 handles.tap；adapter shutdown 也走这两个 lock。
         handles: Arc<MacShutdownHandles>,
@@ -666,6 +738,7 @@ mod platform {
             cancel_tx,
             combo_tx,
             fn_pressed_at: parking_lot::Mutex::new(None),
+            conversation_pressed_at: parking_lot::Mutex::new(None),
             handles: Arc::clone(&handles),
         }));
 
@@ -817,6 +890,7 @@ mod platform {
             HotkeyEvent::TranslationModifierPressed,
             None,
         );
+        handle_conversation_modifier_trigger(ctx, keycode, flags, std::time::Instant::now());
 
         handle_dictation_trigger_flags_changed(ctx, keycode, flags, std::time::Instant::now());
     }
@@ -929,6 +1003,67 @@ mod platform {
         }
     }
 
+    /// 对话热键 modifier-only 槽位的短按判定（复用 Fn 的 tap-only 语义：按下只记
+    /// 候选，等松手确认）。
+    ///
+    /// 右 Option 同时是 macOS 特殊字符输入（Option+字母）与 AltGr 的主力修饰键，
+    /// 按下即开会话会持续误触。这里按下只记按下时刻，松手时确认「未叠加普通键 /
+    /// 功能层事件 且 按住时长 < 短按阈值」才发 `ConversationShortcutPressed`；
+    /// 长按与组合全程不发事件——连胶囊都不会闪（优于「触发后撤销」）。
+    fn handle_conversation_modifier_trigger(
+        ctx: &CallbackContext,
+        keycode: i64,
+        flags: CgEventFlags,
+        now: std::time::Instant,
+    ) {
+        let trigger = *ctx.shared.conversation_trigger.read();
+        let Some(trigger) = trigger else {
+            return;
+        };
+        if trigger == HotkeyTrigger::Custom || keycode != trigger_to_keycode(trigger) {
+            return;
+        }
+        let active = (flags & trigger_to_flag_mask(trigger)) != 0;
+        let was_held = ctx
+            .shared
+            .conversation_trigger_held
+            .load(Ordering::SeqCst);
+
+        if active && !was_held {
+            ctx.shared
+                .conversation_trigger_held
+                .store(true, Ordering::SeqCst);
+            ctx.shared
+                .conversation_trigger_companion_seen
+                .store(false, Ordering::SeqCst);
+            *ctx.conversation_pressed_at.lock() = Some(now);
+            return;
+        }
+
+        if !active && was_held {
+            ctx.shared
+                .conversation_trigger_held
+                .store(false, Ordering::SeqCst);
+            let pressed_at = ctx.conversation_pressed_at.lock().take();
+            let companion_seen = ctx
+                .shared
+                .conversation_trigger_companion_seen
+                .load(Ordering::SeqCst);
+            let held_for = pressed_at.map(|at| now.saturating_duration_since(at));
+            if !companion_seen && held_for.is_some_and(|d| d < CONVERSATION_TAP_MAX_DURATION) {
+                send_or_log(&ctx.tx, HotkeyEvent::ConversationShortcutPressed);
+            } else {
+                log::info!(
+                    "[hotkey] 对话热键未触发（held_ms={}，companion_seen={companion_seen}）",
+                    held_for.map(|d| d.as_millis()).unwrap_or(0)
+                );
+            }
+        } else if !active {
+            // latch 被外部重置（录制态 / 绑定更新）后的物理松手：清掉旧时间戳。
+            ctx.conversation_pressed_at.lock().take();
+        }
+    }
+
     fn handle_key_down(ctx: &CallbackContext, event: CgEventRef) {
         let keycode = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) };
         if keycode == ESC_KEYCODE {
@@ -966,10 +1101,22 @@ mod platform {
     }
 
     fn note_fn_function_layer_event(ctx: &CallbackContext, subtype: i16, data1: isize) {
-        if is_auxiliary_function_key_event(subtype, data1)
-            && ctx.shared.binding.read().trigger == HotkeyTrigger::Fn
-        {
+        if !is_auxiliary_function_key_event(subtype, data1) {
+            return;
+        }
+        if ctx.shared.binding.read().trigger == HotkeyTrigger::Fn {
             note_companion_key_down(ctx);
+        }
+        // 对话槽位候选进行中遇到功能层操作（Option 按住时的亮度/音量键）：
+        // 与普通键同理作废本次短按，松手不触发对话。
+        if ctx
+            .shared
+            .conversation_trigger_held
+            .load(Ordering::SeqCst)
+        {
+            ctx.shared
+                .conversation_trigger_companion_seen
+                .store(true, Ordering::SeqCst);
         }
     }
 
@@ -983,6 +1130,17 @@ mod platform {
     /// 或 Cmd 不会被误判成组合键；只有真正的字符 / 功能键才算。OS 自动重复与「按住
     /// 触发键连按多个键」由 companion latch 收敛成一次。
     fn note_companion_key_down(ctx: &CallbackContext) {
+        // 对话槽位候选进行中按下普通键 = 用户在打 Option+字母 等组合输入特殊字符，
+        // 作废本次短按候选（松手不触发、也从未触发过，无胶囊闪烁）。
+        if ctx
+            .shared
+            .conversation_trigger_held
+            .load(Ordering::SeqCst)
+        {
+            ctx.shared
+                .conversation_trigger_companion_seen
+                .store(true, Ordering::SeqCst);
+        }
         if !ctx.shared.trigger_held.load(Ordering::SeqCst) {
             return;
         }
@@ -1064,6 +1222,9 @@ mod platform {
                 translation_trigger: RwLock::new(None),
                 translation_trigger_held: AtomicBool::new(false),
                 translation_modifier_held: AtomicBool::new(false),
+                conversation_trigger: RwLock::new(None),
+                conversation_trigger_held: AtomicBool::new(false),
+                conversation_trigger_companion_seen: AtomicBool::new(false),
                 recording_active: AtomicBool::new(false),
                 recording_fn_held: AtomicBool::new(false),
             })
@@ -1086,6 +1247,7 @@ mod platform {
                     cancel_tx,
                     combo_tx,
                     fn_pressed_at: parking_lot::Mutex::new(None),
+                    conversation_pressed_at: parking_lot::Mutex::new(None),
                     handles: Arc::new(MacShutdownHandles {
                         tap: std::sync::Mutex::new(None),
                         runloop: std::sync::Mutex::new(None),
@@ -1334,6 +1496,160 @@ mod platform {
             );
             assert_eq!(edge_names(drain(&rx)), vec!["released"]);
         }
+
+        // ── 对话热键 modifier-only 槽位（短按判定） ──────────────────────────
+
+        fn conversation_shared() -> Arc<Shared> {
+            let shared = shared(HotkeyTrigger::Custom);
+            *shared.conversation_trigger.write() = Some(HotkeyTrigger::RightOption);
+            shared
+        }
+
+        /// 短按右 Option（<350ms、无叠加键）→ 松手才发一次 ConversationShortcutPressed；
+        /// 按下边沿本身不发事件（Fn tap-only 同款：点按才触发）。
+        #[test]
+        fn mac_conversation_short_tap_fires_once_after_release() {
+            let shared = conversation_shared();
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            assert!(
+                drain(&rx).is_empty(),
+                "按下边沿必须保持候选态，不能立即触发"
+            );
+            // OS 自动重复的 FLAGS_CHANGED（active 仍为真）不得重复记候选。
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+
+            handle_conversation_modifier_trigger(
+                &ctx,
+                keycode,
+                0,
+                pressed_at + std::time::Duration::from_millis(120),
+            );
+            assert_eq!(drain(&rx), vec![HotkeyEvent::ConversationShortcutPressed]);
+        }
+
+        /// 长按右 Option（≥350ms）不触发：把时间留给特殊字符/功能层输入。
+        #[test]
+        fn mac_conversation_long_hold_does_not_fire() {
+            let shared = conversation_shared();
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            handle_conversation_modifier_trigger(
+                &ctx,
+                keycode,
+                0,
+                pressed_at + CONVERSATION_TAP_MAX_DURATION,
+            );
+
+            assert!(drain(&rx).is_empty());
+        }
+
+        /// Option+字母 打特殊字符：按住期间的普通键 KEY_DOWN 作废本次短按候选，
+        /// 松手不触发对话（也从未触发过——无胶囊闪烁）。
+        #[test]
+        fn mac_conversation_companion_key_suppresses_tap() {
+            let shared = conversation_shared();
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            note_companion_key_down(&ctx);
+            handle_conversation_modifier_trigger(
+                &ctx,
+                keycode,
+                0,
+                pressed_at + std::time::Duration::from_millis(100),
+            );
+
+            assert!(drain(&rx).is_empty());
+            // 下一次干净的点按要能正常触发：companion 旗标必须在新按下边沿重置。
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            handle_conversation_modifier_trigger(
+                &ctx,
+                keycode,
+                0,
+                pressed_at + std::time::Duration::from_millis(100),
+            );
+            assert_eq!(drain(&rx), vec![HotkeyEvent::ConversationShortcutPressed]);
+        }
+
+        /// 左右 Option 靠 keycode 区分：右 Option 槽位不吃左 Option（keycode 58）的边沿。
+        #[test]
+        fn mac_conversation_slot_respects_physical_side() {
+            let shared = conversation_shared();
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let right_keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(
+                &ctx,
+                trigger_to_keycode(HotkeyTrigger::LeftOption),
+                flags,
+                pressed_at,
+            );
+            handle_conversation_modifier_trigger(&ctx, right_keycode, 0, pressed_at);
+            assert!(drain(&rx).is_empty(), "左 Option 的按下 + 无关松手不得触发");
+
+            handle_conversation_modifier_trigger(&ctx, right_keycode, flags, pressed_at);
+            handle_conversation_modifier_trigger(
+                &ctx,
+                right_keycode,
+                0,
+                pressed_at + std::time::Duration::from_millis(100),
+            );
+            assert_eq!(drain(&rx), vec![HotkeyEvent::ConversationShortcutPressed]);
+        }
+
+        /// Option 按住时的功能层操作（亮度/音量 systemDefined）同样作废短按候选。
+        #[test]
+        fn mac_conversation_function_layer_event_suppresses_tap() {
+            let shared = conversation_shared();
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            note_fn_function_layer_event(
+                &ctx,
+                NX_SUBTYPE_AUX_CONTROL_BUTTONS,
+                (2_i64 << 16) as isize,
+            );
+            handle_conversation_modifier_trigger(
+                &ctx,
+                keycode,
+                0,
+                pressed_at + std::time::Duration::from_millis(100),
+            );
+
+            assert!(drain(&rx).is_empty());
+        }
+
+        /// 未配置对话槽位（None）时整个判定短路，不产生任何事件。
+        #[test]
+        fn mac_conversation_slot_ignores_events_when_unconfigured() {
+            let shared = shared(HotkeyTrigger::Custom);
+            let (ctx, rx) = callback_context(Arc::clone(&shared));
+            let pressed_at = std::time::Instant::now();
+            let keycode = trigger_to_keycode(HotkeyTrigger::RightOption);
+            let flags = trigger_to_flag_mask(HotkeyTrigger::RightOption);
+
+            handle_conversation_modifier_trigger(&ctx, keycode, flags, pressed_at);
+            handle_conversation_modifier_trigger(&ctx, keycode, 0, pressed_at);
+
+            assert!(drain(&rx).is_empty());
+        }
     }
 }
 
@@ -1428,12 +1744,14 @@ mod platform {
             qa_trigger: Option<HotkeyTrigger>,
             selection_polish_trigger: Option<HotkeyTrigger>,
             translation_trigger: Option<HotkeyTrigger>,
+            conversation_trigger: Option<HotkeyTrigger>,
         ) {
             update_shared_modifier_shortcuts(
                 &self.shared,
                 qa_trigger,
                 selection_polish_trigger,
                 translation_trigger,
+                conversation_trigger,
             );
         }
 
@@ -1801,6 +2119,9 @@ mod platform {
                 translation_trigger: RwLock::new(None),
                 translation_trigger_held: AtomicBool::new(false),
                 translation_modifier_held: AtomicBool::new(false),
+                conversation_trigger: RwLock::new(None),
+                conversation_trigger_held: AtomicBool::new(false),
+                conversation_trigger_companion_seen: AtomicBool::new(false),
                 recording_active: AtomicBool::new(false),
                 recording_fn_held: AtomicBool::new(false),
             })
@@ -2233,6 +2554,7 @@ mod platform {
             qa_trigger: Option<HotkeyTrigger>,
             selection_polish_trigger: Option<HotkeyTrigger>,
             translation_trigger: Option<HotkeyTrigger>,
+            _conversation_trigger: Option<HotkeyTrigger>,
         ) {
             crate::linux_fcitx::sync_qa_binding(qa_trigger);
             // 选区润色触发键：fcitx5 插件通过 SelectionPolishEvent 信号回传

@@ -1250,6 +1250,7 @@ export const ko: typeof zhCN = {
       comboMenuToggle: '더보기',
       comboDisableHint: '핵심 단축키는 비활성화할 수 없습니다 (녹음에는 단축키가 필수입니다)',
       comboRecordHint: '단축키 조합을 눌러 주세요…',
+      comboRecordHintModifier: '단축키 조합 또는 개별 보조 키(오른쪽 ⌥ 등)를 눌러 주세요…',
       comboNeedKey: '조합 키(예: ⌘⇧J)를 설정하세요. 단일 보조 키는 사용할 수 없습니다',
       comboRecorded: '녹화됨',
       comboClear: '지우기',

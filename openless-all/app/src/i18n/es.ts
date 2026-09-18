@@ -1292,6 +1292,7 @@ export const es: typeof zhCN = {
       comboMenuToggle: 'Más opciones',
       comboDisableHint: 'No se puede desactivar el atajo principal: la grabación necesita un atajo',
       comboRecordHint: 'Pulsa tu combinación de teclas…',
+      comboRecordHintModifier: 'Pulsa tu combinación de teclas, o una tecla modificadora sola (p. ej., ⌥ derecha)…',
       comboNeedKey:
         'Usa una combinación de teclas (p. ej., ⌘⇧J); no basta con una tecla modificadora',
       comboRecorded: 'Atajo registrado',

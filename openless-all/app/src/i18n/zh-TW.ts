@@ -1187,6 +1187,7 @@ export const zhTW: typeof zhCN = {
       comboMenuToggle: '更多操作',
       comboDisableHint: '核心快捷鍵不可停用，錄音必須綁定一個快捷鍵',
       comboRecordHint: '請按下快捷鍵組合…',
+      comboRecordHintModifier: '請按下快捷鍵組合，或點按單個修飾鍵（如右 ⌥）…',
       comboNeedKey: '請設定組合鍵（如 ⌘⇧J），不支援單獨的修飾鍵',
       comboRecorded: '已錄製',
       comboClear: '清除',

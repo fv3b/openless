@@ -1,4 +1,5 @@
 import type { ShortcutBinding } from './types';
+import { currentPlatform } from './hotkey';
 
 /**
  * 对话热键的序列化契约：前端把 ShortcutBinding 存成全小写、`+` 分隔的字符串
@@ -101,7 +102,34 @@ const MODIFIER_PRIMARIES = new Set([
   'rightsuper',
 ]);
 
-/** 录制结果是否是单修饰键（全局热键无法注册；comboOnly 录制器已拦，此处兜底）。 */
+/** 录制结果是否是单修饰键（非 macOS 全局热键无法注册；comboOnly 录制器已拦，此处兜底）。 */
 export function isModifierOnlyPrimary(primary: string): boolean {
   return MODIFIER_PRIMARIES.has(primary.trim().toLowerCase());
+}
+
+/**
+ * macOS 对话热键可用的单修饰键主键：主监听器（CGEventTap）有对话 modifier-only
+ * 槽位，侧别修饰键经 openless-core `legacy_modifier_trigger` 映射成槽位触发键
+ * （RightOption/RightAlt 同槽）。Fn、裸 Shift/Control 等无侧别键不在其中——
+ * 它们要么与系统功能冲突（Fn 点按=表情/输入法切换），要么映射不出确定槽位。
+ */
+const MAC_CONVERSATION_MODIFIER_PRIMARIES = new Set([
+  'leftoption',
+  'rightoption',
+  'leftalt',
+  'rightalt',
+  'leftcontrol',
+  'rightcontrol',
+  'leftcommand',
+  'rightcommand',
+  'leftshift',
+  'rightshift',
+]);
+
+/** 该单修饰键主键能否作为对话热键保存（仅 macOS；其他平台一律拒绝）。 */
+export function isConversationModifierPrimaryAllowed(primary: string): boolean {
+  return (
+    currentPlatform().isMac &&
+    MAC_CONVERSATION_MODIFIER_PRIMARIES.has(primary.trim().toLowerCase())
+  );
 }

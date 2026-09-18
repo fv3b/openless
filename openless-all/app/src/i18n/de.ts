@@ -1296,6 +1296,7 @@ export const de: typeof zhCN = {
       comboDisableHint:
         'Der zentrale Kurzbefehl kann nicht deaktiviert werden – für Aufnahmen wird ein Kurzbefehl benötigt',
       comboRecordHint: 'Drücke deine Tastenkombination…',
+      comboRecordHintModifier: 'Drücke deine Tastenkombination oder eine einzelne Modifikatortaste (z. B. rechte ⌥)…',
       comboNeedKey:
         'Verwende eine Tastenkombination (z. B. ⌘⇧J). Eine einzelne Modifikatortaste reicht nicht aus',
       comboRecorded: 'Aufgezeichnet',

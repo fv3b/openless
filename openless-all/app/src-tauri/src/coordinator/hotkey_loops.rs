@@ -133,12 +133,13 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
                 let adapter = monitor.kind();
                 *inner.hotkey.lock() = Some(monitor);
                 if let Some(monitor) = inner.hotkey.lock().as_ref() {
-                    let (qa_trigger, selection_polish_trigger, translation_trigger) =
+                    let (qa_trigger, selection_polish_trigger, translation_trigger, conversation_trigger) =
                         modifier_shortcut_triggers(&inner);
                     monitor.update_modifier_shortcuts(
                         qa_trigger,
                         selection_polish_trigger,
                         translation_trigger,
+                        conversation_trigger,
                     );
                 }
                 *inner.hotkey_status.lock() = HotkeyStatus {
@@ -159,7 +160,7 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
                 // Linux: 启动 fcitx5 插件信号监听作为热键源。
                 #[cfg(target_os = "linux")]
                 {
-                    let (qa_trigger, selection_polish_trigger, translation_trigger) =
+                    let (qa_trigger, selection_polish_trigger, translation_trigger, _) =
                         modifier_shortcut_triggers(&inner);
                     let custom_key = custom_dictation_key_string(&inner);
                     crate::linux_fcitx::start_dictation_signal_listener(
@@ -219,15 +220,7 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
         };
         if crate::shortcut_binding::legacy_modifier_trigger(&binding).is_some() {
             inner.qa_hotkey.lock().take();
-            if let Some(monitor) = inner.hotkey.lock().as_ref() {
-                let (qa_trigger, selection_polish_trigger, translation_trigger) =
-                    modifier_shortcut_triggers(&inner);
-                monitor.update_modifier_shortcuts(
-                    qa_trigger,
-                    selection_polish_trigger,
-                    translation_trigger,
-                );
-            }
+            sync_modifier_shortcut_triggers(&inner);
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
@@ -372,15 +365,7 @@ pub(super) fn try_update_selection_polish_hotkey_binding(inner: &Arc<Inner>) -> 
 
 #[cfg(not(mobile))]
 fn update_selection_polish_modifier_shortcut(inner: &Arc<Inner>) {
-    if let Some(monitor) = inner.hotkey.lock().as_ref() {
-        let (qa_trigger, selection_polish_trigger, translation_trigger) =
-            modifier_shortcut_triggers(inner);
-        monitor.update_modifier_shortcuts(
-            qa_trigger,
-            selection_polish_trigger,
-            translation_trigger,
-        );
-    }
+    sync_modifier_shortcut_triggers(inner);
 }
 
 #[cfg(not(mobile))]
@@ -716,6 +701,9 @@ pub(super) fn less_computer_modifier_bridge_loop(
             // Esc 取消与组合键撤销都不在此枚举里：分别走 esc_cancel_bridge_loop /
             // combo_abort_bridge_loop（见各自函数注释）。
             HotkeyEvent::TranslationModifierPressed | HotkeyEvent::QaShortcutPressed => {}
+            // Less Computer 监听器的 Shared 不承载对话槽位（modifier_shortcut_triggers
+            // 只喂主监听器），防御性忽略。
+            HotkeyEvent::ConversationShortcutPressed => {}
             #[cfg(not(mobile))]
             HotkeyEvent::SelectionPolishShortcutPressed
             | HotkeyEvent::SelectionPolishShortcutReleased => {}
@@ -1349,15 +1337,7 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
             || crate::shortcut_binding::legacy_modifier_trigger(&binding).is_some()
         {
             take_translation_hotkey_on_main_thread(&inner);
-            if let Some(monitor) = inner.hotkey.lock().as_ref() {
-                let (qa_trigger, selection_polish_trigger, translation_trigger) =
-                    modifier_shortcut_triggers(&inner);
-                monitor.update_modifier_shortcuts(
-                    qa_trigger,
-                    selection_polish_trigger,
-                    translation_trigger,
-                );
-            }
+            sync_modifier_shortcut_triggers(&inner);
             // 对齐主 supervisor 的 exit-on-success：装/卸交给 try_update_translation_hotkey_binding 主动路径，issue #470
             return;
         }
@@ -1463,6 +1443,16 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
         };
         if is_modifier_only_shortcut(&binding) {
             take_action_hotkey_on_main_thread(&inner, kind);
+            // macOS 对话热键例外：单修饰键 primary 改挂主监听器的 modifier-only
+            // 槽位（QA/选区润色/翻译同款）。常驻低频重同步，主监听器重装后也能
+            // 收敛。其余 kind 与非 macOS 维持反注册退出（global-hotkey 装不下
+            // 裸修饰键，Carbon 能力边界）。
+            #[cfg(target_os = "macos")]
+            if kind == ActionHotkeyKind::Conversation {
+                sync_modifier_shortcut_triggers(&inner);
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            }
             // 对齐主 supervisor 的 exit-on-success：装/卸交给 update_action_hotkey_binding 主动路径，issue #470
             return;
         }
@@ -1667,8 +1657,14 @@ pub(super) fn action_hotkey_slot(
 }
 
 /// 解析对话热键序列化串（前端保存格式：全小写、`+` 分隔、修饰键在前主键最后，
-/// 如 "alt+shift+d"）。空串／全是修饰键（modifier-only 不支持）／含未知 token
-/// → None（视为未配置，监听器不装）。
+/// 如 "alt+shift+d"）。空串／全是修饰键（无主键的串，如 "alt+shift"）／含未知
+/// token → None（视为未配置，监听器不装）。
+///
+/// 注意：裸修饰键名（如 "rightoption"）会落进主键分支得到
+/// `ShortcutBinding { primary: "rightoption" }`——这是有意为之：macOS 上该形态
+/// 经 `legacy_modifier_trigger` 映射到主监听器的 modifier-only 槽位（见
+/// `modifier_shortcut_triggers`）；非 macOS 由 `is_modifier_only_shortcut`
+/// 判定后照旧反注册关闭。
 pub(super) fn parse_conversation_hotkey(raw: &str) -> Option<crate::types::ShortcutBinding> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1962,9 +1958,25 @@ pub(super) fn sync_custom_dictation_to_plugin(inner: &Arc<Inner>) {
     }
 }
 
+/// 把四个 modifier-only 槽位（QA / 选区润色 / 翻译 / 对话）从 runtime target
+/// 重同步到主监听器。对话槽位仅 macOS 有值（modifier_shortcut_triggers 内 cfg 门）。
+pub(super) fn sync_modifier_shortcut_triggers(inner: &Arc<Inner>) {
+    if let Some(monitor) = inner.hotkey.lock().as_ref() {
+        let (qa_trigger, selection_polish_trigger, translation_trigger, conversation_trigger) =
+            modifier_shortcut_triggers(inner);
+        monitor.update_modifier_shortcuts(
+            qa_trigger,
+            selection_polish_trigger,
+            translation_trigger,
+            conversation_trigger,
+        );
+    }
+}
+
 pub(super) fn modifier_shortcut_triggers(
     inner: &Arc<Inner>,
 ) -> (
+    Option<crate::types::HotkeyTrigger>,
     Option<crate::types::HotkeyTrigger>,
     Option<crate::types::HotkeyTrigger>,
     Option<crate::types::HotkeyTrigger>,
@@ -1983,7 +1995,22 @@ pub(super) fn modifier_shortcut_triggers(
         .selection_polish
         .as_ref()
         .and_then(crate::shortcut_binding::legacy_modifier_trigger);
-    (qa_trigger, selection_polish_trigger, translation_trigger)
+    // 对话热键的 modifier-only 槽位仅在 macOS 启用（主 CGEventTap 第 4 槽位，
+    // 短按判定）。其他平台维持 global-hotkey 组合键路径，恒为 None。
+    #[cfg(target_os = "macos")]
+    let conversation_trigger = target
+        .conversation
+        .as_deref()
+        .and_then(parse_conversation_hotkey)
+        .and_then(|binding| crate::shortcut_binding::legacy_modifier_trigger(&binding));
+    #[cfg(not(target_os = "macos"))]
+    let conversation_trigger = None;
+    (
+        qa_trigger,
+        selection_polish_trigger,
+        translation_trigger,
+        conversation_trigger,
+    )
 }
 
 /// 在这里、而不是在读取侧判定「翻译是否真的会发生」：本函数在桥接线程（翻译热键事件 /
@@ -2077,6 +2104,12 @@ pub(super) fn hotkey_bridge_loop(inner: Arc<Inner>, rx: mpsc::Receiver<HotkeyEve
             #[cfg(not(mobile))]
             HotkeyEvent::SelectionPolishShortcutReleased => {
                 handle_selection_workspace_hotkey_released(&inner_cloned);
+            }
+            // 对话热键 modifier-only 槽位（macOS 主 tap 短按判定产出）。与组合键
+            // 路径共用 handle_conversation_hotkey_pressed 的路由语义：
+            // 无活跃对话会话→start；explicit 时机活跃→trigger；其余无操作。
+            HotkeyEvent::ConversationShortcutPressed => {
+                handle_conversation_hotkey_pressed(&inner_cloned);
             }
             // 非录制态不会出现（CGEventTap 仅在 recording_active 时上报）；防御性忽略。
             #[cfg(not(mobile))]

@@ -11,6 +11,7 @@ import type { GhostwriterPreferences, GhostwriterProbeDepth, GhostwriterReplyTim
 import { THROTTLE_MAX_MS, THROTTLE_MIN_MS, parseThrottleMs } from '../../lib/ghostwriterThrottle';
 import {
   hasConversationHotkey,
+  isConversationModifierPrimaryAllowed,
   isModifierOnlyPrimary,
   parseConversationHotkey,
   serializeConversationHotkey,
@@ -123,7 +124,13 @@ function ConversationSection({
   const { t } = useTranslation();
 
   const saveHotkey = async (binding: { primary: string; modifiers: string[] } | null) => {
-    if (binding && isModifierOnlyPrimary(binding.primary)) {
+    // macOS 对话热键允许单修饰键 primary（挂主监听器 modifier-only 槽位，短按触发）；
+    // 其余单修饰键 / 非 macOS 照旧拒绝。
+    if (
+      binding &&
+      isModifierOnlyPrimary(binding.primary) &&
+      !isConversationModifierPrimaryAllowed(binding.primary)
+    ) {
       throw new Error(`hotkeyModifierOnly:${t('ghostwriter.conversation.hotkeyModifierOnly')}`);
     }
     await onSave({
@@ -151,6 +158,7 @@ function ConversationSection({
           <ShortcutRecorder
             value={parseConversationHotkey(ghostwriter.conversationHotkey)}
             comboOnly
+            allowBareModifierOnMac
             disabled={!ghostwriter.conversationEnabled}
             onSave={saveHotkey}
             onDisable={() => saveHotkey(null)}

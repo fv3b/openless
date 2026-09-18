@@ -1,5 +1,6 @@
 import {
   hasConversationHotkey,
+  isConversationModifierPrimaryAllowed,
   isModifierOnlyPrimary,
   parseConversationHotkey,
   serializeConversationHotkey,
@@ -7,6 +8,13 @@ import {
 
 function assert(condition: boolean, message: string) {
   if (!condition) throw new Error(message);
+}
+
+function mockNavigator(platform: string, userAgent = '') {
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { platform, userAgent },
+    configurable: true,
+  });
 }
 
 // serialize：修饰键按固定顺序、全小写（与 Tauri 宿主 parse_conversation_hotkey 同契约）
@@ -52,5 +60,47 @@ assert(hasConversationHotkey(undefined) === false, '未设置不算有');
 // modifier-only 主键兜底检测
 assert(isModifierOnlyPrimary('LeftShift') === true, '修饰键主键应被拦');
 assert(isModifierOnlyPrimary('D') === false, '普通主键应放行');
+
+// 对话热键单修饰键的平台旁路：仅 macOS 放行侧别修饰键
+mockNavigator('MacIntel');
+assert(
+  isConversationModifierPrimaryAllowed('RightOption') === true,
+  'macOS 上右 Option 应可作为对话热键',
+);
+assert(
+  isConversationModifierPrimaryAllowed('LeftOption') === true,
+  'macOS 上左 Option 应可作为对话热键',
+);
+assert(
+  isConversationModifierPrimaryAllowed('RightAlt') === true,
+  '右 Alt 别名与右 Option 同槽，应放行',
+);
+assert(
+  isConversationModifierPrimaryAllowed('LeftCommand') === true,
+  'macOS 上侧别 Command 应放行',
+);
+assert(
+  isConversationModifierPrimaryAllowed('Shift') === false,
+  '裸 Shift 无侧别，不应放行',
+);
+assert(isConversationModifierPrimaryAllowed('Fn') === false, 'Fn 与系统功能冲突，不应放行');
+assert(isConversationModifierPrimaryAllowed('CapsLock') === false, '大小写锁定不应放行');
+mockNavigator('Win32');
+assert(
+  isConversationModifierPrimaryAllowed('RightOption') === false,
+  '非 macOS 上单修饰键仍应拒绝',
+);
+mockNavigator('');
+
+// 单修饰键主键的序列化往返：录制器输出 RightOption → 存储串 rightoption → 解析回显
+assert(
+  serializeConversationHotkey({ primary: 'RightOption', modifiers: [] }) === 'rightoption',
+  '右 Option 应序列化为小写主键串',
+);
+assert(
+  parseConversationHotkey('rightoption')?.primary === 'rightoption',
+  'rightoption 应解析回显（命名主键小写，formatPrimary 负责显示为 右 ⌥）',
+);
+assert(hasConversationHotkey('rightoption') === true, '单修饰键配置后应算已有热键');
 
 console.log('ghostwriterConversation.test.ts: all assertions passed');

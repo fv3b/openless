@@ -2,7 +2,11 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { formatComboParts, modifiersFromPressedCodes } from '../lib/hotkey';
+import {
+  currentPlatform,
+  formatComboParts,
+  modifiersFromPressedCodes,
+} from '../lib/hotkey';
 import { functionKeyPrimaryFromEvent } from '../lib/hotkeyRecorder';
 import { KbdGroup } from './Kbd';
 import { setShortcutRecordingActive, validateShortcutBinding } from '../lib/ipc';
@@ -30,6 +34,7 @@ export function ShortcutRecorder({
   comboOnly = false,
   sideSpecificModifiers = false,
   allowMacDictationKey = false,
+  allowBareModifierOnMac = false,
 }: {
   value: ShortcutBinding | null;
   onSave: (binding: ShortcutBinding) => Promise<void>;
@@ -49,11 +54,16 @@ export function ShortcutRecorder({
   sideSpecificModifiers?: boolean;
   /** macOS dictation only: choose the dedicated key as the single trigger. */
   allowMacDictationKey?: boolean;
+  /** macOS 上放行单修饰键 primary（该场景的绑定挂主监听器 modifier-only 槽位，
+   *  见 openless 对话热键）。非 macOS 或未开启时 comboOnly 照旧拒绝。 */
+  allowBareModifierOnMac?: boolean;
 }) {
   const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 单修饰键放行 = 显式开启且确在 macOS（其余平台 global-hotkey 装不下裸修饰键）。
+  const allowBareModifier = allowBareModifierOnMac && currentPlatform().isMac;
   const nativeSelected = allowMacDictationKey && value?.primary === 'MacDictationKey';
   const nativeError =
     error &&
@@ -193,7 +203,7 @@ export function ShortcutRecorder({
     }
     if (isModifierKey(e.key)) {
       pressedCodes.current.add(e.code);
-      if (comboOnly) {
+      if (comboOnly && !allowBareModifier) {
         return;
       }
       const primary = modifierPrimaryFromCode(e.code, e.key);
@@ -223,7 +233,7 @@ export function ShortcutRecorder({
     e.preventDefault();
     e.stopPropagation();
     pressedCodes.current.delete(e.code);
-    if (comboOnly) return;
+    if (comboOnly && !allowBareModifier) return;
     const primary = modifierPrimaryFromCode(e.code, e.key);
     if (primary && pendingModifier.current?.primary === primary) {
       const binding = pendingModifier.current;
@@ -350,7 +360,9 @@ export function ShortcutRecorder({
               outline: 'none',
             }}
           >
-            {t('settings.recording.comboRecordHint')}
+            {allowBareModifier
+              ? t('settings.recording.comboRecordHintModifier')
+              : t('settings.recording.comboRecordHint')}
             <div style={{ fontSize: 11, color: 'var(--ol-ink-4)', marginTop: 4 }}>
               Esc · {t('common.cancel')}
             </div>
