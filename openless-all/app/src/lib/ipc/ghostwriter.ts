@@ -125,6 +125,12 @@ export function ghostwriterCancelLast(sessionId: string): Promise<GhostwriterCan
   }));
 }
 
+/** 浮框窗口贴合内容尺寸（逻辑 px；Rust 侧原子改尺寸＋底边锚定＋水平居中）。
+ *  窗口贴合卡片后，矩形之外的原生落点击/悬停给后面的软件，无需穿透逻辑。 */
+export function ghostwriterFitWindow(widthLogical: number, heightLogical: number): Promise<void> {
+  return invokeOrMock('ghostwriter_fit_window', { widthLogical, heightLogical }, () => undefined);
+}
+
 /** 按需批量提取候选常用语：选中历史语音记录 id，LLM 提取可编辑草稿（不落库）。 */
 export function extractGhostwriterCandidates(sessionIds: string[]): Promise<GhostwriterSnippetDraft[]> {
   return invokeOrMock('ghostwriter_extract_snippet_candidates', { sessionIds }, () => [

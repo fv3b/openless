@@ -298,6 +298,7 @@ macro_rules! app_invoke_handler_desktop {
             commands::reset_ghostwriter_task_brief,
             commands::ghostwriter_start_conversation,
             commands::ghostwriter_trigger_reply,
+            commands::ghostwriter_fit_window,
             commands::check_accessibility_permission,
             commands::request_accessibility_permission,
             commands::check_microphone_permission,

@@ -19,7 +19,8 @@ import {
   shouldUseGhostwriterCapsule,
   type GhostwriterPreviewState,
 } from '../lib/ghostwriterCapsule';
-import { getSettings, ghostwriterCancelLast } from '../lib/ipc';
+import { getSettings, ghostwriterCancelLast, ghostwriterFitWindow } from '../lib/ipc';
+import { shouldRefitWindow } from '../lib/ghostwriterWindowFit';
 import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/types';
 
 /**
@@ -39,18 +40,21 @@ import type { GhostwriterAssistState, GhostwriterCandidateKind } from '../lib/ty
  * 对话会话在标题区带「对话」标识（dictation_state_changed 载荷 conversational）。
  * 命中/预览走 ghostwriterPreviewReducer，候选区走 ghostwriterAssistReducer，
  * 选中态与撤销结果都由后端事件回流（前端只做渲染与判定）。
- * 定位固定当前显示器底部居中（Rust 侧未感知光标所在屏；跟随光标屏未实现）。
+ * 窗口动态贴合内容卡片（2026-09-18 裁决，替代轮询穿透）：ResizeObserver 测内容
+ * 容器变化（≥4px）下发 ghostwriter_fit_window，Rust 底边锚定＋水平居中同 pass
+ * 原子改尺寸；窗口矩形之外原生落点击/悬停给后面的软件。底部居中在当前显示器
+ * （Rust 侧未感知光标所在屏；跟随光标屏未实现）。
  */
 
-const WINDOW_WIDTH = 560;
 const CARD_WIDTH = 520;
-const CARD_GAP = 18;
 // 卡片竖向留白（420 − 2×12 = 396：候选区出现时向上长高的上限即卡片 maxHeight）。
 const CARD_VERTICAL_PADDING = 12;
 const CARD_MAX_HEIGHT = 420 - 2 * CARD_VERTICAL_PADDING;
 // 候选区收起时保留最后一帧渲染到 max-height 过渡结束（.2s），否则高度过渡看不见。
 const ASSIST_COLLAPSE_MS = 220;
 const FALLBACK_TOAST_MS = 2500;
+// 窗口底沿与屏幕底沿的间距（逻辑 px）：贴合命令底边锚定，show 同样按底边摆放。
+const SCREEN_BOTTOM_MARGIN = 20;
 // 悬停穿透判定轮询间隔：50ms 内完成穿透/接收切换，点击节奏下无感。
 const CARD_HOVER_POLL_MS = 50;
 const LEVEL_BARS = [0.45, 0.7, 1, 0.7, 0.45];
@@ -164,6 +168,8 @@ export function GhostwriterPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 卡片根元素：悬停穿透的命中判定区域。
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // 内容容器（兜底提示＋卡片）：窗口贴合的测量目标（2026-09-18 裁决）。
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   const setPanelVisible = (next: boolean) => {
     visibleRef.current = next;
@@ -205,13 +211,16 @@ export function GhostwriterPanel() {
       const monitor = await currentMonitor();
       if (monitor) {
         const scale = monitor.scaleFactor;
-        const x = monitor.position.x + (monitor.size.width - WINDOW_WIDTH * scale) / 2;
-        await win.setPosition(
-          new PhysicalPosition(
-            Math.round(x),
-            Math.round(monitor.position.y + monitor.size.height - 440 * scale),
-          ),
-        );
+        // 底边锚定：窗口高度动态贴合卡片后，位置按当前外框尺寸摆，保证卡片
+        // 底沿始终停在屏底上方 SCREEN_BOTTOM_MARGIN 逻辑 px，会话间不跳动。
+        const outer = await win.outerSize();
+        const x = monitor.position.x + Math.round((monitor.size.width - outer.width) / 2);
+        const y =
+          monitor.position.y +
+          monitor.size.height -
+          Math.round(SCREEN_BOTTOM_MARGIN * scale) -
+          outer.height;
+        await win.setPosition(new PhysicalPosition(x, y));
       }
       await win.show();
     } catch (error) {
@@ -416,6 +425,35 @@ export function GhostwriterPanel() {
     };
   }, [visible]);
 
+  // 窗口贴合卡片（2026-09-18 裁决，替代轮询穿透）：ResizeObserver 监听内容
+  // 容器（兜底提示＋卡片），尺寸变化 ≥4px 才下发 ghostwriter_fit_window——
+  // Rust 侧同一次主线程 pass 原子改尺寸＋底边锚定＋水平居中；窗口贴合卡片后，
+  // 矩形之外的点击/悬停原生落到后面的软件。flexShrink:0 保证测量值始终是
+  // 真实内容高（窗口暂小于内容时不被 flex 压缩，贴合自然向上收敛）。
+  // 观察初始回调即上报一次，会话首帧就能贴合；内容清空（窗口隐藏中）不下发。
+  useEffect(() => {
+    if (!isTauri) return;
+    const el = contentRef.current;
+    if (!el) return;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[entries.length - 1];
+      const box = entry.borderBoxSize?.[0];
+      const width = box ? box.inlineSize : entry.contentRect.width;
+      const height = box ? box.blockSize : entry.contentRect.height;
+      if (height < 1) return;
+      if (!shouldRefitWindow(lastWidth, lastHeight, width, height)) return;
+      lastWidth = width;
+      lastHeight = height;
+      void ghostwriterFitWindow(width, height).catch(error => {
+        console.warn('[ghostwriter] fit window failed', error);
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   // 候选区（候选组／推荐行）任一为空整行不渲染，全空整区收起。
   const assistHasContent =
     assist.candidateGroups.some(group => group.items.length > 0) ||
@@ -446,273 +484,284 @@ export function GhostwriterPanel() {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-end',
-        padding: `${CARD_VERTICAL_PADDING}px ${CARD_GAP}px`,
+        // 窗口贴合内容后无留白可言：贴边渲染，几何全由内容尺寸决定。
+        padding: 0,
         pointerEvents: 'none',
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif',
       }}
     >
-      {notice ? (
-        <div
-          style={{
-            marginBottom: 10,
-            padding: '8px 16px',
-            borderRadius: 999,
-            background: 'rgba(24, 26, 32, 0.92)',
-            border: '1px solid rgba(255, 255, 255, 0.12)',
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
-            color: '#f4f4f5',
-            fontSize: 13,
-            fontWeight: 500,
-            letterSpacing: '0.01em',
-          }}
-        >
-          {notice.text}
-        </div>
-      ) : null}
-      {visible ? (
-        <div
-          ref={cardRef}
-          style={{
-            width: CARD_WIDTH,
-            maxHeight: CARD_MAX_HEIGHT,
-            display: 'flex',
-            flexDirection: 'column',
-            borderRadius: 20,
-            background: 'rgba(19, 21, 26, 0.88)',
-            border: '1px solid rgba(255, 255, 255, 0.09)',
-            boxShadow: '0 18px 50px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255,255,255,0.06) inset',
-            backdropFilter: 'blur(28px) saturate(1.4)',
-            WebkitBackdropFilter: 'blur(28px) saturate(1.4)',
-            overflow: 'hidden',
-          }}
-        >
+      <div
+        ref={contentRef}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          flexShrink: 0,
+        }}
+      >
+        {notice ? (
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '12px 16px 8px',
+              marginBottom: 10,
+              padding: '8px 16px',
+              borderRadius: 999,
+              background: 'rgba(24, 26, 32, 0.92)',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
+              color: '#f4f4f5',
+              fontSize: 13,
+              fontWeight: 500,
+              letterSpacing: '0.01em',
             }}
           >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 999,
-                background: recording ? '#60a5fa' : '#34d399',
-                boxShadow: recording ? '0 0 10px rgba(96, 165, 250, 0.7)' : 'none',
-                animation: recording ? 'ghostwriterPulse 1.4s ease-in-out infinite' : undefined,
-                flexShrink: 0,
-              }}
-            />
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 500,
-                color: '#a1a1aa',
-                letterSpacing: '0.04em',
-              }}
-            >
-              {recording ? t('ghostwriter.panel.recording') : t('ghostwriter.panel.preparing')}
-            </span>
-            {conversational ? (
-              <span
-                style={{
-                  padding: '1px 8px',
-                  borderRadius: 999,
-                  background: 'rgba(96, 165, 250, 0.14)',
-                  border: '1px solid rgba(96, 165, 250, 0.38)',
-                  color: '#93c5fd',
-                  fontSize: 10.5,
-                  fontWeight: 600,
-                  letterSpacing: '0.06em',
-                  lineHeight: 1.6,
-                  flexShrink: 0,
-                }}
-              >
-                {t('ghostwriter.panel.conversationBadge')}
-              </span>
-            ) : null}
-            <div style={{ flex: 1 }} />
+            {notice.text}
+          </div>
+        ) : null}
+        {visible ? (
+          <div
+            ref={cardRef}
+            style={{
+              width: CARD_WIDTH,
+              maxHeight: CARD_MAX_HEIGHT,
+              display: 'flex',
+              flexDirection: 'column',
+              borderRadius: 20,
+              background: 'rgba(19, 21, 26, 0.88)',
+              border: '1px solid rgba(255, 255, 255, 0.09)',
+              boxShadow: '0 18px 50px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255,255,255,0.06) inset',
+              backdropFilter: 'blur(28px) saturate(1.4)',
+              WebkitBackdropFilter: 'blur(28px) saturate(1.4)',
+              overflow: 'hidden',
+            }}
+          >
             <div
               style={{
                 display: 'flex',
-                alignItems: 'flex-end',
-                gap: 3,
-                height: 16,
+                alignItems: 'center',
+                gap: 8,
+                padding: '12px 16px 8px',
               }}
             >
-              {LEVEL_BARS.map((factor, i) => {
-                const h = recording ? 3 + Math.round(level * 13 * factor) : 2;
-                return (
-                  <span
-                    key={i}
-                    style={{
-                      width: 3,
-                      height: h,
-                      borderRadius: 2,
-                      background: recording && level > 0.02 ? '#60a5fa' : 'rgba(255,255,255,0.18)',
-                      transition: 'height 120ms ease, background 240ms ease',
-                    }}
-                  />
-                );
-              })}
-            </div>
-          </div>
-          {preview.hits.length > 0 || undoable ? (
-            <div style={ASSIST_ROW_STYLE}>
-              {preview.hits.map(hit => (
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  background: recording ? '#60a5fa' : '#34d399',
+                  boxShadow: recording ? '0 0 10px rgba(96, 165, 250, 0.7)' : 'none',
+                  animation: recording ? 'ghostwriterPulse 1.4s ease-in-out infinite' : undefined,
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: '#a1a1aa',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                {recording ? t('ghostwriter.panel.recording') : t('ghostwriter.panel.preparing')}
+              </span>
+              {conversational ? (
                 <span
-                  key={hit.snippetId}
                   style={{
-                    padding: '3px 10px',
+                    padding: '1px 8px',
                     borderRadius: 999,
-                    background: 'rgba(52, 211, 153, 0.12)',
-                    border: '1px solid rgba(52, 211, 153, 0.32)',
-                    color: '#6ee7b7',
-                    fontSize: 12,
-                    fontWeight: 500,
-                    letterSpacing: '0.02em',
+                    background: 'rgba(96, 165, 250, 0.14)',
+                    border: '1px solid rgba(96, 165, 250, 0.38)',
+                    color: '#93c5fd',
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    letterSpacing: '0.06em',
+                    lineHeight: 1.6,
+                    flexShrink: 0,
                   }}
                 >
-                  ✓ {hit.title}
+                  {t('ghostwriter.panel.conversationBadge')}
                 </span>
-              ))}
+              ) : null}
               <div style={{ flex: 1 }} />
-              <button
-                type="button"
-                aria-label={t('ghostwriter.panel.cancelLast')}
-                title={t('ghostwriter.panel.cancelLast')}
-                onClick={cancelLastAction}
-                className="ghostwriter-cancel-btn"
-                style={ICON_BUTTON_STYLE}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  gap: 3,
+                  height: 16,
+                }}
               >
-                ✕
-              </button>
+                {LEVEL_BARS.map((factor, i) => {
+                  const h = recording ? 3 + Math.round(level * 13 * factor) : 2;
+                  return (
+                    <span
+                      key={i}
+                      style={{
+                        width: 3,
+                        height: h,
+                        borderRadius: 2,
+                        background: recording && level > 0.02 ? '#60a5fa' : 'rgba(255,255,255,0.18)',
+                        transition: 'height 120ms ease, background 240ms ease',
+                      }}
+                    />
+                  );
+                })}
+              </div>
             </div>
-          ) : null}
-          <div
-            className="ghostwriter-assist"
-            aria-hidden={!assistHasContent}
-            style={{
-              maxHeight: assistHasContent ? CARD_MAX_HEIGHT : 0,
-              opacity: assistHasContent ? 1 : 0,
-            }}
-          >
-            {assistView.candidateGroups.map((group, groupIndex) =>
-              group.items.length > 0 ? (
-                <div key={`${group.kind}-${groupIndex}`} style={ASSIST_ROW_STYLE}>
-                  <span style={ASSIST_LABEL_STYLE}>{kindLabel(group.kind)}</span>
-                  {group.items.map(item => (
-                    <span key={item.index} style={candidateChipStyle()}>
+            {preview.hits.length > 0 || undoable ? (
+              <div style={ASSIST_ROW_STYLE}>
+                {preview.hits.map(hit => (
+                  <span
+                    key={hit.snippetId}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: 999,
+                      background: 'rgba(52, 211, 153, 0.12)',
+                      border: '1px solid rgba(52, 211, 153, 0.32)',
+                      color: '#6ee7b7',
+                      fontSize: 12,
+                      fontWeight: 500,
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    ✓ {hit.title}
+                  </span>
+                ))}
+                <div style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  aria-label={t('ghostwriter.panel.cancelLast')}
+                  title={t('ghostwriter.panel.cancelLast')}
+                  onClick={cancelLastAction}
+                  className="ghostwriter-cancel-btn"
+                  style={ICON_BUTTON_STYLE}
+                >
+                  ✕
+                </button>
+              </div>
+            ) : null}
+            <div
+              className="ghostwriter-assist"
+              aria-hidden={!assistHasContent}
+              style={{
+                maxHeight: assistHasContent ? CARD_MAX_HEIGHT : 0,
+                opacity: assistHasContent ? 1 : 0,
+              }}
+            >
+              {assistView.candidateGroups.map((group, groupIndex) =>
+                group.items.length > 0 ? (
+                  <div key={`${group.kind}-${groupIndex}`} style={ASSIST_ROW_STYLE}>
+                    <span style={ASSIST_LABEL_STYLE}>{kindLabel(group.kind)}</span>
+                    {group.items.map(item => (
+                      <span key={item.index} style={candidateChipStyle()}>
+                        <span style={CHIP_LABEL_STYLE}>
+                          {item.index}·{item.text}
+                          {item.note ? <span style={CHIP_NOTE_STYLE}> {item.note}</span> : null}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null,
+              )}
+              {assistView.recommendations.length > 0 ? (
+                <div style={ASSIST_ROW_STYLE}>
+                  <span style={ASSIST_LABEL_STYLE}>{t('ghostwriter.panel.recommendLabel')}</span>
+                  {assistView.recommendations.map((recommendation, index) => (
+                    <span key={recommendation.snippetId} style={candidateChipStyle()}>
                       <span style={CHIP_LABEL_STYLE}>
-                        {item.index}·{item.text}
-                        {item.note ? <span style={CHIP_NOTE_STYLE}> {item.note}</span> : null}
+                        {index + 1}·{recommendation.title}
                       </span>
                     </span>
                   ))}
                 </div>
-              ) : null,
-            )}
-            {assistView.recommendations.length > 0 ? (
-              <div style={ASSIST_ROW_STYLE}>
-                <span style={ASSIST_LABEL_STYLE}>{t('ghostwriter.panel.recommendLabel')}</span>
-                {assistView.recommendations.map((recommendation, index) => (
-                  <span key={recommendation.snippetId} style={candidateChipStyle()}>
-                    <span style={CHIP_LABEL_STYLE}>
-                      {index + 1}·{recommendation.title}
-                    </span>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              padding: '10px 16px 4px',
-            }}
-          >
-            <p
-              style={{
-                margin: 0,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontSize: 16,
-                lineHeight: 1.65,
-                color: preview.text ? '#fafafa' : 'rgba(250,250,250,0.35)',
-              }}
-            >
-              {preview.text || t('ghostwriter.panel.previewPlaceholder')}
-            </p>
-          </div>
-          <div
-            ref={scrollRef}
-            style={{
-              flexShrink: 0,
-              maxHeight: 64,
-              overflowY: 'auto',
-              padding: '2px 16px 12px',
-            }}
-          >
-            <p
-              style={{
-                margin: 0,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontSize: 13,
-                lineHeight: 1.6,
-                color: 'rgba(250,250,250,0.55)',
-              }}
-            >
-              {text}
-              {recording ? (
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 2,
-                    height: 14,
-                    marginLeft: 2,
-                    verticalAlign: '-2px',
-                    background: '#60a5fa',
-                    animation: 'ghostwriterCaret 1s step-end infinite',
-                  }}
-                />
               ) : null}
-              {recording && !text ? t('ghostwriter.panel.listening') : null}
-            </p>
-            {replyLines.map((line) => (
+            </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                padding: '10px 16px 4px',
+              }}
+            >
               <p
-                key={line.seq}
                 style={{
-                  margin: '4px 0 0',
+                  margin: 0,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 16,
+                  lineHeight: 1.65,
+                  color: preview.text ? '#fafafa' : 'rgba(250,250,250,0.35)',
+                }}
+              >
+                {preview.text || t('ghostwriter.panel.previewPlaceholder')}
+              </p>
+            </div>
+            <div
+              ref={scrollRef}
+              style={{
+                flexShrink: 0,
+                maxHeight: 64,
+                overflowY: 'auto',
+                padding: '2px 16px 12px',
+              }}
+            >
+              <p
+                style={{
+                  margin: 0,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   fontSize: 13,
                   lineHeight: 1.6,
-                  color: 'rgba(147, 197, 253, 0.82)',
-                  fontStyle: 'italic',
+                  color: 'rgba(250,250,250,0.55)',
                 }}
               >
-                <span
+                {text}
+                {recording ? (
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 2,
+                      height: 14,
+                      marginLeft: 2,
+                      verticalAlign: '-2px',
+                      background: '#60a5fa',
+                      animation: 'ghostwriterCaret 1s step-end infinite',
+                    }}
+                  />
+                ) : null}
+                {recording && !text ? t('ghostwriter.panel.listening') : null}
+              </p>
+              {replyLines.map((line) => (
+                <p
+                  key={line.seq}
                   style={{
-                    fontStyle: 'normal',
-                    fontWeight: 600,
-                    color: '#93c5fd',
-                    marginRight: 6,
+                    margin: '4px 0 0',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    color: 'rgba(147, 197, 253, 0.82)',
+                    fontStyle: 'italic',
                   }}
                 >
-                  {t('ghostwriter.panel.replyPrefix')}
-                </span>
-                {line.text}
-              </p>
-            ))}
+                  <span
+                    style={{
+                      fontStyle: 'normal',
+                      fontWeight: 600,
+                      color: '#93c5fd',
+                      marginRight: 6,
+                    }}
+                  >
+                    {t('ghostwriter.panel.replyPrefix')}
+                  </span>
+                  {line.text}
+                </p>
+              ))}
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
       <style>{`
         @keyframes ghostwriterPulse {
           0%, 100% { opacity: 1; }

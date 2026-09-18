@@ -284,6 +284,7 @@ export {
   deleteGhostwriterSnippet,
   setGhostwriterSnippetEnabled,
   ghostwriterCancelLast,
+  ghostwriterFitWindow,
   extractGhostwriterCandidates,
   listGhostwriterTaskBriefs,
   saveGhostwriterTaskBrief,
