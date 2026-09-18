@@ -1,5 +1,6 @@
-// SettingsPane.tsx — 「设置」页签：候选/推荐开关＋背景落点 radio＋两枚节流间隔输入，
-// 现有内容之下为「对话」子视图（总开关/热键/回话时机/追问深度/推荐显示）。
+// SettingsPane.tsx — 「设置」页签：Ghostwriter 卡片（候选/推荐开关＋背景落点
+// radio＋两枚节流间隔输入）与「对话」卡片（总开关/热键/回话时机/追问深度/
+// 推荐显示）各占一张，两张独立卡片纵向排列（同设置弹窗卡片间距惯例）。
 // 输入越界（500–10000 外）在失焦时红字提示并回弹上次合法值；合法即保存、立即生效。
 
 import { useEffect, useState } from 'react';
@@ -36,73 +37,77 @@ export function SettingsPane() {
     }));
 
   return (
-    <Card>
-      <SectionTitle>{t('nav.ghostwriter')}</SectionTitle>
-      <SettingRow
-        label={t('settings.ghostwriter.ghostwriterCandidate')}
-        desc={t('settings.ghostwriter.ghostwriterCandidateDesc')}
-      >
-        <Toggle
-          on={prefs.ghostwriter.candidatesEnabled}
-          onToggle={(next) => void saveGhostwriter({ candidatesEnabled: next })}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card>
+        <SectionTitle>{t('nav.ghostwriter')}</SectionTitle>
+        <SettingRow
+          label={t('settings.ghostwriter.ghostwriterCandidate')}
+          desc={t('settings.ghostwriter.ghostwriterCandidateDesc')}
+        >
+          <Toggle
+            on={prefs.ghostwriter.candidatesEnabled}
+            onToggle={(next) => void saveGhostwriter({ candidatesEnabled: next })}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t('settings.ghostwriter.ghostwriterRecommendation')}
+          desc={t('settings.ghostwriter.ghostwriterRecommendationDesc')}
+        >
+          <Toggle
+            on={prefs.ghostwriter.recommendationsEnabled}
+            onToggle={(next) => void saveGhostwriter({ recommendationsEnabled: next })}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t('settings.ghostwriter.backgroundPlacement')}
+          desc={t('settings.ghostwriter.backgroundPlacementDesc')}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            {(
+              [
+                ['head', 'settings.ghostwriter.backgroundPlacementHead'],
+                ['tail', 'settings.ghostwriter.backgroundPlacementTail'],
+              ] as const
+            ).map(([value, labelKey]) => (
+              <label
+                key={value}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'default' }}
+              >
+                <input
+                  type="radio"
+                  name="ghostwriter-background-placement"
+                  checked={prefs.ghostwriter.backgroundPlacement === value}
+                  onChange={() => void saveGhostwriter({ backgroundPlacement: value })}
+                />
+                <span style={{ fontSize: 12.5, color: 'var(--ol-ink)' }}>
+                  {t(labelKey)}
+                </span>
+              </label>
+            ))}
+          </div>
+        </SettingRow>
+        <ThrottleRow
+          label={t('ghostwriter.settingsPane.throttleCandidate')}
+          current={prefs.ghostwriter.candidateThrottleMs}
+          onSave={(value) => void saveGhostwriter({ candidateThrottleMs: value })}
         />
-      </SettingRow>
-      <SettingRow
-        label={t('settings.ghostwriter.ghostwriterRecommendation')}
-        desc={t('settings.ghostwriter.ghostwriterRecommendationDesc')}
-      >
-        <Toggle
-          on={prefs.ghostwriter.recommendationsEnabled}
-          onToggle={(next) => void saveGhostwriter({ recommendationsEnabled: next })}
+        <ThrottleRow
+          label={t('ghostwriter.settingsPane.throttleRecommendation')}
+          current={prefs.ghostwriter.recommendationThrottleMs}
+          onSave={(value) => void saveGhostwriter({ recommendationThrottleMs: value })}
         />
-      </SettingRow>
-      <SettingRow
-        label={t('settings.ghostwriter.backgroundPlacement')}
-        desc={t('settings.ghostwriter.backgroundPlacementDesc')}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          {(
-            [
-              ['head', 'settings.ghostwriter.backgroundPlacementHead'],
-              ['tail', 'settings.ghostwriter.backgroundPlacementTail'],
-            ] as const
-          ).map(([value, labelKey]) => (
-            <label
-              key={value}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'default' }}
-            >
-              <input
-                type="radio"
-                name="ghostwriter-background-placement"
-                checked={prefs.ghostwriter.backgroundPlacement === value}
-                onChange={() => void saveGhostwriter({ backgroundPlacement: value })}
-              />
-              <span style={{ fontSize: 12.5, color: 'var(--ol-ink)' }}>
-                {t(labelKey)}
-              </span>
-            </label>
-          ))}
-        </div>
-      </SettingRow>
-      <ThrottleRow
-        label={t('ghostwriter.settingsPane.throttleCandidate')}
-        current={prefs.ghostwriter.candidateThrottleMs}
-        onSave={(value) => void saveGhostwriter({ candidateThrottleMs: value })}
-      />
-      <ThrottleRow
-        label={t('ghostwriter.settingsPane.throttleRecommendation')}
-        current={prefs.ghostwriter.recommendationThrottleMs}
-        onSave={(value) => void saveGhostwriter({ recommendationThrottleMs: value })}
-      />
-      <ConversationSection
-        ghostwriter={prefs.ghostwriter}
-        onSave={saveGhostwriter}
-      />
-    </Card>
+      </Card>
+      <Card>
+        <ConversationSection
+          ghostwriter={prefs.ghostwriter}
+          onSave={saveGhostwriter}
+        />
+      </Card>
+    </div>
   );
 }
 
-/** 「对话」子视图：对话模式总开关＋一键两用热键＋回话时机/追问深度/推荐显示。
+/** 「对话」卡片：对话模式总开关＋一键两用热键＋回话时机/追问深度/推荐显示。
  *  热键录制仅总开关开启后可用；热键序列化成小写串存 ghostwriter.conversationHotkey，
  *  Tauri 宿主按同一契约解析注册全局键（见 lib/ghostwriterConversation.ts）。 */
 function ConversationSection({
