@@ -13,7 +13,10 @@ pub const ASSIST_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或
 /// 对话会话一次调用双产出（回话＋推荐）的输出契约，逐字拼接，界面只读展示。
 pub const CONVERSATION_OUTPUT_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n{\"reply\":\"给说话人的一句话，或 null\",\"recommendations\":[\"常用语id\",…]}\nreply 为 null 表示这次闭嘴；推荐最多 3 个 id；没有的键给空数组或 null。";
 
-/// 任务书身份：Ghostwriter 的六个 LLM 功能各对应一份任务书。
+/// 热词提取（词典页向导）的输出契约，逐字拼接，界面只读展示。
+pub const HOTWORD_EXTRACTION_CONTRACT: &str = "只输出 JSON，不要任何解释或代码块标记：\n[{\"error\":\"原文错误写法\",\"hotword\":\"建议正确写法\",\"example\":\"例句\"}]\n没有就给空数组。";
+
+/// 任务书身份：Ghostwriter 的七个 LLM 功能各对应一份任务书。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskBriefId {
     /// 段润色：把口语转写整理成指令。
@@ -28,6 +31,8 @@ pub enum TaskBriefId {
     ConversationReply,
     /// 对话出稿：把整份聊天记录润写成最终指令。
     ConversationFinalize,
+    /// 提取热词：从语音记录 raw 原文找疑似识别混乱的词（词典页向导按需触发）。
+    HotwordExtraction,
 }
 
 impl TaskBriefId {
@@ -40,6 +45,7 @@ impl TaskBriefId {
             Self::SedimentExtraction => "sediment_extraction",
             Self::ConversationReply => "conversation_reply",
             Self::ConversationFinalize => "conversation_finalize",
+            Self::HotwordExtraction => "hotword_extraction",
         }
     }
 
@@ -52,6 +58,7 @@ impl TaskBriefId {
             "sediment_extraction" => Some(Self::SedimentExtraction),
             "conversation_reply" => Some(Self::ConversationReply),
             "conversation_finalize" => Some(Self::ConversationFinalize),
+            "hotword_extraction" => Some(Self::HotwordExtraction),
             _ => None,
         }
     }
@@ -65,6 +72,7 @@ impl TaskBriefId {
             Self::SedimentExtraction => "提取常用语",
             Self::ConversationReply => "对话回话",
             Self::ConversationFinalize => "对话出稿",
+            Self::HotwordExtraction => "提取热词",
         }
     }
 
@@ -84,6 +92,9 @@ impl TaskBriefId {
             }
             Self::ConversationFinalize => {
                 "管聊天记录怎么润写成指令，改了会影响最终贴出的指令。"
+            }
+            Self::HotwordExtraction => {
+                "管从语音记录 raw 原文里找识别混乱的词，改了会影响提取结果。"
             }
         }
     }
@@ -124,6 +135,11 @@ impl TaskBriefId {
                  - 如果给了「参考材料」，把材料内容自然融合进指令对应的位置\n\
                  只输出整理后的指令文本，不要任何解释或前缀。"
             }
+            Self::HotwordExtraction => {
+                "你是语音热词助手。下面是用户历史语音记录的 ASR 原文（未经润色）。找出其中**疑似识别混乱的词**：同音错字、明显不通顺、语义突兀的片段——这些通常是 ASR 把专有名词、术语、人名识别错了。\n\
+                 每条给出：原文中的错误写法（error）、建议的正确写法（hotword，将作为热词喂给 ASR 提升下次识别）、所在的例句（example）。\n\
+                 只提有把握是识别错误的，宁缺毋滥；话题范围类的一般词不提（那不归热词管）；没有值得提的就返回空数组。"
+            }
         }
     }
 }
@@ -141,8 +157,9 @@ mod tests {
             (TaskBriefId::SedimentExtraction, "sediment_extraction", "提取常用语"),
             (TaskBriefId::ConversationReply, "conversation_reply", "对话回话"),
             (TaskBriefId::ConversationFinalize, "conversation_finalize", "对话出稿"),
+            (TaskBriefId::HotwordExtraction, "hotword_extraction", "提取热词"),
         ];
-        assert_eq!(expected.len(), 6);
+        assert_eq!(expected.len(), 7);
         for (id, key, title) in expected {
             assert_eq!(id.key(), key);
             assert_eq!(TaskBriefId::from_key(key), Some(id));
@@ -150,7 +167,7 @@ mod tests {
             assert!(!id.description().is_empty());
             assert!(!id.default_body().is_empty());
         }
-        // 新增两份的描述逐字钉住（界面文案同步用）。
+        // 新增几份的描述逐字钉住（界面文案同步用）。
         assert_eq!(
             TaskBriefId::ConversationReply.description(),
             "管对话会话里 AI 什么时候说什么、怎么校准怎么追问，改了会影响回话。"
@@ -159,9 +176,31 @@ mod tests {
             TaskBriefId::ConversationFinalize.description(),
             "管聊天记录怎么润写成指令，改了会影响最终贴出的指令。"
         );
+        assert_eq!(
+            TaskBriefId::HotwordExtraction.description(),
+            "管从语音记录 raw 原文里找识别混乱的词，改了会影响提取结果。"
+        );
         // 退役的任务书身份：旧键不再可解析。
         assert_eq!(TaskBriefId::from_key("sediment_notice"), None);
         assert_eq!(TaskBriefId::from_key("unknown"), None);
+    }
+
+    #[test]
+    fn hotword_extraction_contract_is_verbatim() {
+        assert!(HOTWORD_EXTRACTION_CONTRACT.starts_with("只输出 JSON，不要任何解释或代码块标记："));
+        assert!(HOTWORD_EXTRACTION_CONTRACT
+            .contains("[{\"error\":\"原文错误写法\",\"hotword\":\"建议正确写法\",\"example\":\"例句\"}]"));
+        assert!(HOTWORD_EXTRACTION_CONTRACT.ends_with("没有就给空数组。"));
+    }
+
+    #[test]
+    fn hotword_extraction_default_body_is_verbatim() {
+        // 用户裁决（2026-09-18）：热词提取读 raw 原文（不是润色文本），只提
+        // 识别错误、不管话题范围；正文逐字钉死，防改动影响提取口径。
+        assert_eq!(
+            TaskBriefId::HotwordExtraction.default_body(),
+            "你是语音热词助手。下面是用户历史语音记录的 ASR 原文（未经润色）。找出其中**疑似识别混乱的词**：同音错字、明显不通顺、语义突兀的片段——这些通常是 ASR 把专有名词、术语、人名识别错了。\n每条给出：原文中的错误写法（error）、建议的正确写法（hotword，将作为热词喂给 ASR 提升下次识别）、所在的例句（example）。\n只提有把握是识别错误的，宁缺毋滥；话题范围类的一般词不提（那不归热词管）；没有值得提的就返回空数组。"
+        );
     }
 
     #[test]
@@ -244,6 +283,7 @@ mod tests {
             TaskBriefId::SedimentExtraction,
             TaskBriefId::ConversationReply,
             TaskBriefId::ConversationFinalize,
+            TaskBriefId::HotwordExtraction,
         ] {
             assert!(!id.default_body().contains("提示词"));
             assert!(!id.description().contains("提示词"));

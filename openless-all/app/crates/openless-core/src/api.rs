@@ -6181,6 +6181,60 @@ impl OpenLessBackend {
         dispatcher.extract_snippet_candidates(transcripts).await
     }
 
+    /// 按需提取候选热词（词典页向导触发）：校验 id 都在历史里、收集
+    /// **raw 原文**（不是润色后的 final_text——raw 才是识别错误的证据；空文本
+    /// 跳过；全空则报错；按 createdAt 新到旧排），调 dispatcher 提取。
+    pub async fn extract_ghostwriter_hotword_candidates(
+        &self,
+        session_ids: Vec<String>,
+    ) -> Result<Vec<crate::ghostwriter::types::HotwordDraft>, BackendError> {
+        if session_ids.is_empty() {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidArgument,
+                "no history sessions selected",
+            ));
+        }
+        let history = self.history.list()?;
+        let mut picked: Vec<&DictationSession> = Vec::with_capacity(session_ids.len());
+        for session_id in &session_ids {
+            let session = history
+                .iter()
+                .find(|session| &session.id == session_id)
+                .ok_or_else(|| {
+                    BackendError::new(
+                        BackendErrorCode::InvalidArgument,
+                        format!("history session not found: {session_id}"),
+                    )
+                })?;
+            picked.push(session);
+        }
+        picked.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let transcripts: Vec<String> = picked
+            .into_iter()
+            .map(|session| session.raw_transcript.clone())
+            .filter(|text| !text.trim().is_empty())
+            .collect();
+        if transcripts.is_empty() {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidArgument,
+                "selected history sessions have no transcripts",
+            ));
+        }
+        let dispatcher = self
+            .state
+            .read()
+            .expect("backend state lock poisoned")
+            .ghostwriter_dispatcher
+            .clone()
+            .ok_or_else(|| {
+                BackendError::new(
+                    BackendErrorCode::Internal,
+                    "ghostwriter dispatcher unavailable",
+                )
+            })?;
+        dispatcher.extract_hotword_candidates(transcripts).await
+    }
+
     /// 五份任务书快照（固定注册表顺序；命令层列表入口）。
     pub fn list_ghostwriter_task_briefs(
         &self,
@@ -11639,6 +11693,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    /// 按需提取候选热词（词典页入口）：选中的历史 **raw 原文**给 LLM 找识别
+    /// 混乱的词，返回可编辑草稿；未知 id 与全空转写分别报错；调用走固定热词
+    /// 提取会话 id（fixture 路由契约）。
+    #[tokio::test]
+    async fn ghostwriter_extract_hotword_candidates_from_history() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-ghostwriter-hotword-candidates-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let polisher = Arc::new(
+            crate::testing::FixtureTextPolisher::successful("unused").with_hotword_json(
+                r#"[{"error":"阿巴提","hotword":"阿尔提","example":"明天跟阿巴提开会"},{"error":"灰度发版","hotword":"灰度发布","example":"今天先灰度发版"}]"#,
+            ),
+        );
+        let engine = ghostwriter_engine_with(
+            Arc::new(crate::testing::FixtureTranscriptionEngine::successful("raw", 125)),
+            Arc::clone(&polisher) as Arc<dyn crate::ports::TextPolisher>,
+        );
+        let backend = backend_with_ghostwriter_polisher(data_dir.clone(), Arc::new(engine), polisher.clone());
+        backend.start().await.unwrap();
+
+        let mut newer = history_session("h-new");
+        newer.created_at = "2026-09-18T10:00:00Z".to_string();
+        newer.raw_transcript = "明天跟阿巴提开会".to_string();
+        let mut older = history_session("h-old");
+        older.created_at = "2026-09-17T10:00:00Z".to_string();
+        older.raw_transcript = "今天先灰度发版".to_string();
+        let mut blank = history_session("h-blank");
+        blank.created_at = "2026-09-18T11:00:00Z".to_string();
+        blank.raw_transcript = "  ".to_string();
+        backend.append_history(newer, 30, None).unwrap();
+        backend.append_history(older, 30, None).unwrap();
+        backend.append_history(blank, 30, None).unwrap();
+
+        // 未知 id 报错。
+        let error = backend
+            .extract_ghostwriter_hotword_candidates(vec!["h-missing".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
+        // 只选空转写条目报错。
+        let error = backend
+            .extract_ghostwriter_hotword_candidates(vec!["h-blank".to_string()])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
+
+        // 正常提取：空转写条目跳过；raw 原文按时间新到旧拼接（标注来源序号）。
+        let drafts = backend
+            .extract_ghostwriter_hotword_candidates(vec![
+                "h-blank".to_string(),
+                "h-old".to_string(),
+                "h-new".to_string(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(
+            drafts,
+            vec![
+                crate::ghostwriter::types::HotwordDraft {
+                    error: "阿巴提".to_string(),
+                    hotword: "阿尔提".to_string(),
+                    example: Some("明天跟阿巴提开会".to_string()),
+                },
+                crate::ghostwriter::types::HotwordDraft {
+                    error: "灰度发版".to_string(),
+                    hotword: "灰度发布".to_string(),
+                    example: Some("今天先灰度发版".to_string()),
+                },
+            ]
+        );
+        // 调用走固定热词提取会话 id（与常用语提取不同的 uuid5）；输入是 raw 原文拼接。
+        assert_eq!(
+            polisher.session_ids(),
+            vec![crate::ghostwriter::hotword_extractor::hotword_extraction_session_id()]
+        );
+        let raw = &polisher.inputs()[0];
+        let pos_new = raw.find("明天跟阿巴提开会").expect("newer transcript");
+        let pos_old = raw.find("今天先灰度发版").expect("older transcript");
+        assert!(pos_new < pos_old, "newer transcript must come first");
+        assert!(raw.contains("【来源 1】"));
+        assert!(raw.contains("【来源 2】"));
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     /// 保存即生效）→ 恢复默认 → 未知 id 原样报错。
     #[tokio::test]
     async fn ghostwriter_task_brief_commands_roundtrip() {
@@ -11667,6 +11808,7 @@ mod tests {
                 "sediment_extraction",
                 "conversation_reply",
                 "conversation_finalize",
+                "hotword_extraction",
             ]
         );
         assert!(briefs.iter().all(|brief| !brief.modified));

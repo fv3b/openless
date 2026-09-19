@@ -227,6 +227,18 @@ pub async fn ghostwriter_extract_snippet_candidates(
         .map_err(|e| e.to_string())
 }
 
+/// 按需提取候选热词（词典页向导触发）：选中的历史会话 **raw 原文**交给 Core
+/// 提取，返回可编辑草稿（不落库，保存由前端逐条 add_vocab）。
+#[tauri::command]
+pub async fn ghostwriter_extract_hotword_candidates(
+    core: CoreState<'_>,
+    session_ids: Vec<String>,
+) -> Result<Vec<openless_core::ghostwriter::types::HotwordDraft>, String> {
+    core.extract_ghostwriter_hotword_candidates(session_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn list_ghostwriter_task_briefs(core: CoreState<'_>) -> Result<Vec<TaskBriefInfo>, String> {
     core.list_ghostwriter_task_briefs().map_err(|e| e.to_string())

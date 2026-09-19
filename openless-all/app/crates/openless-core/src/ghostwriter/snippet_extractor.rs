@@ -106,8 +106,8 @@ pub async fn extract_snippets(
 
 /// 多条转写拼接：每条 `【来源 N】`＋正文；总长超过 [`MAX_TRANSCRIPT_CHARS`]
 /// 从更旧的开始丢（调用方按最近在前传）；单条超长时保留其尾部（最近的
-/// 说话在记录尾部）。
-fn compose_transcripts(transcripts: &[String]) -> String {
+/// 说话在记录尾部）。常用语与热词两个提取器共用同一拼接规则。
+pub(crate) fn compose_transcripts(transcripts: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
     let mut used = 0usize;
     for (index, transcript) in transcripts.iter().enumerate() {

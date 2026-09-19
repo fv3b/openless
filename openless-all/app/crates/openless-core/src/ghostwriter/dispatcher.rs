@@ -494,6 +494,25 @@ impl GhostwriterPolishDispatcher {
         .await
     }
 
+    /// 按需提取候选热词（词典页向导触发）：输入是选中历史会话的 **raw 原文**
+    /// （未经润色，识别错误才留得住），任务书现取自任务书存储，会话 id 用固定
+    /// 热词提取 id（fixture 路由契约），返回可编辑草稿。
+    pub async fn extract_hotword_candidates(
+        &self,
+        transcripts: Vec<String>,
+    ) -> Result<Vec<super::types::HotwordDraft>, crate::errors::BackendError> {
+        let instruction = self.task_briefs.body(TaskBriefId::HotwordExtraction);
+        super::hotword_extractor::extract_hotwords(
+            &self.polisher,
+            &self.credential_store,
+            &self.active_llm_provider(),
+            super::hotword_extractor::hotword_extraction_session_id(),
+            &transcripts,
+            &instruction,
+        )
+        .await
+    }
+
     /// 任务书存储句柄（命令层读取/保存/恢复默认用；Arc 克隆共享同一份状态）。
     pub fn task_brief_store(&self) -> Arc<TaskBriefStore> {
         Arc::clone(&self.task_briefs)

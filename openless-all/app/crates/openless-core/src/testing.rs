@@ -607,6 +607,7 @@ pub struct FixtureTextPolisher {
     contexts: Arc<Mutex<Vec<Arc<DictationContext>>>>,
     assist_json: Option<String>,
     extraction_json: Option<String>,
+    hotword_json: Option<String>,
     finalize_text: Option<String>,
 }
 
@@ -620,6 +621,7 @@ impl FixtureTextPolisher {
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
             extraction_json: None,
+            hotword_json: None,
             finalize_text: None,
         }
     }
@@ -633,6 +635,7 @@ impl FixtureTextPolisher {
             contexts: Arc::new(Mutex::new(Vec::new())),
             assist_json: None,
             extraction_json: None,
+            hotword_json: None,
             finalize_text: None,
         }
     }
@@ -655,6 +658,15 @@ impl FixtureTextPolisher {
     /// （uuid5 确定性 id，Task 6 dispatcher 传同一 helper 的值）即认抽取调用。
     pub fn with_extraction_json(mut self, json: impl Into<String>) -> Self {
         self.extraction_json = Some(json.into());
+        self
+    }
+
+    /// 热词提取调用（词典页向导）返回预置 JSON 数组——按控制器裁决路由：
+    /// session_id 精确等于
+    /// [`crate::ghostwriter::hotword_extractor::hotword_extraction_session_id()`]
+    /// （uuid5 确定性 id，dispatcher 传同一 helper 的值）即认热词提取调用。
+    pub fn with_hotword_json(mut self, json: impl Into<String>) -> Self {
+        self.hotword_json = Some(json.into());
         self
     }
 
@@ -703,6 +715,8 @@ impl TextPolisher for FixtureTextPolisher {
     ) -> BoxFuture<'static, Result<crate::ports::PolishOutput, BackendError>> {
         let is_extraction =
             session_id == crate::ghostwriter::snippet_extractor::extraction_session_id();
+        let is_hotword = session_id
+            == crate::ghostwriter::hotword_extractor::hotword_extraction_session_id();
         let is_finalize = session_id
             == crate::ghostwriter::segment_polisher::conversation_finalize_session_id();
         let result = if is_extraction {
@@ -710,6 +724,11 @@ impl TextPolisher for FixtureTextPolisher {
                 Some(extraction_json) => {
                     Ok(crate::ports::PolishOutput::text(extraction_json.clone()))
                 }
+                None => self.result.clone(),
+            }
+        } else if is_hotword {
+            match &self.hotword_json {
+                Some(hotword_json) => Ok(crate::ports::PolishOutput::text(hotword_json.clone())),
                 None => self.result.clone(),
             }
         } else if is_finalize {

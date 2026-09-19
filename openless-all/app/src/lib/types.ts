@@ -811,6 +811,17 @@ export interface GhostwriterSnippetDraft {
   example?: string;
 }
 
+/** 热词提取产出的一条候选草稿（词典页编辑勾选后逐条 addVocab 入库，
+ *  只进词不加备注——词典 note 是内部学习标记）。 */
+export interface GhostwriterHotwordDraft {
+  /** 原文错误写法（LLM 从 raw 原文里挑出的识别混乱片段，只读展示）。 */
+  error: string;
+  /** 建议的正确写法（将作为热词进词典）。 */
+  hotword: string;
+  /** 所在例句（确认时参考）。 */
+  example?: string;
+}
+
 export interface CapsulePayload {
   state: CapsuleState;
   level: number; // 0..1 RMS

@@ -7,6 +7,7 @@
 
 pub mod assist;
 pub mod dispatcher;
+pub mod hotword_extractor;
 pub mod prompts;
 pub mod recent_voice;
 pub mod segment_polisher;

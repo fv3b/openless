@@ -277,6 +277,7 @@ export type {
   GhostwriterCancelLastResult,
   GhostwriterTaskBrief,
   GhostwriterSnippetDraft,
+  GhostwriterHotwordDraft,
 } from './ghostwriter';
 export {
   listGhostwriterSnippets,
@@ -287,6 +288,7 @@ export {
   ghostwriterCancelLast,
   ghostwriterFitWindow,
   extractGhostwriterCandidates,
+  extractHotwordCandidates,
   listGhostwriterTaskBriefs,
   saveGhostwriterTaskBrief,
   resetGhostwriterTaskBrief,

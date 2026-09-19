@@ -19,6 +19,16 @@ export interface GhostwriterSnippetDraft {
   example?: string;
 }
 
+/** 热词提取产出的一条候选草稿（编辑勾选后由前端逐条 addVocab 入库，只进词不加备注）。 */
+export interface GhostwriterHotwordDraft {
+  /** 原文错误写法（LLM 从 raw 原文里挑出的识别混乱片段，只读展示）。 */
+  error: string;
+  /** 建议的正确写法（将作为热词进词典）。 */
+  hotword: string;
+  /** 所在例句（确认时参考）。 */
+  example?: string;
+}
+
 /** 任务书快照：身份＋用途说明＋是否已被用户覆写＋当前生效正文。 */
 export interface GhostwriterTaskBrief {
   id: string;
@@ -53,6 +63,12 @@ const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
     title: '提取常用语',
     description: '管从语音记录提取候选常用语，改了会影响提取结果。',
     body: '从历史语音转写里找出值得存成常用语的说法。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'hotword_extraction',
+    title: '提取热词',
+    description: '管从语音记录 raw 原文里找识别混乱的词，改了会影响提取结果。',
+    body: '从历史语音 raw 原文里找出疑似识别混乱的词。（浏览器 mock：真实正文由后端提供）',
   },
 ];
 
@@ -142,6 +158,22 @@ export function extractGhostwriterCandidates(sessionIds: string[]): Promise<Ghos
     {
       phrase: '发版前先看灰度数据',
       suggestedTrigger: '看灰度',
+    },
+  ]);
+}
+
+/** 按需提取候选热词：选中历史语音记录 id，LLM 从 raw 原文找识别混乱的词（不落库）。 */
+export function extractHotwordCandidates(sessionIds: string[]): Promise<GhostwriterHotwordDraft[]> {
+  return invokeOrMock('ghostwriter_extract_hotword_candidates', { sessionIds }, () => [
+    {
+      error: '阿巴提',
+      hotword: '阿尔提',
+      example: '明天跟阿巴提开会',
+    },
+    {
+      error: '灰度发版',
+      hotword: '灰度发布',
+      example: '今天先灰度发版',
     },
   ]);
 }

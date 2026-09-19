@@ -187,6 +187,19 @@ pub struct SnippetDraft {
     pub example: Option<String>,
 }
 
+/// 热词提取产出的一条候选草稿（词典页向导编辑勾选后逐条 add_vocab 入库，
+/// 只进词不加备注——词典 note 是内部学习标记）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordDraft {
+    /// 原文错误写法（LLM 从 raw 原文里挑出的识别混乱片段，只读展示）。
+    pub error: String,
+    /// 建议的正确写法（将作为热词进词典）。
+    pub hotword: String,
+    /// 所在例句（确认时参考）。
+    pub example: Option<String>,
+}
+
 /// 聊天记录行角色：用户（【我】）或助手（【助手】）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {

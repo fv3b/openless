@@ -1,30 +1,35 @@
 // Vocab.tsx — 「词典」页。
 // 结构：
-//   - 顶部：标题 + 右上「新词」入口（弹窗：直接输入 或 从预设模板批量导入）
+//   - 顶部：标题 + 右上「新词」「从语音记录提取热词」入口（弹窗：直接输入 或 从预设模板批量导入）
 //   - 工具行：所有 / 自动添加 / 手动添加 分段筛选 + 右侧圆形搜索（点击向左展开）
 //   - 词条网格：卡片默认只显文字，hover 变灰并浮现「编辑 / 删除」操作
 //   - 编辑走弹窗（update_vocab 保 id/hits）；场景预设保持卡片区块
 //   - 纠正规则已迁往「工具 → 纠正规则」页（Corrections.tsx）
+//   - 热词提取向导（2026-09-18 批 3）：全历史多选 → LLM 从 raw 原文找识别
+//     混乱的词 → 编辑勾选批量进词典（只进词不加备注）；已提取记录仅淡化
 // 数据落地到 ~/Library/Application Support/OpenLess/dictionary.json（与 Swift 同名）。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../components/Icon';
 import { Tooltip } from '../components/Tooltip';
-import { SavedToast } from '../components/SavedToast';
+import { SavedToast, type SaveToastState } from '../components/SavedToast';
 import {
   addVocab,
+  extractHotwordCandidates,
   isTauri,
   listVocab,
+  listHistory,
+  markHistoryExtracted,
   removeVocab,
   setVocabEnabled,
   updateVocab,
 } from '../lib/ipc';
-import type { DictionaryEntry, VocabPreset } from '../lib/types';
+import type { DictationSession, DictionaryEntry, GhostwriterHotwordDraft, VocabPreset } from '../lib/types';
 import { DEFAULT_VOCAB_PRESETS, loadVocabPresets, persistVocabPresets } from '../lib/vocabPresets';
 import { useExitMount } from '../lib/useExitMount';
 import { useMobileLayout } from '../lib/useMobileLayout';
-import { Btn, Card, Collapsible, PageHeader } from './_atoms';
+import { Btn, Card, Collapsible, PageHeader, Pill } from './_atoms';
 
 const NEW_PRESET_DRAFT_ID = '__new__';
 
@@ -69,6 +74,38 @@ export function Vocab() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
 
+  // 热词提取向导（照 GhostwriterSnippets 两步向导模式）：
+  // pick＝选历史语音记录（全部历史、rawTranscript 非空、已提取淡化），
+  // review＝编辑/勾选候选热词后逐条 addVocab 入库（只进词不加备注）。
+  const [extractView, setExtractView] = useState<'closed' | 'pick' | 'review'>('closed');
+  const [voiceRecords, setVoiceRecords] = useState<DictationSession[]>([]);
+  const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
+  const [hotwordDrafts, setHotwordDrafts] = useState<GhostwriterHotwordDraft[]>([]);
+  const [hotwordChecks, setHotwordChecks] = useState<boolean[]>([]);
+  const [failedHotwordIdx, setFailedHotwordIdx] = useState<Set<number>>(new Set());
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [savingExtract, setSavingExtract] = useState(false);
+  const [extractSaveState, setExtractSaveState] = useState<SaveToastState>('idle');
+  const [extractMessage, setExtractMessage] = useState('');
+  const extractTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (extractTimer.current !== null) window.clearTimeout(extractTimer.current);
+    },
+    [],
+  );
+
+  const showExtractStatus = (state: SaveToastState, message: string) => {
+    if (extractTimer.current !== null) window.clearTimeout(extractTimer.current);
+    setExtractSaveState(state);
+    setExtractMessage(message);
+    if (state !== 'idle') {
+      const delay = state === 'failed' ? 6000 : 1600;
+      extractTimer.current = window.setTimeout(() => setExtractSaveState('idle'), delay);
+    }
+  };
+
   const refresh = async () => {
     try {
       setError(null);
@@ -111,6 +148,155 @@ export function Vocab() {
   const flashSaved = () => {
     setSaveState('saved');
     window.setTimeout(() => setSaveState('idle'), 1600);
+  };
+
+  // ── 热词提取向导 ────────────────────────────────────────────────
+
+  /** 提取向导的相对时间标签：<24h → x 小时前；24–48h → 昨天；之后 → x 天前。 */
+  const extractRelativeAgeLabel = (createdAt: string): string => {
+    const time = new Date(createdAt).getTime();
+    if (!Number.isFinite(time)) return '';
+    const hours = Math.floor((Date.now() - time) / 3_600_000);
+    if (hours < 24) return t('vocab.extract.hoursAgo', { n: Math.max(1, hours) });
+    if (hours < 48) return t('vocab.extract.yesterday');
+    return t('vocab.extract.daysAgo', { n: Math.floor(hours / 24) });
+  };
+
+  const openHotwordExtract = async () => {
+    try {
+      const all = await listHistory();
+      // 全部历史多选（与常用语提取同范围），只要求有转写原文；新到旧排。
+      const records = all
+        .filter((record) => record.rawTranscript.trim().length > 0)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setVoiceRecords(records);
+      setPickedIds(new Set(records.map((record) => record.id)));
+      setExtractView('pick');
+    } catch (loadError) {
+      showExtractStatus('failed', t('vocab.extract.loadFailed', { error: String(loadError) }));
+    }
+  };
+
+  const closeHotwordExtract = () => {
+    setExtractView('closed');
+    setVoiceRecords([]);
+    setPickedIds(new Set());
+    setHotwordDrafts([]);
+    setHotwordChecks([]);
+    setFailedHotwordIdx(new Set());
+  };
+
+  const toggleHotwordPick = (id: string) => {
+    setPickedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const startHotwordExtraction = async () => {
+    if (pickedIds.size === 0 || extractBusy) return;
+    setExtractBusy(true);
+    try {
+      const result = await extractHotwordCandidates([...pickedIds]);
+      if (result.length === 0) {
+        showExtractStatus('failed', t('vocab.extract.extractEmptyResult'));
+        return;
+      }
+      setHotwordDrafts(result);
+      setHotwordChecks(result.map(() => true));
+      setFailedHotwordIdx(new Set());
+      setExtractView('review');
+    } catch (error) {
+      // 错误原文可能很长：截断，避免 toast 药丸（nowrap）溢出屏幕。
+      const detail = String(error);
+      const clipped = detail.length > 80 ? `${detail.slice(0, 80)}…` : detail;
+      showExtractStatus('failed', t('vocab.extract.extractFailed', { error: clipped }));
+    } finally {
+      setExtractBusy(false);
+    }
+  };
+
+  const patchHotwordDraft = (index: number, patch: Partial<GhostwriterHotwordDraft>) => {
+    setHotwordDrafts((current) =>
+      current.map((draft, i) => (i === index ? { ...draft, ...patch } : draft)),
+    );
+  };
+
+  const toggleHotwordCheck = (index: number) => {
+    setHotwordChecks((current) => current.map((checked, i) => (i === index ? !checked : checked)));
+  };
+
+  const toggleAllHotwordDrafts = () => {
+    const allChecked = hotwordChecks.every(Boolean);
+    setHotwordChecks(hotwordDrafts.map(() => !allChecked));
+  };
+
+  // 保存所选：逐条 addVocab（只进词、不加备注——词典 note 是内部学习标记）。
+  // 词条为空或词典已有同词条（不区分大小写）就地标红留原地可改；其余失败同样
+  // 标红；全部处理完 toast 汇总，全存完即关向导。有保存成功就对当初所选会话
+  // 写提取标记（两个向导共用，仅视觉淡化）。
+  const saveHotwordSelection = async () => {
+    if (savingExtract) return;
+    setSavingExtract(true);
+    const markedSessionIds = [...pickedIds];
+    const failures = new Set<number>();
+    const known = new Set(
+      entries.map((entry) => entry.phrase.trim().toLowerCase()),
+    );
+    const remaining: GhostwriterHotwordDraft[] = [];
+    const remainingChecks: boolean[] = [];
+    let saved = 0;
+    for (let index = 0; index < hotwordDrafts.length; index++) {
+      if (!hotwordChecks[index]) {
+        remaining.push(hotwordDrafts[index]);
+        remainingChecks.push(true);
+        continue;
+      }
+      const draft = hotwordDrafts[index];
+      const hotword = draft.hotword.trim();
+      if (!hotword || known.has(hotword.toLowerCase())) {
+        failures.add(remaining.length);
+        remaining.push(draft);
+        remainingChecks.push(hotwordChecks[index]);
+        continue;
+      }
+      try {
+        await addVocab(hotword);
+        known.add(hotword.toLowerCase());
+        saved += 1;
+      } catch {
+        failures.add(remaining.length);
+        remaining.push(draft);
+        remainingChecks.push(hotwordChecks[index]);
+      }
+    }
+    setHotwordDrafts(remaining);
+    setHotwordChecks(remainingChecks);
+    setFailedHotwordIdx(failures);
+    if (saved > 0) {
+      try {
+        await refresh();
+      } catch {
+        // 汇总 toast 已提示保存结果；列表刷新失败不打断收尾。
+      }
+      try {
+        await markHistoryExtracted(markedSessionIds);
+      } catch {
+        // 标记只影响淡化样式，写失败不打断保存收尾。
+      }
+    }
+    if (saved > 0 && failures.size === 0) {
+      closeHotwordExtract();
+      showExtractStatus('saved', t('vocab.extract.savedSummary', { count: saved }));
+    } else if (failures.size > 0) {
+      showExtractStatus(
+        'failed',
+        t('vocab.extract.partialSummary', { count: saved, failed: failures.size }),
+      );
+    }
+    setSavingExtract(false);
   };
 
   const onAdd = async () => {
@@ -385,6 +571,269 @@ export function Vocab() {
     prevCardTops.current = nextTops;
   }, [visibleEntries]);
 
+  // ── 热词提取向导渲染（两步，照 GhostwriterSnippets 的结构）──
+  if (extractView !== 'closed') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <PageHeader
+          kicker={t('vocab.kicker')}
+          title={extractView === 'pick' ? t('vocab.extract.pickTitle') : t('vocab.extract.reviewTitle')}
+          right={
+            <Btn variant="ghost" icon="close" onClick={closeHotwordExtract}>
+              {t('common.close')}
+            </Btn>
+          }
+        />
+
+        <SavedToast saveState={extractSaveState} message={extractMessage} />
+
+        <Card
+          padding={0}
+          style={{
+            overflow: 'hidden',
+            flex: '1 1 0',
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div
+            style={{
+              padding: '14px 18px',
+              borderBottom: '0.5px solid var(--ol-line)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ol-ink)' }}>
+              {extractView === 'pick'
+                ? t('vocab.extract.pickHint')
+                : t('vocab.extract.reviewHint')}
+            </div>
+            {extractView === 'pick' ? (
+              <Pill tone="outline">
+                {t('vocab.extract.selectedCount', { count: pickedIds.size })}
+              </Pill>
+            ) : (
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  color: 'var(--ol-ink-3)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={hotwordChecks.every(Boolean)}
+                  onChange={toggleAllHotwordDrafts}
+                />
+                {t('vocab.extract.selectedCount', {
+                  count: hotwordChecks.filter(Boolean).length,
+                })}
+              </label>
+            )}
+          </div>
+
+          <div className="ol-thinscroll" style={{ overflow: 'auto', flex: '1 1 0', minHeight: 0 }}>
+            {extractView === 'pick' ? (
+              voiceRecords.length === 0 ? (
+                <div
+                  style={{
+                    padding: 48,
+                    textAlign: 'center',
+                    fontSize: 13,
+                    color: 'var(--ol-ink-3)',
+                  }}
+                >
+                  {t('vocab.extract.pickEmpty')}
+                </div>
+              ) : (
+                voiceRecords.map((record) => (
+                  <label
+                    key={record.id}
+                    style={{
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'flex-start',
+                      padding: '10px 18px',
+                      borderBottom: '0.5px solid var(--ol-line)',
+                      cursor: 'pointer',
+                      // 已提取过的仅视觉淡化（与常用语向导同一样式），仍可多选。
+                      opacity: record.extractedAt ? 0.45 : 1,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={pickedIds.has(record.id)}
+                      onChange={() => toggleHotwordPick(record.id)}
+                      style={{ marginTop: 3 }}
+                    />
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 13,
+                        color: 'var(--ol-ink)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {record.rawTranscript.length > 80
+                        ? `${record.rawTranscript.slice(0, 80)}…`
+                        : record.rawTranscript}
+                    </span>
+                    {record.extractedAt ? (
+                      <Pill tone="outline" size="sm">
+                        {t('vocab.extract.extractedMark')}
+                      </Pill>
+                    ) : null}
+                    <span style={{ flexShrink: 0, fontSize: 12, color: 'var(--ol-ink-4)' }}>
+                      {extractRelativeAgeLabel(record.createdAt)}
+                    </span>
+                  </label>
+                ))
+              )
+            ) : hotwordDrafts.length === 0 ? (
+              <div
+                style={{
+                  padding: 48,
+                  textAlign: 'center',
+                  fontSize: 13,
+                  color: 'var(--ol-ink-3)',
+                }}
+              >
+                {t('vocab.extract.extractEmptyResult')}
+              </div>
+            ) : (
+              hotwordDrafts.map((draft, index) => (
+                <div
+                  key={index}
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                    padding: '12px 18px',
+                    borderBottom: '0.5px solid var(--ol-line)',
+                    borderLeft: failedHotwordIdx.has(index)
+                      ? '3px solid var(--ol-red, #ef4444)'
+                      : '3px solid transparent',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={hotwordChecks[index] ?? false}
+                    onChange={() => toggleHotwordCheck(index)}
+                    style={{ marginTop: 4 }}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {/* 原文错误写法只读展示（提取证据，不可改）。 */}
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: 'var(--ol-ink)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {draft.error}
+                    </span>
+                    <input
+                      value={draft.hotword}
+                      onChange={(event) =>
+                        patchHotwordDraft(index, { hotword: event.target.value })
+                      }
+                      placeholder={t('vocab.extract.hotwordPlaceholder')}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 8,
+                        border: '0.5px solid var(--ol-line-strong)',
+                        background: 'var(--ol-surface)',
+                        color: 'var(--ol-ink)',
+                        fontSize: 13,
+                        fontFamily: 'inherit',
+                      }}
+                    />
+                    {draft.example ? (
+                      <span style={{ fontSize: 12, color: 'var(--ol-ink-4)' }}>
+                        {draft.example}
+                      </span>
+                    ) : null}
+                    {failedHotwordIdx.has(index) ? (
+                      <span style={{ fontSize: 12, color: 'var(--ol-red, #ef4444)' }}>
+                        {t('vocab.extract.saveFailedDuplicate')}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div
+            style={{
+              padding: '10px 18px',
+              borderTop: '0.5px solid var(--ol-line)',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+            }}
+          >
+            <Btn
+              variant="ghost"
+              icon="chevLeft"
+              onClick={
+                extractView === 'review'
+                  ? () => setExtractView('pick')
+                  : closeHotwordExtract
+              }
+            >
+              {extractView === 'review' ? t('vocab.extract.back') : t('common.close')}
+            </Btn>
+            {extractView === 'pick' ? (
+              <Btn
+                variant="primary"
+                icon="sparkle"
+                onClick={() => void startHotwordExtraction()}
+                disabled={pickedIds.size === 0 || extractBusy}
+              >
+                {extractBusy
+                  ? t('vocab.extract.extracting')
+                  : t('vocab.extract.start')}
+              </Btn>
+            ) : (
+              <Btn
+                variant="primary"
+                icon="check"
+                onClick={() => void saveHotwordSelection()}
+                disabled={savingExtract || !hotwordChecks.some(Boolean)}
+              >
+                {t('vocab.extract.save')}
+              </Btn>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <PageHeader
@@ -404,6 +853,14 @@ export function Vocab() {
                 {t('vocab.deleteSelected', { count: selectedIds.size })}
               </button>
             )}
+            <Btn
+              variant="soft"
+              icon="sparkle"
+              onClick={() => void openHotwordExtract()}
+              disabled={loading}
+            >
+              {t('vocab.extract.entry')}
+            </Btn>
             <Btn
               variant="primary"
               icon="plus"
