@@ -4410,6 +4410,25 @@ impl OpenLessBackend {
         Ok(updated)
     }
 
+    /// 提取标记写入（常用语/热词任一向导保存成功后调用）：对选中会话写入
+    /// 提取时间（单一标记，两个向导共用）；至少更新一条时发布历史变更。
+    /// 空 id 集合与全未知 id 报 InvalidArgument（前端无从区分成败即盲重试）。
+    pub fn mark_history_extracted(&self, session_ids: Vec<String>) -> Result<usize, BackendError> {
+        if session_ids.is_empty() {
+            return Err(BackendError::new(
+                BackendErrorCode::InvalidArgument,
+                "no history sessions to mark extracted",
+            ));
+        }
+        let updated = self
+            .history
+            .mark_extracted(&session_ids, self.clock.now_utc().to_rfc3339())?;
+        if updated > 0 {
+            self.publish_history_changed();
+        }
+        Ok(updated)
+    }
+
     pub fn apply_history_retranscription(
         &self,
         session_id: &str,
@@ -5709,6 +5728,7 @@ impl OpenLessBackend {
             ghostwriter_hits,
             ghostwriter_selections,
             ghostwriter_chat,
+            extracted_at: None,
         };
         if let Err(error) = self.append_history(
             session,
@@ -5789,6 +5809,7 @@ impl OpenLessBackend {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         };
         if let Err(error) = self.append_history(
             session,
@@ -8100,6 +8121,7 @@ mod tests {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         }
     }
 
@@ -11560,6 +11582,58 @@ mod tests {
         assert!(pos_new < pos_old, "newer transcript must come first");
         assert!(raw.contains("【来源 1】"));
         assert!(raw.contains("【来源 2】"));
+
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// 提取标记（两个向导共用）：选中的历史条目写入 extracted_at（单一字段，
+    /// 任一提取保存成功后由前端调用）；空集合报错，未知 id 忽略不计入返回。
+    #[tokio::test]
+    async fn mark_history_extracted_writes_single_marker() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-history-mark-extracted-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backend = backend_with_dictation_engine(
+            data_dir.clone(),
+            Arc::new(crate::testing::FixtureDictationEngine::successful("raw", "polished")),
+        );
+        backend.start().await.unwrap();
+
+        for id in ["h-one", "h-two"] {
+            let mut entry = history_session(id);
+            entry.created_at = "2026-09-18T10:00:00Z".to_string();
+            backend.append_history(entry, 30, None).unwrap();
+        }
+
+        // 空集合报错。
+        let error = backend
+            .mark_history_extracted(Vec::new())
+            .unwrap_err();
+        assert_eq!(error.code, crate::errors::BackendErrorCode::InvalidArgument);
+
+        // 未知 id 忽略：只写命中的，返回实际条数；读回带标记。
+        assert_eq!(
+            backend
+                .mark_history_extracted(vec!["h-one".to_string(), "h-missing".to_string()])
+                .unwrap(),
+            1
+        );
+        let history = backend.list_history().unwrap();
+        let marked = history
+            .iter()
+            .find(|entry| entry.id == "h-one")
+            .expect("h-one present");
+        assert!(marked.extracted_at.is_some());
+        assert!(
+            history
+                .iter()
+                .find(|entry| entry.id == "h-two")
+                .expect("h-two present")
+                .extracted_at
+                .is_none()
+        );
 
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

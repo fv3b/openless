@@ -13,6 +13,7 @@ import {
   extractGhostwriterCandidates,
   listGhostwriterSnippets,
   listHistory,
+  markHistoryExtracted,
   saveGhostwriterSnippet,
   setGhostwriterSnippetEnabled,
 } from '../lib/ipc';
@@ -147,13 +148,9 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
   const openExtract = async () => {
     try {
       const all = await listHistory();
-      const cutoff = Date.now() - 3 * 24 * 3_600_000;
+      // 全部历史多选（2026-09-18 批 3：撤 3 天窗），只要求有转写原文；新到旧排。
       const records = all
-        .filter(
-          (record) =>
-            record.rawTranscript.trim().length > 0 &&
-            new Date(record.createdAt).getTime() >= cutoff,
-        )
+        .filter((record) => record.rawTranscript.trim().length > 0)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setVoiceRecords(records);
       setPickedIds(new Set(records.map((record) => record.id)));
@@ -221,9 +218,11 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
 
   // 保存所选：逐条 create（表述类、启用）；成功的移出列表，触发词重复的
   // 留在原地标红可改；全部处理完 toast 汇总，全存完即关向导。
+  // 有保存成功就对当初所选会话写提取标记（两个向导共用，仅视觉淡化）。
   const saveSelected = async () => {
     if (savingExtract) return;
     setSavingExtract(true);
+    const markedSessionIds = [...pickedIds];
     const failures = new Set<number>();
     const remaining: GhostwriterSnippetDraft[] = [];
     const remainingChecks: boolean[] = [];
@@ -260,6 +259,11 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
         setSnippets(await listGhostwriterSnippets());
       } catch {
         // 汇总 toast 已提示保存结果；列表刷新失败不打断收尾。
+      }
+      try {
+        await markHistoryExtracted(markedSessionIds);
+      } catch {
+        // 标记只影响淡化样式，写失败不打断保存收尾。
       }
     }
     if (saved > 0 && failures.size === 0) {
@@ -548,6 +552,8 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                       padding: '10px 18px',
                       borderBottom: '0.5px solid var(--ol-line)',
                       cursor: 'pointer',
+                      // 已提取过的仅视觉淡化（2026-09-18 批 3），仍可正常多选提取。
+                      opacity: record.extractedAt ? 0.45 : 1,
                     }}
                   >
                     <input
@@ -571,6 +577,11 @@ export function GhostwriterSnippets({ embedded = false }: { embedded?: boolean }
                         ? `${record.rawTranscript.slice(0, 80)}…`
                         : record.rawTranscript}
                     </span>
+                    {record.extractedAt ? (
+                      <Pill tone="outline" size="sm">
+                        {t('ghostwriter.snippets.extractedMark')}
+                      </Pill>
+                    ) : null}
                     <span style={{ flexShrink: 0, fontSize: 12, color: 'var(--ol-ink-4)' }}>
                       {relativeAgeLabel(record.createdAt, t)}
                     </span>

@@ -533,6 +533,7 @@ impl QaService {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         };
         match persistence.history.append_with_retention(
             session,

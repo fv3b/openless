@@ -143,6 +143,11 @@ pub struct DictationSession {
     /// 代码固定）。仅对话会话写入，普通会话不出现；旧 JSON 无字段照读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ghostwriter_chat: Option<String>,
+    /// 提取标记：常用语/热词任一向导对该记录提取保存成功后写入的时间
+    /// （RFC3339）。两个向导共用一个标记；仅作视觉淡化提醒，不限制再次
+    /// 提取。旧 JSON 无字段照读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extracted_at: Option<String>,
 }
 
 /// Origin of a deterministic correction rule.

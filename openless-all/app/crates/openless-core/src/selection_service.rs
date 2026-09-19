@@ -453,6 +453,7 @@ impl SelectionServiceInner {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         };
         let mut changed = false;
         match self.history.append_with_retention(

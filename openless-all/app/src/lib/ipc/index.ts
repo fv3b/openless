@@ -62,6 +62,7 @@ export {
   listHistory,
   deleteHistoryEntry,
   clearHistory,
+  markHistoryExtracted,
   getActivityStats,
   readAudioRecording,
   retranscribeRecording,

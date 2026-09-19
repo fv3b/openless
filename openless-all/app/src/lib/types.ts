@@ -100,6 +100,9 @@ export interface DictationSession {
   /** 整份聊天记录，行语法【我】/【助手】逐行混排（代码固定，见后端 chat_transcript）。
    *  仅对话会话写入；普通会话与旧记录为 null/缺省。 */
   ghostwriterChat?: string | null;
+  /** 提取标记：常用语/热词任一向导对该记录提取保存成功后写入的时间（ISO-8601）。
+   *  两个向导共用，仅作视觉淡化提醒，不限制再次提取。旧记录无此字段。 */
+  extractedAt?: string | null;
 }
 
 export interface DictionaryEntry {

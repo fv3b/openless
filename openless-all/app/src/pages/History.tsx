@@ -606,6 +606,12 @@ export function History() {
                         {t('history.multimodalPipeline')}
                       </Pill>
                     )}
+                    {/* 提取标记（常用语/热词任一向导写入，仅视觉提醒）。 */}
+                    {item.extractedAt && (
+                      <Pill size="sm" tone="outline">
+                        {t('history.extractedMark')}
+                      </Pill>
+                    )}
                     {/* 「录音」前缀：与下方识别/润色耗时区分——录音时长发生在松键前，
                       不该与流水线各步耗时加总（用户反馈"时间对不上"）。 */}
                     <span style={{ fontSize: 11, color: 'var(--ol-ink-4)' }}>

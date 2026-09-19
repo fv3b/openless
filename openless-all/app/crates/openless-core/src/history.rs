@@ -115,6 +115,31 @@ impl HistoryStore {
         Ok(true)
     }
 
+    /// 按 id 批量写入提取标记（常用语/热词任一向导保存成功后调用）。
+    /// 未命中的 id 忽略；返回实际写入的条数（全未命中不落盘）。
+    pub fn mark_extracted(
+        &self,
+        session_ids: &[String],
+        extracted_at: String,
+    ) -> Result<usize, BackendError> {
+        if session_ids.is_empty() {
+            return Ok(0);
+        }
+        let _guard = self.lock_store()?;
+        let mut sessions = self.read_locked()?;
+        let mut updated = 0usize;
+        for session in sessions.iter_mut() {
+            if session_ids.iter().any(|id| id == &session.id) {
+                session.extracted_at = Some(extracted_at.clone());
+                updated += 1;
+            }
+        }
+        if updated > 0 {
+            self.write_locked(&sessions)?;
+        }
+        Ok(updated)
+    }
+
     pub fn clear(&self) -> Result<(), BackendError> {
         let _guard = self.lock_store()?;
         self.write_locked(&[])?;
@@ -211,6 +236,7 @@ mod tests {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         }
     }
 
@@ -239,6 +265,70 @@ mod tests {
         assert_eq!(sessions[0].id, "new-6");
         assert!(sessions.iter().all(|session| session.id != "old"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn mark_extracted_writes_marker_for_known_ids_only() {
+        let path = std::env::temp_dir().join(format!(
+            "openless-core-history-mark-{}.json",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let store = HistoryStore::at_path(path.clone());
+        store
+            .append_with_retention(session("one", chrono::Utc::now().to_rfc3339()), 0, None)
+            .unwrap();
+        store
+            .append_with_retention(session("two", chrono::Utc::now().to_rfc3339()), 0, None)
+            .unwrap();
+
+        // 空 id 集合直接返回 0；未知 id 忽略。
+        assert_eq!(store.mark_extracted(&[], "t0".into()).unwrap(), 0);
+        assert_eq!(
+            store
+                .mark_extracted(&["missing".to_string()], "t0".into())
+                .unwrap(),
+            0
+        );
+        assert!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.extracted_at.is_none())
+        );
+
+        // 命中的写入标记，重开读回一致；未命中条目不受影响。
+        assert_eq!(
+            store
+                .mark_extracted(&["one".to_string(), "missing".to_string()], "t1".into())
+                .unwrap(),
+            1
+        );
+        let sessions = store.list().unwrap();
+        assert_eq!(
+            sessions
+                .iter()
+                .find(|entry| entry.id == "one")
+                .and_then(|entry| entry.extracted_at.clone()),
+            Some("t1".to_string())
+        );
+        assert!(
+            sessions
+                .iter()
+                .find(|entry| entry.id == "two")
+                .and_then(|entry| entry.extracted_at.clone())
+                .is_none()
+        );
+        let reopened = HistoryStore::at_path(path);
+        assert_eq!(
+            reopened
+                .list()
+                .unwrap()
+                .iter()
+                .find(|entry| entry.id == "one")
+                .and_then(|entry| entry.extracted_at.clone()),
+            Some("t1".to_string())
+        );
     }
 
     #[test]

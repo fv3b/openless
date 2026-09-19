@@ -3555,6 +3555,8 @@ mod tests {
         assert_eq!(session.ghostwriter_hits, None);
         assert_eq!(session.ghostwriter_selections, None);
         assert_eq!(session.ghostwriter_chat, None);
+        // 提取标记同款：旧 JSON 无字段照读为 None。
+        assert_eq!(session.extracted_at, None);
 
         let mut with_detail = session;
         with_detail.ghostwriter_hits = Some(vec![crate::types::GhostwriterHistoryHit {
@@ -3567,11 +3569,14 @@ mod tests {
                 text: "项目背景的完整表述文本".into(),
             }]);
         with_detail.ghostwriter_chat = Some("【我】把日志清一下。\n【助手】哪个日志？".into());
+        with_detail.extracted_at = Some("2026-09-18T10:00:00Z".into());
         let round_trip: DictationSession =
             serde_json::from_str(&serde_json::to_string(&with_detail).unwrap()).unwrap();
         assert_eq!(round_trip, with_detail);
         let value = serde_json::to_value(&with_detail).unwrap();
         assert_eq!(value["ghostwriterChat"], "【我】把日志清一下。\n【助手】哪个日志？");
+        // 提取标记 camelCase（extractedAt）。
+        assert_eq!(value["extractedAt"], "2026-09-18T10:00:00Z");
     }
 
     /// 新字段序列化必须是 camelCase（前端 types.ts 镜像按 camelCase 读）。
@@ -3606,6 +3611,7 @@ mod tests {
             ghostwriter_hits: None,
             ghostwriter_selections: None,
             ghostwriter_chat: None,
+            extracted_at: None,
         };
         let json = serde_json::to_value(&session).expect("serialize");
         assert_eq!(json["source"], "selection_polish");
@@ -3615,6 +3621,7 @@ mod tests {
         assert_eq!(json["llmModel"], "deepseek-v3-2");
         assert_eq!(json["asrMs"], 230);
         assert!(json.get("ghostwriterChat").is_none());
+        assert!(json.get("extractedAt").is_none());
         assert_eq!(json["polishMs"], 1450);
     }
 

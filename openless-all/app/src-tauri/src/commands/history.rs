@@ -11,6 +11,15 @@ pub fn delete_history_entry(core: CoreState<'_>, id: String) -> Result<(), Strin
     core.delete_history(&id).map_err(|e| e.to_string())
 }
 
+/// 提取标记写入（常用语/热词任一向导保存成功后调用）：对选中历史会话写入
+/// extracted_at（单一标记，两个向导共用，仅视觉淡化）。
+#[tauri::command]
+pub fn mark_history_extracted(core: CoreState<'_>, session_ids: Vec<String>) -> Result<(), String> {
+    core.mark_history_extracted(session_ids)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn clear_history(core: CoreState<'_>) -> Result<(), String> {
     core.clear_history().map_err(|e| e.to_string())
