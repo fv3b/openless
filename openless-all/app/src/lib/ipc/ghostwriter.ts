@@ -38,7 +38,7 @@ export interface GhostwriterTaskBrief {
   body: string;
 }
 
-// 非 Tauri 环境的内存 mock：四份任务书的覆写表（无持久化），仅供浏览器内开发。
+// 非 Tauri 环境的内存 mock：七份任务书的覆写表（无持久化），仅供浏览器内开发。
 const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
   {
     id: 'instruction_polish',
@@ -63,6 +63,18 @@ const mockTaskBriefDefaults: Array<Omit<GhostwriterTaskBrief, 'modified'>> = [
     title: '提取常用语',
     description: '管从语音记录提取候选常用语，改了会影响提取结果。',
     body: '从历史语音转写里找出值得存成常用语的说法。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'conversation_reply',
+    title: '对话回话',
+    description: '管对话会话里 AI 什么时候开口、怎么校准怎么追问，改了会影响回话。',
+    body: '管对话会话里 AI 什么时候说什么、怎么校准怎么追问。（浏览器 mock：真实正文由后端提供）',
+  },
+  {
+    id: 'conversation_finalize',
+    title: '对话出稿',
+    description: '管聊天记录怎么润写成指令，改了会影响最终贴出的指令。',
+    body: '把整份聊天记录润写成最终指令。（浏览器 mock：真实正文由后端提供）',
   },
   {
     id: 'hotword_extraction',
@@ -191,7 +203,7 @@ export function triggerGhostwriterReply(sessionId: string): Promise<void> {
   return invokeOrMock('ghostwriter_trigger_reply', { sessionId }, () => undefined);
 }
 
-/** 四份任务书的列表（固定顺序由后端注册表决定）。 */
+/** 七份任务书的列表（固定顺序由后端注册表决定）。 */
 export function listGhostwriterTaskBriefs(): Promise<GhostwriterTaskBrief[]> {
   return invokeOrMock('list_ghostwriter_task_briefs', undefined, () =>
     mockTaskBriefDefaults.map((brief) => mockTaskBriefInfo(brief.id)),

@@ -4412,7 +4412,7 @@ impl OpenLessBackend {
 
     /// 提取标记写入（常用语/热词任一向导保存成功后调用）：对选中会话写入
     /// 提取时间（单一标记，两个向导共用）；至少更新一条时发布历史变更。
-    /// 空 id 集合与全未知 id 报 InvalidArgument（前端无从区分成败即盲重试）。
+    /// 空 id 集合报 InvalidArgument；未知 id 忽略不计，返回实际写入条数。
     pub fn mark_history_extracted(&self, session_ids: Vec<String>) -> Result<usize, BackendError> {
         if session_ids.is_empty() {
             return Err(BackendError::new(
@@ -6236,7 +6236,7 @@ impl OpenLessBackend {
         dispatcher.extract_hotword_candidates(transcripts).await
     }
 
-    /// 五份任务书快照（固定注册表顺序；命令层列表入口）。
+    /// 七份任务书快照（固定注册表顺序；命令层列表入口）。
     pub fn list_ghostwriter_task_briefs(
         &self,
     ) -> Result<Vec<crate::ghostwriter::task_brief_store::TaskBriefInfo>, BackendError> {
