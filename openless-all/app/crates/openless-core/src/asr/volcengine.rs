@@ -49,6 +49,14 @@ const DIALOG_CTX_CHAR_CAP: usize = 800;
 /// 800 字符预算——它不是用户数据，不受最近语音背景开关控制（否则该开关
 /// 默认关时场景偏置就永不生效）。
 pub const DIALOG_CTX_SCENE_ENTRY: &str = "用户在通过语音给 AI 助手下指令，内容为待办与任务类表达";
+/// 决策 3 输入框偏置（2026-09-18 用户裁决）条目前缀：对话会话启动时读取
+/// 光标所在输入框（其它应用）的已有文本，作为 dialog_ctx 的第三路语境
+/// （豆包同款机制），条目形态 `输入框已有内容：{截断后的文本}`。
+pub const DIALOG_CTX_INPUT_BOX_PREFIX: &str = "输入框已有内容：";
+/// 输入框文本的单条字符上限（超长取尾部——光标附近的最新内容对识别最相关）。
+/// 在 dialog_ctx 800 字符预算内自行分配：场景＋输入框 ≤ 436 字符，给最近语音
+/// 留出余量。
+pub const INPUT_BOX_ENTRY_CHAR_CAP: usize = 400;
 const FINAL_RESULT_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 弱网下 TLS/WebSocket 握手可能一直挂到 OS 级 TCP 超时（几十秒），期间用户卡在
@@ -1069,6 +1077,34 @@ fn context_payload(hotwords: &[DictionaryHotword], dialog_ctx: &[String]) -> Opt
     serde_json::to_string(&Value::Object(object)).ok()
 }
 
+/// 输入框文本截断：超长时保留尾部 [`INPUT_BOX_ENTRY_CHAR_CAP`] 字符（光标
+/// 附近的最新内容对识别最相关），省略部分以「…」开头；先 trim 再截断。
+pub fn truncate_input_box_tail(text: &str) -> String {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count <= INPUT_BOX_ENTRY_CHAR_CAP {
+        return trimmed.to_string();
+    }
+    let mut tail: String = trimmed.chars().skip(count - INPUT_BOX_ENTRY_CHAR_CAP).collect();
+    tail.insert(0, '…');
+    tail
+}
+
+/// dialog_ctx 条目拼装（决策 3 输入框偏置，cloud_providers 调用）：输入框
+/// 条目（如有，非空白才收）在固定场景条目之后、最近语音之前；最近语音保持
+/// 调用方顺序（新→旧）。返回值整体交 [`dialog_ctx_entries`] 计入 800 字符
+/// 预算——输入框条目必然保留，超预算丢的是更旧的最近语音。
+pub fn dialog_ctx_lines(input_box: Option<&str>, recent_voice_newest_first: &[String]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(recent_voice_newest_first.len() + 1);
+    if let Some(text) = input_box.map(str::trim).filter(|text| !text.is_empty()) {
+        let mut entry = String::from(DIALOG_CTX_INPUT_BOX_PREFIX);
+        entry.push_str(&truncate_input_box_tail(text));
+        lines.push(entry);
+    }
+    lines.extend(recent_voice_newest_first.iter().cloned());
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1497,5 +1533,82 @@ mod tests {
             result,
             Err(VolcengineASRError::FinalResultTimeout)
         ));
+    }
+
+    #[test]
+    fn truncate_input_box_tail_keeps_tail_and_marks_omission() {
+        // 决策 3 输入框偏置：超长文本保留尾部（光标附近最新内容最相关），
+        // 截断补「…」；未超长原样返回；首尾空白 trim。
+        assert_eq!(truncate_input_box_tail("  草稿内容  "), "草稿内容");
+        let long = "a".repeat(INPUT_BOX_ENTRY_CHAR_CAP + 60);
+        let truncated = truncate_input_box_tail(&long);
+        assert_eq!(
+            truncated.chars().count(),
+            INPUT_BOX_ENTRY_CHAR_CAP + 1,
+            "尾部 400 字符＋省略号"
+        );
+        assert!(truncated.starts_with('…'));
+        assert!(truncated.chars().skip(1).all(|c| c == 'a'));
+        let exactly = "b".repeat(INPUT_BOX_ENTRY_CHAR_CAP);
+        assert_eq!(truncate_input_box_tail(&exactly), exactly);
+    }
+
+    #[test]
+    fn dialog_ctx_lines_places_input_box_between_scene_and_recent_voice() {
+        // 条目顺序（用户裁决）：固定场景 → 输入框已有内容 → 最近语音（新→旧）。
+        let lines = dialog_ctx_lines(Some("帮我看看这段草稿"), &["最新一句".into(), "更早一句".into()]);
+        let payload = context_payload(&[], &lines).expect("有 dialog_ctx 应产出 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let texts: Vec<&str> = parsed["context_data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                DIALOG_CTX_SCENE_ENTRY,
+                "输入框已有内容：帮我看看这段草稿",
+                "最新一句",
+                "更早一句"
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_input_box_yields_no_entry() {
+        // 空白输入框（无值/空白）＝没有条目，其余不变。
+        assert!(dialog_ctx_lines(None, &[]).is_empty());
+        assert!(dialog_ctx_lines(Some("   \n\t "), &[]).is_empty());
+    }
+
+    #[test]
+    fn long_input_box_text_is_truncated_in_entry_and_counts_into_budget() {
+        // 截断防超长：条目总长 ≤ 前缀＋400＋省略号；且计入 800 预算——
+        // 输入框条目必然保留（在场景之后），超预算丢的是更旧的最近语音。
+        let long = "x".repeat(INPUT_BOX_ENTRY_CHAR_CAP + 500);
+        let lines = dialog_ctx_lines(Some(&long), &[long.clone()]);
+        assert_eq!(lines.len(), 2);
+        let entry = &lines[0];
+        assert_eq!(
+            entry.chars().count(),
+            DIALOG_CTX_INPUT_BOX_PREFIX.chars().count() + INPUT_BOX_ENTRY_CHAR_CAP + 1
+        );
+        // 拼进 dialog_ctx_entries：场景＋截断输入框条目在预算内常驻，
+        // 同一条最近语音（401＋500 字符）超预算被丢弃。
+        let payload = context_payload(&[], &lines).expect("有 dialog_ctx 应产出 context");
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        let texts: Vec<&str> = parsed["context_data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![DIALOG_CTX_SCENE_ENTRY, entry.as_str()],
+            "超预算只丢最近语音，输入框条目与场景常驻"
+        );
     }
 }

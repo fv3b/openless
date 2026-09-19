@@ -300,6 +300,8 @@ export const es: typeof zhCN = {
       title: 'Mejora del reconocimiento',
       secondPass: "Revisión en segunda pasada",
       secondPassDesc: "El motor de reconocimiento revisa cada frase finalizada con un modelo sin streaming: menos errores para la misma frase, resultado algo más lento. Activado por defecto; se aplica solo al motor Volcengine.",
+      inputBox: "Sesgo del cuadro de texto",
+      inputBoxDesc: "Al iniciar una conversación se lee el texto existente del campo de entrada enfocado y se entrega al reconocedor como contexto, para que el dictado continúe de forma natural. Solo sesiones de conversación, solo con el motor Volcengine; el texto se envía a los servidores de Volcengine con la solicitud de reconocimiento. Activado por defecto.",
       recentVoice: 'Contexto de voz reciente (experimental)',
       recentVoiceDesc:
         'Al iniciar una sesión, las instrucciones de voz recientes dentro del rango siguiente se envían como contexto a la IA (pulido, conversación, asistencia en vivo) y al motor de reconocimiento en la nube; desactivado por defecto, los cambios se aplican a la siguiente sesión.',

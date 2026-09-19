@@ -32,6 +32,10 @@ pub struct DictationStartOptions {
     /// 以偏好冻结回话时机与追问深度（`GhostwriterSession::with_conversation`）。
     /// 普通启动恒 false，一切照旧。
     pub ghostwriter_conversational: bool,
+    /// 宿主在会话启动时读到的光标所在输入框已有文本（决策 3 输入框偏置，
+    /// macOS AX 读取；无权限/失败/空白 → None）。仅对话会话采纳（见
+    /// [`DictationContext::capture`]），普通启动即使误传也忽略。
+    pub input_box_context: Option<String>,
 }
 
 impl Default for DictationStartOptions {
@@ -44,6 +48,7 @@ impl Default for DictationStartOptions {
             front_app: None,
             cursor_context: None,
             ghostwriter_conversational: false,
+            input_box_context: None,
         }
     }
 }
@@ -171,6 +176,10 @@ pub struct DictationContext {
     /// 二遍复核开关（会话启动时从偏好冻结）：火山流式 ASR 的 enable_nonstream
     /// 参数。true（默认）＝判停分句用非流式模型重识别；false＝不携带该参数。
     pub asr_second_pass_enabled: bool,
+    /// 决策 3 输入框偏置（会话启动时冻结）：光标所在输入框的已有文本，仅
+    /// 对话会话且偏好开启时采纳（普通启动/偏好关闭/空白 → None）。条目拼装
+    /// 与截断由 volcengine 侧负责。
+    pub asr_input_box_context: Option<String>,
 }
 
 impl Default for DictationContext {
@@ -255,6 +264,19 @@ impl DictationContext {
         }
         let prior_turns =
             eligible_polish_context_turns(recent_history, &style_pack.id, translation_active);
+        // 决策 3 输入框偏置（仅对话会话）：宿主读到的光标输入框文本按偏好
+        // 冻结进 context——普通启动即使误传也忽略（范围最小化）；偏好关闭/
+        // 空白 → None。条目拼装与截断由 volcengine 侧负责（dialog_ctx 预算
+        // 内分配）。
+        let asr_input_box_context = match options.input_box_context.as_deref() {
+            Some(text)
+                if options.ghostwriter_conversational
+                    && preferences.asr_input_box_context_enabled =>
+            {
+                non_blank(text)
+            }
+            _ => None,
+        };
         Self {
             audio_source: options.audio_source,
             recording: RecordingPlan {
@@ -319,6 +341,7 @@ impl DictationContext {
             },
             recent_voice: None,
             asr_second_pass_enabled: preferences.asr_second_pass_enabled,
+            asr_input_box_context,
         }
     }
 

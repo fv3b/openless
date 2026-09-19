@@ -75,6 +75,7 @@ export let mockSettings: UserPreferences = {
   llmThinkingEnabled: false,
   useSystemProxy: true,
   asrSecondPassEnabled: true,
+  asrInputBoxContextEnabled: true,
   restoreClipboardAfterPaste: true,
   pasteShortcut: 'ctrlV',
   allowNonTsfInsertionFallback: true,

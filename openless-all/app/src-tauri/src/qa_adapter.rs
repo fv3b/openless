@@ -618,6 +618,7 @@ mod tests {
             fn capture(
                 &self,
                 _include_cursor: bool,
+                _include_input_box: bool,
             ) -> BoxFuture<'static, Result<openless_core::HostContextCapture, BackendError>>
             {
                 let entered = self.entered.clone();

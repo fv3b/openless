@@ -117,9 +117,13 @@ export function SettingsPane() {
         <RecentVoiceBackgroundSection
           ghostwriter={prefs.ghostwriter}
           secondPassEnabled={prefs.asrSecondPassEnabled}
+          inputBoxEnabled={prefs.asrInputBoxContextEnabled}
           onSave={saveGhostwriter}
           onToggleSecondPass={(next) =>
             void updatePrefs((current) => ({ ...current, asrSecondPassEnabled: next }))
+          }
+          onToggleInputBox={(next) =>
+            void updatePrefs((current) => ({ ...current, asrInputBoxContextEnabled: next }))
           }
         />
       </Card>
@@ -228,20 +232,26 @@ function ConversationSection({
   );
 }
 
-/** 「识别提准」卡片：ASR/背景类的提准开关。最近语音背景（实验性，默认关）：
- *  会话启动时按设置的条数/天数圈定历史语音冻结为背景，供润色/对话/实时助手
- *  与云端识别引擎作参考；设置改动对下一场会话生效（冻结语义）。二遍复核
- *  （默认开）：火山判停分句用非流式模型重识别，仅火山引擎生效。 */
+/** 「识别提准」卡片：ASR/背景类的提准开关。二遍复核（默认开）：火山判停
+ *  分句用非流式模型重识别，仅火山引擎生效。输入框偏置（决策 3，默认开）：
+ *  对话会话启动时读取光标所在输入框的已有内容作识别语境（仅对话会话，仅
+ *  火山引擎；文本出机到火山，用户已裁决接受）。最近语音背景（实验性，默认
+ *  关）：会话启动时按设置的条数/天数圈定历史语音冻结为背景，供润色/对话/
+ *  实时助手与云端识别引擎作参考；设置改动对下一场会话生效（冻结语义）。 */
 function RecentVoiceBackgroundSection({
   ghostwriter,
   secondPassEnabled,
+  inputBoxEnabled,
   onSave,
   onToggleSecondPass,
+  onToggleInputBox,
 }: {
   ghostwriter: GhostwriterPreferences;
   secondPassEnabled: boolean;
+  inputBoxEnabled: boolean;
   onSave: (patch: Partial<GhostwriterPreferences>) => Promise<void> | void;
   onToggleSecondPass: (next: boolean) => void;
+  onToggleInputBox: (next: boolean) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -252,6 +262,12 @@ function RecentVoiceBackgroundSection({
         desc={t('ghostwriter.accuracy.secondPassDesc')}
       >
         <Toggle on={secondPassEnabled} onToggle={onToggleSecondPass} />
+      </SettingRow>
+      <SettingRow
+        label={t('ghostwriter.accuracy.inputBox')}
+        desc={t('ghostwriter.accuracy.inputBoxDesc')}
+      >
+        <Toggle on={inputBoxEnabled} onToggle={onToggleInputBox} />
       </SettingRow>
       <SettingRow
         label={t('ghostwriter.accuracy.recentVoice')}

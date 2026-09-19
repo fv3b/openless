@@ -628,13 +628,18 @@ async fn build_cloud_transcription_session(
                     enabled: true,
                 })
                 .collect();
-            // dialog_ctx 语境提示（批次 A）：会话启动时冻结的最近语音背景，
-            // 新→旧传入（官方按从新到旧截断）；无历史 → 空列表，不注入。
-            let dialog_ctx = context
+            // dialog_ctx 语境提示（批次 A＋决策 3 输入框偏置）：输入框条目
+            // （如有）在固定场景之后、最近语音之前；最近语音新→旧传入（官方
+            // 按从新到旧截断）；条目拼装/截断/预算分配收敛在 volcengine 侧。
+            let recent_voice_lines = context
                 .recent_voice
                 .as_ref()
                 .map(|background| background.asr_dialog_ctx_lines())
                 .unwrap_or_default();
+            let dialog_ctx = crate::asr::volcengine::dialog_ctx_lines(
+                context.asr_input_box_context.as_deref(),
+                &recent_voice_lines,
+            );
             let label =
                 crate::provider_rules::volc_resource_history_label(&credentials.resource_id);
             let provider = Arc::new(VolcengineStreamingASR::with_task_spawner(

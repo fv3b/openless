@@ -311,6 +311,8 @@ export const en: typeof zhCN & {
       title: 'Recognition boost',
       secondPass: "Second-pass review",
       secondPassDesc: "The recognition engine re-checks each finalized sentence with a non-streaming model: fewer mis-hearings for the same phrasing, slightly slower results. On by default; applies to the Volcengine engine only.",
+      inputBox: "Input box bias",
+      inputBoxDesc: "At conversation start, the existing text of the focused input field is read and given to the recognizer as context, so dictated text continues naturally from it. Conversation sessions only, Volcengine engine only; the text is sent to the Volcengine cloud as part of the recognition request. On by default.",
       recentVoice: 'Recent voice background (experimental)',
       recentVoiceDesc:
         'When a session starts, recent voice instructions within the scope below are passed as background to the AI (polish, conversation, live assist) and the cloud recognition engine; off by default, changes apply to the next session.',

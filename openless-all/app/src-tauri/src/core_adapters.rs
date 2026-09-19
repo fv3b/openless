@@ -3108,23 +3108,37 @@ impl openless_core::HostContextAdapter for TauriHostContextAdapter {
     fn capture(
         &self,
         include_cursor: bool,
+        include_input_box: bool,
     ) -> BoxFuture<'static, Result<openless_core::HostContextCapture, BackendError>> {
         Box::pin(async move {
             let front_app = crate::coordinator::capture_frontmost_app();
-            let cursor_context = if include_cursor {
+            // 决策 3 输入框偏置＋光标上下文共用同一次宿主文档读取：安全闸门
+            // （Secure Input/密码框/密码管理器/终端）、AX 超时与大文档保护
+            // 全在 host_document 内；两者都不要时不发任何读取。
+            let window = if include_cursor || include_input_box {
                 crate::host_document::read_around_cursor(crate::host_document::DEFAULT_BUDGET_CHARS)
                     .await
-                    .map(|window| {
-                        let before = window.text.chars().take(window.cursor).collect::<String>();
-                        let after = window.text.chars().skip(window.cursor).collect::<String>();
-                        openless_core::prompts::cursor_context_input(&before, &after)
-                    })
+            } else {
+                None
+            };
+            let cursor_context = if include_cursor {
+                window.as_ref().map(|window| {
+                    let before = window.text.chars().take(window.cursor).collect::<String>();
+                    let after = window.text.chars().skip(window.cursor).collect::<String>();
+                    openless_core::prompts::cursor_context_input(&before, &after)
+                })
+            } else {
+                None
+            };
+            let input_box_context = if include_input_box {
+                window.map(|window| window.text)
             } else {
                 None
             };
             Ok(openless_core::HostContextCapture {
                 front_app,
                 cursor_context,
+                input_box_context,
             })
         })
     }

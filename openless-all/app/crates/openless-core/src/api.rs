@@ -4776,7 +4776,8 @@ impl OpenLessBackend {
 
     /// 对话热键入口：与现有 ghostwriter 会话启动同路径，启动选项带
     /// `ghostwriter_conversational`——会话创建点按它以偏好冻结回话时机与
-    /// 追问深度（见 [`Self::start_reserved_dictation`]）。
+    /// 追问深度（见 [`Self::start_reserved_dictation`]）。输入框偏置（决策 3）
+    /// 由 context 捕获按同一标志与偏好自动向宿主索取，无需调用方传参。
     pub async fn start_ghostwriter_conversation(&self) -> Result<SessionId, BackendError> {
         self.start_dictation_with_options(DictationStartOptions {
             ghostwriter_conversational: true,
@@ -6358,6 +6359,12 @@ impl OpenLessBackend {
     ) -> Result<DictationContext, BackendError> {
         let preferences = self.get_preferences();
         let mut captured_options = options.clone();
+        // 决策 3 输入框偏置（仅对话会话）：对话会话且偏好开启时向宿主索取
+        // 光标所在输入框的已有文本（与光标上下文共用同一次安全闸门下的
+        // AX 读取）；普通启动与 QA/选区等其它用途一律不读（范围最小化）。
+        let include_input_box = purpose == DictationContextPurpose::Dictation
+            && options.ghostwriter_conversational
+            && preferences.asr_input_box_context_enabled;
         if !preferences.cursor_context_enabled {
             // This switch controls document text, including text supplied by
             // callers. Front-application metadata is still needed for history,
@@ -6366,12 +6373,13 @@ impl OpenLessBackend {
         }
         if captured_options.front_app.is_none()
             || (preferences.cursor_context_enabled && captured_options.cursor_context.is_none())
+            || include_input_box
         {
             match self
                 .deps
                 .services
                 .host_context
-                .capture(preferences.cursor_context_enabled)
+                .capture(preferences.cursor_context_enabled, include_input_box)
                 .await
             {
                 Ok(capture) => {
@@ -6379,6 +6387,10 @@ impl OpenLessBackend {
                     if preferences.cursor_context_enabled {
                         captured_options.cursor_context =
                             captured_options.cursor_context.or(capture.cursor_context);
+                    }
+                    if include_input_box {
+                        captured_options.input_box_context =
+                            captured_options.input_box_context.or(capture.input_box_context);
                     }
                 }
                 Err(error) => log::warn!("host context capture failed: {error}"),
@@ -6670,6 +6682,7 @@ mod tests {
         fn capture(
             &self,
             include_cursor: bool,
+            _include_input_box: bool,
         ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
             self.0.fetch_add(1, Ordering::AcqRel);
             if include_cursor {
@@ -6679,6 +6692,7 @@ mod tests {
                 Ok(HostContextCapture {
                     front_app: Some("Terminal (com.apple.Terminal)".into()),
                     cursor_context: include_cursor.then(|| "before <OPENLESS_CURSOR> after".into()),
+                    input_box_context: None,
                 })
             })
         }
@@ -7419,6 +7433,7 @@ mod tests {
             fn capture(
                 &self,
                 _: bool,
+                _: bool,
             ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
                 let entered = self.entered.clone();
                 let release = self.release.clone();
@@ -7473,7 +7488,7 @@ mod tests {
                 _: crate::CancellationToken,
             ) -> BoxFuture<'static, Result<crate::ports::VoiceCapture, BackendError>> {
                 self.started.store(true, Ordering::Release);
-                let gate = self.gate.capture(false);
+                let gate = self.gate.capture(false, false);
                 let stopped = self.stopped.clone();
                 let transcription = self.transcription.clone();
                 boxed(async move {
@@ -10145,6 +10160,7 @@ mod tests {
             fn capture(
                 &self,
                 _: bool,
+                _: bool,
             ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
                 let entered = self.entered.clone();
                 let release = self.release.clone();
@@ -10475,6 +10491,186 @@ mod tests {
         backend.cancel_dictation(Some(session_id)).await.unwrap();
         backend.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(empty_dir);
+    }
+
+    #[tokio::test]
+    async fn input_box_context_is_frozen_for_conversation_start_only() {
+        // 决策 3 输入框偏置：对话会话启动时 core 向宿主索取输入框文本（偏好
+        // 默认开）并冻结进 context；普通启动不索取、即使误传也忽略（范围最
+        // 小化）；偏好关闭 → 不索取；空白视同无值。
+        struct InputBoxHostContext {
+            text: &'static str,
+            input_box_requests: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl HostContextAdapter for InputBoxHostContext {
+            fn capture(
+                &self,
+                include_cursor: bool,
+                include_input_box: bool,
+            ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
+                let text = self.text;
+                if include_input_box {
+                    self.input_box_requests
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+                boxed(async move {
+                    Ok(HostContextCapture {
+                        front_app: Some("Notes (com.apple.Notes)".into()),
+                        cursor_context: include_cursor
+                            .then(|| "before <OPENLESS_CURSOR> after".into()),
+                        input_box_context: include_input_box.then(|| text.to_string()),
+                    })
+                })
+            }
+        }
+
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-input-box-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let transcription = crate::testing::FixtureTranscriptionEngine::successful("raw", 125);
+        let recorder = crate::AudioRecorderRouter::new(
+            Arc::new(crate::testing::FixtureAudioRecorder::new(
+                Vec::new(),
+                Vec::new(),
+            )),
+            crate::ExternalAudioRecorder::default(),
+        );
+        let engine = crate::PipelineDictationEngine::new(
+            Arc::new(recorder),
+            Arc::new(transcription),
+            Arc::new(crate::testing::FixtureTextPolisher::successful("polished")),
+        )
+        .with_finalize_grace(std::time::Duration::ZERO);
+        let input_box_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let host_context: Arc<dyn crate::ports::HostContextAdapter> = Arc::new(
+            InputBoxHostContext {
+                text: "正在写周报，开头是本周进展",
+                input_box_requests: Arc::clone(&input_box_requests),
+            },
+        );
+        let backend = OpenLessBackend::new(
+            BackendConfig {
+                data_dir: data_dir.clone(),
+                ..BackendConfig::default()
+            },
+            BackendDependencies {
+                host_actions: Arc::new(FakeHost::default()),
+                text_inserter: Arc::new(crate::testing::FixtureTextInserter::with_outcome(
+                    InsertOutcome::Inserted,
+                )),
+                dictation_engine: Arc::new(engine),
+                task_spawner: Arc::new(TokioTaskSpawner),
+                credential_store: Arc::new(crate::credentials::InMemoryCredentialStore::default()),
+                services: {
+                    let mut services = crate::domains::BackendServices::unsupported();
+                    services.host_context = Arc::clone(&host_context);
+                    services
+                },
+                local_asr_runtime: None,
+                marketplace_config: None,
+                selection_runtime: None,
+                selection_polisher: None,
+                qa_runtime: None,
+            },
+        )
+        .unwrap();
+        backend.start().await.unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.capsule_style = crate::shared_types::CapsuleStyle::Fluid;
+        // 偏好默认开（用户裁决）。
+        assert!(preferences.asr_input_box_context_enabled);
+        backend.set_preferences(preferences).unwrap();
+
+        // 对话会话：core 向宿主索取文本并冻结进 context。
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert_eq!(
+                context.asr_input_box_context.as_deref(),
+                Some("正在写周报，开头是本周进展")
+            );
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        assert_eq!(
+            input_box_requests.load(std::sync::atomic::Ordering::Acquire),
+            1,
+            "对话会话应恰好索取一次输入框文本"
+        );
+
+        // 普通启动：不索取；options 即使误传输入框文本也不采纳。
+        let session_id = backend
+            .start_dictation_with_options(crate::dictation_context::DictationStartOptions {
+                input_box_context: Some("不应被普通启动采纳".to_string()),
+                ..crate::dictation_context::DictationStartOptions::default()
+            })
+            .await
+            .unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert!(
+                context.asr_input_box_context.is_none(),
+                "普通启动不应采纳输入框文本"
+            );
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        assert_eq!(
+            input_box_requests.load(std::sync::atomic::Ordering::Acquire),
+            1,
+            "普通启动不应向宿主索取输入框文本"
+        );
+
+        // 偏好关闭：对话会话也不索取（冻结语义：设置改动对下一场会话生效）。
+        let mut preferences = backend.get_preferences();
+        preferences.asr_input_box_context_enabled = false;
+        backend.set_preferences(preferences).unwrap();
+        let session_id = backend.start_ghostwriter_conversation().await.unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert!(context.asr_input_box_context.is_none());
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        assert_eq!(
+            input_box_requests.load(std::sync::atomic::Ordering::Acquire),
+            1,
+            "偏好关闭后不应向宿主索取输入框文本"
+        );
+
+        // 空白文本视同无值：对话会话照常启动，context 不带条目。
+        let mut preferences = backend.get_preferences();
+        preferences.asr_input_box_context_enabled = true;
+        backend.set_preferences(preferences).unwrap();
+        let session_id = backend
+            .start_dictation_with_options(crate::dictation_context::DictationStartOptions {
+                ghostwriter_conversational: true,
+                input_box_context: Some("   \n  ".to_string()),
+                ..crate::dictation_context::DictationStartOptions::default()
+            })
+            .await
+            .unwrap();
+        {
+            let state = backend.state.read().expect("backend state lock poisoned");
+            let context = state
+                .dictation_context
+                .as_ref()
+                .expect("active session has a captured context");
+            assert!(context.asr_input_box_context.is_none(), "空白视同无值");
+        }
+        backend.cancel_dictation(Some(session_id)).await.unwrap();
+        backend.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[tokio::test]
@@ -13650,6 +13846,7 @@ mod tests {
             fn capture(
                 &self,
                 include_cursor: bool,
+                _include_input_box: bool,
             ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
                 let entered = self.entered.clone();
                 let release = self.release.clone();

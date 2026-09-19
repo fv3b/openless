@@ -519,6 +519,12 @@ pub struct UserPreferences {
     /// 服务端携带该参数。会话启动时冻结（DictationContext）。
     #[serde(default = "default_true")]
     pub asr_second_pass_enabled: bool,
+    /// ASR 输入框偏置（2026-09-18 用户裁决，决策 3）：对话会话启动时读取
+    /// 光标所在输入框（其它应用）的已有文本，作为火山 dialog_ctx 的语境
+    /// 参考之一。默认开；文本会随识别请求发到火山服务端（用户已裁决接受）。
+    /// 仅对话会话生效，普通听写不读。
+    #[serde(default = "default_true")]
+    pub asr_input_box_context_enabled: bool,
     /// Windows/Linux 粘贴成功后是否恢复用户原剪贴板。默认 true 跟历史行为一致；
     /// 关掉就把听写文本留在剪贴板，让 simulate_paste 实际没生效时用户能 Ctrl+V 找回。
     /// macOS 走 AX 直写，不受这个开关影响。详见 issue #111。
@@ -945,6 +951,8 @@ struct UserPreferencesWire {
     use_system_proxy: bool,
     #[serde(default = "default_true")]
     asr_second_pass_enabled: bool,
+    #[serde(default = "default_true")]
+    asr_input_box_context_enabled: bool,
     restore_clipboard_after_paste: bool,
     #[serde(default)]
     paste_shortcut: PasteShortcut,
@@ -1170,6 +1178,7 @@ impl Default for UserPreferencesWire {
             llm_thinking_enabled: prefs.llm_thinking_enabled,
             use_system_proxy: prefs.use_system_proxy,
             asr_second_pass_enabled: prefs.asr_second_pass_enabled,
+            asr_input_box_context_enabled: prefs.asr_input_box_context_enabled,
             restore_clipboard_after_paste: prefs.restore_clipboard_after_paste,
             paste_shortcut: prefs.paste_shortcut,
             allow_non_tsf_insertion_fallback: prefs.allow_non_tsf_insertion_fallback,
@@ -1329,6 +1338,7 @@ impl<'de> Deserialize<'de> for UserPreferences {
             llm_thinking_enabled: wire.llm_thinking_enabled,
             use_system_proxy: wire.use_system_proxy,
             asr_second_pass_enabled: wire.asr_second_pass_enabled,
+            asr_input_box_context_enabled: wire.asr_input_box_context_enabled,
             restore_clipboard_after_paste: wire.restore_clipboard_after_paste,
             paste_shortcut: wire.paste_shortcut,
             allow_non_tsf_insertion_fallback: wire.allow_non_tsf_insertion_fallback,
@@ -1688,6 +1698,7 @@ impl Default for UserPreferences {
             llm_thinking_enabled: false,
             use_system_proxy: true,
             asr_second_pass_enabled: true,
+            asr_input_box_context_enabled: true,
             restore_clipboard_after_paste: true,
             paste_shortcut: PasteShortcut::default(),
             allow_non_tsf_insertion_fallback: true,
@@ -3721,6 +3732,19 @@ mod tests {
         assert!(!prefs.asr_second_pass_enabled);
         let wire = serde_json::to_value(&prefs).unwrap();
         assert_eq!(wire["asrSecondPassEnabled"], false);
+    }
+
+    #[test]
+    fn asr_input_box_context_enabled_defaults_on_and_roundtrips_camel_case() {
+        // 输入框偏置默认开（2026-09-18 用户裁决，决策 3）；显式关掉后 wire
+        // 往返不丢键。
+        let prefs: UserPreferences = serde_json::from_str("{}").unwrap();
+        assert!(prefs.asr_input_box_context_enabled);
+        let prefs: UserPreferences =
+            serde_json::from_str(r#"{"asrInputBoxContextEnabled":false}"#).unwrap();
+        assert!(!prefs.asr_input_box_context_enabled);
+        let wire = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(wire["asrInputBoxContextEnabled"], false);
     }
 
     #[test]

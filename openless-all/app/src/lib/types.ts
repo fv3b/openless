@@ -432,6 +432,10 @@ export interface UserPreferences {
   /** 火山流式 ASR 二遍复核（enable_nonstream，官方参数）。默认开；关闭时不传该参数。
    *  会话启动时冻结，改动对下一场会话生效。 */
   asrSecondPassEnabled: boolean;
+  /** ASR 输入框偏置（决策 3）：对话会话启动时读取光标所在输入框的已有内容，
+   *  作为识别的语境参考（仅对话会话，仅火山引擎生效）。文本会随识别请求发到
+   *  火山服务端。默认开。 */
+  asrInputBoxContextEnabled: boolean;
   /** 仅 Windows/Linux：粘贴成功后是否恢复用户原剪贴板。默认 true。详见 issue #111。 */
   restoreClipboardAfterPaste: boolean;
   /** 仅 Windows/Linux：模拟粘贴时按下的快捷键。详见 issue #360：kitty/alacritty

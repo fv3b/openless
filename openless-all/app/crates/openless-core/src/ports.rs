@@ -33,15 +33,24 @@ pub trait HostActions: Send + Sync {
 pub struct HostContextCapture {
     pub front_app: Option<String>,
     pub cursor_context: Option<String>,
+    /// 决策 3 输入框偏置（2026-09-18 用户裁决）：光标所在输入框的已有文本
+    /// （原始窗口文本）。宿主按调用方意愿填充；core 只在对话会话且偏好开启
+    /// 时索取并冻结进 `DictationContext`，经火山 dialog_ctx 出机。
+    pub input_box_context: Option<String>,
 }
 
 pub trait HostContextAdapter: Send + Sync {
     /// Capture foreground application metadata for attribution and input policy.
-    /// `include_cursor=false` forbids reading document/AX text, not querying the
-    /// application identity. Hosts must honor this before any document access.
+    /// `include_cursor=false` forbids reading document/AX text for the polish
+    /// cursor context, not querying the application identity. Hosts must honor
+    /// this before any document access.
+    /// `include_input_box` requests the raw focused-input text for the ASR
+    /// dialog_ctx (决策 3)——与 cursor context 共用同一次安全闸门下的 AX 读取；
+    /// 两者同为 false 时宿主不得发起任何文本读取。
     fn capture(
         &self,
         include_cursor: bool,
+        include_input_box: bool,
     ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>>;
 }
 
@@ -51,6 +60,7 @@ impl HostContextAdapter for NoopHostContextAdapter {
     fn capture(
         &self,
         _include_cursor: bool,
+        _include_input_box: bool,
     ) -> BoxFuture<'static, Result<HostContextCapture, BackendError>> {
         Box::pin(async { Ok(HostContextCapture::default()) })
     }
